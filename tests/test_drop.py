@@ -566,17 +566,17 @@ def test_images_are_written_and_referenced_relatively(tmp_path, monkeypatch):
         assert (report.csv_path.parent / name).is_file()
 
 
-def test_mockups_plus_the_flat_render_cannot_exceed_ten_images(tmp_path, monkeypatch):
-    # `--mockups 10` with the flat render is eleven images. Etsy would accept the create
+def test_mockups_plus_the_flat_render_cannot_exceed_the_image_limit(tmp_path, monkeypatch):
+    # `--mockups 20` with the flat render is 21 images. Etsy would accept the create
     # and then refuse the last upload, leaving a draft stallkit cannot delete — so the run
     # stops before anything is composited.
     monkeypatch.setenv("STALLKIT_HOME", str(tmp_path / "home"))
     ws = _workspace_with(tmp_path, ["ceramic-coffee-mug.png"])
-    for n in range(10):
+    for n in range(20):
         _make_mockup(ws.mockups / f"extra-{n}.jpg")
 
-    with pytest.raises(ValidationError, match="Etsy allows 10"):
-        pipeline.run(ws, capture(LISTING), client=_FakeClient(), mockups_per_product=10)
+    with pytest.raises(ValidationError, match="Etsy allows 20"):
+        pipeline.run(ws, capture(LISTING), client=_FakeClient(), mockups_per_product=20)
 
     assert not list(ws.drafts.glob("*/*.jpg")), "nothing may be composited before the refusal"
 
@@ -980,3 +980,10 @@ def test_mockups_left_out_by_the_limit_are_reported(tmp_path):
     report = pipeline.run(ws, capture(LISTING), client=_FakeClient(), mockups_per_product=2)
     # Two from the fixture plus four here, two used: four left out.
     assert any("4 mockup(s) in 1-MOCKUPS were not used" in w for w in report.ready[0].warnings)
+
+
+def test_a_varied_template_listings_total_stock_is_capped_for_the_draft():
+    # A listing with variations reports the sum of its offerings — far above 999 here — which
+    # Etsy then refuses as the quantity of a new listing.
+    template = capture(dict(LISTING, quantity=12000))
+    assert template.fields["quantity"] == 999

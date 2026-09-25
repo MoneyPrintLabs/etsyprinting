@@ -339,6 +339,16 @@ class EtsyClient:
     def create_draft_listing(self, fields: dict[str, Any]) -> dict[str, Any]:
         return self.post(f"/shops/{self.shop_id()}/listings", form=fields)
 
+    def listing_inventory(self, listing_id: int) -> dict[str, Any]:
+        return self.get(f"/listings/{listing_id}/inventory")
+
+    def update_listing_inventory(
+        self, listing_id: int, inventory: dict[str, Any]
+    ) -> dict[str, Any]:
+        # Unlike createDraftListing, this endpoint takes JSON, and it replaces the whole
+        # inventory — every product, property and offering — in one call.
+        return self.put(f"/listings/{listing_id}/inventory", json_body=inventory)
+
     def update_listing(self, listing_id: int, fields: dict[str, Any]) -> dict[str, Any]:
         return self.patch(f"/shops/{self.shop_id()}/listings/{listing_id}", form=fields)
 

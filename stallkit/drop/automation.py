@@ -74,6 +74,12 @@ class _RecordedClient:
         _save(self.path, self.state)
         return result
 
+    def update_listing_inventory(self, listing_id, inventory):
+        result = self.client.update_listing_inventory(listing_id, inventory)
+        self.entry["variations"] = len(inventory["products"])
+        _save(self.path, self.state)
+        return result
+
     def upload_listing_image(self, listing_id, image, *, rank):
         result = self.client.upload_listing_image(listing_id, image, rank=rank)
         self.entry["images_uploaded"] = rank
@@ -153,6 +159,14 @@ def run(workspace: Workspace, template: Template, *, client: EtsyClient | None =
         if dry_run:
             report.uploaded = checks
             return report
+        # The template listing's options travel with its fields. A template without
+        # variations has nothing to add, and its single price is already on the row.
+        inventory = None
+        if template.source_listing_id:
+            source = listings.inventory_for_copy(
+                client.listing_inventory(template.source_listing_id)
+            )
+            inventory = source if listings.has_variations(source) else None
         state[shop] = history
         # One row is pushed at a time, so push() would number every result "row 2";
         # the number is set to the product's real line in review.csv instead.
@@ -163,7 +177,9 @@ def run(workspace: Workspace, template: Template, *, client: EtsyClient | None =
             # Persist intent BEFORE the request, including ambiguous network failures.
             _save(path, state)
             recorder = _RecordedClient(client, path, state, entry)
-            result = listings.push(recorder, [row], base_dir=prepared.csv_path.parent).results[0]
+            result = listings.push(
+                recorder, [row], base_dir=prepared.csv_path.parent, inventory=inventory
+            ).results[0]
             result.row = line
             entry.update(status=result.status, message=result.message)
             _save(path, state)

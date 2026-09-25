@@ -632,6 +632,12 @@ def listings_push(
         None, "--out", "-o", help="Write results (with new listing_ids) to this CSV."
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Do not ask for confirmation."),
+    inventory_from: Optional[int] = typer.Option(
+        None,
+        "--inventory-from",
+        help="Copy this listing's variations (options, prices, quantities) onto every "
+        "new draft.",
+    ),
 ) -> None:
     """Create or update listings in bulk. New listings are always created as drafts."""
     rows = csvio.read_rows(src)
@@ -666,9 +672,23 @@ def listings_push(
     }
     if dry_run:
         # Validation is entirely local, so this works before you even have API access.
+        if inventory_from:
+            console.print(
+                f"[dim]The real run copies the variations of listing {inventory_from} onto "
+                f"each new draft. The dry run is offline, so it does not fetch them.[/]"
+            )
         report = listings_mod.push(None, rows, **push_args)
     else:
         with _client() as client:
+            if inventory_from:
+                inventory = listings_mod.inventory_for_copy(
+                    client.listing_inventory(inventory_from)
+                )
+                console.print(
+                    f"[dim]Copying {len(inventory['products'])} variation(s) from listing "
+                    f"{inventory_from} onto each new draft.[/]"
+                )
+                push_args["inventory"] = inventory
             report = listings_mod.push(client, rows, **push_args)
 
     console.print()
@@ -684,8 +704,9 @@ def listings_push(
         )
         if report.partial:
             _warn(
-                f"{report.partial} listing(s) were created but did not get all their "
-                "images. They exist in your shop — see the rows marked 'partial' above."
+                f"{report.partial} listing(s) were created but are not complete — "
+                "missing images or variations. They exist in your shop — see the rows "
+                "marked 'partial' above."
             )
         if report.created:
             console.print("[dim]New listings are drafts — publish them from your Etsy dashboard.[/]")

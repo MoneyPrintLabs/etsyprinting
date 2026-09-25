@@ -112,19 +112,19 @@ def test_duplicate_tags_flagged():
     assert any("duplicate" in p for p in validate_tags(["mug", "Mug"]))
 
 
-def test_more_than_ten_images_is_an_error_not_a_truncation(tmp_path):
-    # Etsy takes the create and then refuses the eleventh upload, and stallkit holds no
+def test_more_images_than_etsy_allows_is_an_error_not_a_truncation(tmp_path):
+    # Etsy takes the create and then refuses the 21st upload, and stallkit holds no
     # delete scope to undo it. Dropping the extras silently would pick which photos the
     # seller ships; failing the row leaves that choice with them.
-    for n in range(11):
+    for n in range(21):
         (tmp_path / f"{n}.jpg").write_bytes(b"x")
-    row = dict(BASE_ROW, images="|".join(f"{n}.jpg" for n in range(11)))
+    row = dict(BASE_ROW, images="|".join(f"{n}.jpg" for n in range(21)))
 
     result = prepare([row], base_dir=tmp_path)[0].result
 
     assert result.failed
-    assert "11 images given" in result.message
-    assert "Etsy allows 10" in result.message
+    assert "21 images given" in result.message
+    assert "Etsy allows 20" in result.message
 
 
 def test_exactly_ten_images_is_a_valid_row(tmp_path):
@@ -171,3 +171,26 @@ def test_a_comma_in_an_image_path_does_not_split_the_cell():
     # path in two and push would report both halves as missing files.
     assert split_multi("kedi, kopek tablosu--flat.jpg") == ["kedi, kopek tablosu--flat.jpg"]
     assert split_multi("a.jpg|b.jpg") == ["a.jpg", "b.jpg"]
+
+
+def test_a_processing_profile_is_sent_and_replaces_the_day_counts():
+    # Etsy refuses a physical create without readiness_state_id, and the profile is what
+    # defines processing time — the older day counts must not contradict it.
+    row = dict(BASE_ROW, readiness_state_id="9001", processing_min="1", processing_max="2")
+    payload = build_payload(row, is_update=False)
+    assert payload["readiness_state_id"] == 9001
+    assert "processing_min" not in payload and "processing_max" not in payload
+
+
+def test_day_counts_still_go_out_without_a_profile():
+    payload = build_payload(dict(BASE_ROW, processing_min="1", processing_max="2"), is_update=False)
+    assert payload["processing_min"] == 1 and payload["processing_max"] == 2
+
+
+def test_a_quantity_over_etsys_limit_is_caught_before_sending():
+    problems = []
+    try:
+        build_payload(dict(BASE_ROW, quantity="12000"), is_update=False)
+    except ValidationError as exc:
+        problems.append(str(exc))
+    assert problems and "limit of 999" in problems[0]

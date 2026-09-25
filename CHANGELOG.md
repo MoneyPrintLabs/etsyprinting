@@ -5,6 +5,29 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Variations on new drafts.** `listings push --inventory-from <listing_id>` copies that
+  listing's options — properties, per-option prices and quantities, and processing
+  profile — onto every draft it creates, and `drop auto` does the same from its template
+  listing. A draft whose options cannot be set is reported as partial, never as done.
+- **Processing profiles.** `readiness_state_id` is a listing column, captured by
+  `drop template` and sent on create. When it is present the older processing day counts
+  are not sent alongside it.
+
+### Fixed
+
+- **A listing takes twenty images, not ten.** Etsy's API schema allows up to 20, and a
+  listing with more than ten photos was refused locally for no reason.
+- **Physical drafts are accepted by Etsy again.** Etsy now refuses a physical create
+  without a processing profile; the template's profile is carried onto the draft.
+- **A template with variations no longer poisons every draft's quantity.** Etsy reports
+  a varied listing's quantity as the total across its options, far above the 999 it
+  accepts on a create. The copied figure is capped, and anything over 999 is caught
+  locally before it is sent.
+
 ## [0.1.0] — 2026-09-25
 
 First public release.
@@ -61,7 +84,10 @@ Recorded here and in the code so nobody has to re-derive them:
 - Array form fields such as `tags` and `materials` are **comma-joined strings**, not
   repeated keys. Repeated keys silently drop all but one value.
 - `createDraftListing` takes form encoding; `createReceiptShipment` takes JSON.
-- Listing images must be JPG, PNG or GIF, at most 20MB, and at most ten per listing.
+- Listing images must be JPG, PNG or GIF, at most 20MB, and at most twenty per listing.
+- A physical listing needs a processing profile (`readiness_state_id`) on create, and a
+  listing's quantity may not exceed 999 — though a listing with variations *reports* the
+  total across its options, which usually does.
 - There is no idempotency key, so non-idempotent writes are never retried on a timeout
   or a 5xx — a repeat would mean a duplicate listing, or a second email to a buyer.
 

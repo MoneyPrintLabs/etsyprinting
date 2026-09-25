@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..config import LISTING_TYPES, WHEN_MADE, WHO_MADE
+from ..config import LISTING_TYPES, MAX_QUANTITY, WHEN_MADE, WHO_MADE
 from ..errors import ValidationError
 
 # Copied verbatim onto every draft. Anything not in this list is derived per product.
@@ -23,6 +23,7 @@ INHERITED_FIELDS = (
     "shipping_profile_id",
     "return_policy_id",
     "shop_section_id",
+    "readiness_state_id",
     "who_made",
     "when_made",
     "type",
@@ -143,6 +144,10 @@ def capture(listing: dict[str, Any]) -> Template:
                 fields["type"] = value
             continue
         value = listing.get(name)
+        if name == "quantity" and isinstance(value, int):
+            # A varied listing reports the total across its variations; the draft only
+            # needs a legal number here, and its real stock comes with the variations.
+            value = min(value, MAX_QUANTITY)
         if value not in (None, ""):
             fields[name] = value
 

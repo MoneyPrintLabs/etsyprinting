@@ -35,6 +35,11 @@ class Client:
     def shop_id(self):
         return 123
 
+    def listing_inventory(self, listing_id):
+        # A template without options: one product, no properties.
+        return {"products": [{"property_values": [], "offerings": [
+            {"price": {"amount": 2000, "divisor": 100}, "quantity": 5, "is_enabled": True}]}]}
+
     def search_active_listings(self, **kwargs):
         return iter([])
 
@@ -137,10 +142,10 @@ def test_a_truncated_jpeg_is_caught_before_the_first_draft(studio):
 
 def test_image_overflow_does_not_silently_drop_photos(studio):
     ws, template = studio
-    for n in range(11):
+    for n in range(18):
         Image.new("RGB", (20, 20)).save(ws.products / "mountain sunset shirt" / f"extra-{n}.jpg")
     client = Client(ws)
-    with pytest.raises(ValidationError, match="more than 10"):
+    with pytest.raises(ValidationError, match="more than 20"):
         automation.run(ws, template, client=client)
     assert client.creates == 0
 
@@ -245,3 +250,76 @@ def test_the_workspace_readme_is_refreshed_when_it_is_out_of_date(tmp_path):
     readme.write_text("an older description", encoding="utf-8")
     ws.create()
     assert "drop auto` uploads the drafts straight away" in readme.read_text(encoding="utf-8")
+
+
+_VARIED = {
+    "products": [
+        {"product_id": 1, "sku": "", "is_deleted": False,
+         "property_values": [
+             {"property_id": 513, "property_name": "Material", "scale_id": None,
+              "value_ids": [11], "values": ["Cotton"]},
+             {"property_id": 514, "property_name": "Size", "scale_id": None,
+              "value_ids": [21], "values": ["Large"]}],
+         "offerings": [{"offering_id": 9, "is_deleted": False, "is_enabled": True, "quantity": 99,
+                        "price": {"amount": 1250, "divisor": 100, "currency_code": "USD"},
+                        "readiness_state_id": 7}]},
+        {"product_id": 2, "sku": "", "is_deleted": True, "property_values": [], "offerings": []},
+    ],
+    "price_on_property": [513, 514], "quantity_on_property": [513, 514], "sku_on_property": [],
+}
+
+
+def test_an_inventory_read_becomes_a_writable_body():
+    from stallkit.listings import inventory_for_copy
+
+    body = inventory_for_copy(_VARIED)
+    assert len(body["products"]) == 1, "a deleted product must not be recreated"
+    product = body["products"][0]
+    assert "product_id" not in product
+    assert product["offerings"] == [
+        {"price": 12.5, "quantity": 99, "is_enabled": True, "readiness_state_id": 7}
+    ]
+    assert product["property_values"][0] == {
+        "property_id": 513, "property_name": "Material", "value_ids": [11], "values": ["Cotton"]
+    }
+    assert body["price_on_property"] == [513, 514]
+
+
+def test_drop_auto_copies_the_template_listings_variations(studio):
+    ws, template = studio
+
+    class Varied(Client):
+        def __init__(self, ws):
+            super().__init__(ws)
+            self.inventories = []
+
+        def listing_inventory(self, listing_id):
+            return _VARIED
+
+        def update_listing_inventory(self, listing_id, inventory):
+            self.inventories.append((listing_id, inventory))
+            return {}
+
+    client = Varied(ws)
+    report = automation.run(ws, template, client=client)
+    assert report.uploaded.results[0].status == "ok"
+    assert [lid for lid, _ in client.inventories] == [900]
+    assert "1 variations" in report.uploaded.results[0].message
+    state = json.loads((ws.root / "upload-history.json").read_text())
+    assert state["123"]["mountain sunset shirt"]["variations"] == 1
+
+
+def test_a_variation_failure_leaves_the_draft_partial_not_ok(studio):
+    ws, template = studio
+
+    class Refused(Client):
+        def listing_inventory(self, listing_id):
+            return _VARIED
+
+        def update_listing_inventory(self, listing_id, inventory):
+            raise OSError("inventory refused")
+
+    report = automation.run(ws, template, client=Refused(ws))
+    result = report.uploaded.results[0]
+    assert result.status == "partial"
+    assert "variations could not be set" in result.message

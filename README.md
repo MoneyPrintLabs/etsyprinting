@@ -260,7 +260,7 @@ stallkit shop taxonomy "mug"           # taxonomy_id, ranked with leaf categorie
 ### Validate, then push
 
 Always dry-run first. It validates every row locally — title lengths, tag charset and
-count, enum values, more than ten images on a row, missing image files — and sends
+count, enum values, more than twenty images on a row, missing image files — and sends
 nothing.
 
 ```bash
@@ -306,7 +306,12 @@ stallkit listings push current.csv           # push the edits back
 
 > `price` and `quantity` are **not** sent on updates. On a listing with variations they
 > live in Etsy's separate inventory endpoint, and patching them here would flatten your
-> variation pricing. Change those in Etsy, or open an issue if you need bulk inventory.
+> variation pricing. Change those in Etsy.
+>
+> **New drafts can carry variations.** `listings push --inventory-from <listing_id>` copies
+> that listing's options — every material and size, with its own price, quantity and
+> processing profile — onto each draft it creates. Build one listing properly in Etsy and
+> every draft after it can have the same option grid.
 
 ---
 
@@ -347,7 +352,7 @@ processes the current batch once; it does not watch the folder in the background
 Run it again after adding more product folders. `drop run` still offers the existing
 CSV-only review workflow and now also understands ready-photo folders.
 
-- One immediate child folder = one listing, with up to 10 images in natural filename
+- One immediate child folder = one listing, with up to 20 images in natural filename
   order (`1`, `2`, `10`). Extra images cause an error, not silent truncation. Keep
   finished listing images directly inside each product folder, without nested folders.
 - Loose images retain the original one-design-per-listing mockup workflow below.
@@ -362,8 +367,9 @@ CSV-only review workflow and now also understands ready-photo folders.
   saved listing ID in the history and complete that draft in Etsy; only reset its
   history entry after confirming no draft was created. A stale `.auto-upload.lock`
   may be removed only after confirming the previous process is stopped.
-- Automatic upload currently supports physical-product templates. Digital delivery
-  file uploads and inventory variations are not implemented. Source files remain in
+- Automatic upload supports physical-product templates. The template listing's
+  variations (options, prices, quantities, processing profile) are copied onto every
+  draft. Digital delivery file uploads are not implemented. Source files remain in
   place; there is no automatic archive move.
 
 ### Compositing loose designs
@@ -393,7 +399,7 @@ The workspace is three folders:
 
 `drop run` composites each design onto every mockup, appends the flat artwork, works out
 the product concept, researches it against listings that actually rank, and writes titles
-and 13 tags inside Etsy's limits. A listing holds ten images, so `--mockups 10` and the
+and 13 tags inside Etsy's limits. A listing holds twenty images, so `--mockups 20` and the
 flat render together are one too many: the run says so and stops before compositing
 anything, instead of building a batch Etsy would only half-accept. **Nothing is sent to
 Etsy.** Check `review.csv`, then:
@@ -682,7 +688,7 @@ Issues and pull requests welcome — see **[CONTRIBUTING.md](CONTRIBUTING.md)** 
 the rules that matter, and where help would go furthest. You need no Etsy account and no
 network connection to contribute: the whole test suite is offline by design.
 
-Useful directions: inventory and variations (`updateListingInventory`), digital
+Useful directions: bulk inventory edits on existing listings, digital
 downloads, shop section management, listing translations, and a renewal helper.
 
 - **[SECURITY.md](SECURITY.md)** — what stallkit stores, where, and how to report a

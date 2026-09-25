@@ -62,11 +62,16 @@ MAX_MATERIALS = 13
 MAX_MATERIAL_LEN = 45
 MAX_PAGE_LIMIT = 100
 
-# Ten photos per listing, and uploadListingImage ranks them 1-10. The eleventh upload is
-# refused *after* the create has already succeeded, which leaves a draft in the shop that
-# stallkit holds no delete scope to remove — so the count is checked locally, where it
-# costs nothing, instead of being discovered halfway through a batch.
-MAX_LISTING_IMAGES = 10
+# Etsy's Open API v3 schema: a listing's image_ids "can include up to 20 images". An
+# upload past that is refused *after* the create has already succeeded, which leaves a
+# draft in the shop that stallkit holds no delete scope to remove — so the count is
+# checked locally, where it costs nothing, instead of halfway through a batch.
+MAX_LISTING_IMAGES = 20
+
+# Etsy's ceiling on a listing's quantity, and on each variation's. A listing with
+# variations reports the SUM of its offerings as its quantity, which is routinely far
+# above this — so a figure copied from one is not a figure a new listing can take.
+MAX_QUANTITY = 999
 
 WHO_MADE = ("i_did", "someone_else", "collective")
 WHEN_MADE = (

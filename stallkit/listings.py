@@ -18,6 +18,7 @@ from .config import (
     MAX_LISTING_IMAGES,
     MAX_MATERIAL_LEN,
     MAX_MATERIALS,
+    MAX_QUANTITY,
     MAX_TAG_LEN,
     MAX_TAGS,
     MAX_TITLE_LEN,
@@ -43,6 +44,7 @@ LISTING_COLUMNS = [
     "shipping_profile_id",
     "return_policy_id",
     "shop_section_id",
+    "readiness_state_id",
     "processing_min",
     "processing_max",
     "is_supply",
@@ -216,6 +218,7 @@ def build_payload(
         ("shipping_profile_id", 1, False),
         ("return_policy_id", 1, False),
         ("shop_section_id", 1, False),
+        ("readiness_state_id", 1, False),
         ("processing_min", 0, False),
         ("processing_max", 0, False),
     ):
@@ -226,6 +229,18 @@ def build_payload(
             continue
         if value is not None:
             payload[name] = value
+
+    if payload.get("quantity", 0) > MAX_QUANTITY:
+        problems.append(
+            f"quantity {payload['quantity']} is over Etsy's limit of {MAX_QUANTITY}"
+        )
+
+    # A processing profile (readiness_state_id) is how Etsy now states processing time,
+    # and it is required on a physical create. When one is given it is the single source
+    # of truth, so the older day counts are not sent alongside it to contradict it.
+    if "readiness_state_id" in payload:
+        payload.pop("processing_min", None)
+        payload.pop("processing_max", None)
 
     for name in ("item_weight", "item_length", "item_width", "item_height"):
         try:
@@ -419,6 +434,63 @@ def prepare(
     return prepared
 
 
+def inventory_for_copy(inventory: dict[str, Any]) -> dict[str, Any]:
+    """Turn a getListingInventory response into an updateListingInventory body.
+
+    The two are nearly the same shape and not quite: the read carries ids the write
+    must not echo (product_id, offering_id), prices come back as a Money object and go
+    in as a plain number, and deleted offerings are listed but must not be recreated.
+    Everything that defines the options — properties, their values and which of them
+    drive price, quantity, SKU and processing time — is carried across unchanged.
+    """
+    products = []
+    for product in inventory.get("products") or []:
+        if product.get("is_deleted"):
+            continue
+        offerings = []
+        for offering in product.get("offerings") or []:
+            if offering.get("is_deleted"):
+                continue
+            price = offering.get("price")
+            if isinstance(price, dict):
+                price = price.get("amount", 0) / (price.get("divisor") or 100)
+            entry = {
+                "price": round(float(price), 2),
+                "quantity": int(offering.get("quantity") or 0),
+                "is_enabled": bool(offering.get("is_enabled", True)),
+            }
+            if offering.get("readiness_state_id") is not None:
+                entry["readiness_state_id"] = offering["readiness_state_id"]
+            offerings.append(entry)
+        if not offerings:
+            continue
+        values = [
+            {
+                key: value[key]
+                for key in ("property_id", "value_ids", "scale_id", "property_name", "values")
+                if value.get(key) is not None
+            }
+            for value in product.get("property_values") or []
+        ]
+        products.append(
+            {"sku": product.get("sku") or "", "property_values": values, "offerings": offerings}
+        )
+    if not products:
+        raise ValidationError("That listing has no inventory to copy.")
+    body: dict[str, Any] = {"products": products}
+    for key in (
+        "price_on_property", "quantity_on_property", "sku_on_property",
+        "readiness_state_on_property",
+    ):
+        if inventory.get(key) is not None:
+            body[key] = inventory[key]
+    return body
+
+
+def has_variations(inventory: dict[str, Any] | None) -> bool:
+    return bool(inventory) and any(p.get("property_values") for p in inventory["products"])
+
+
 def push(
     client: EtsyClient | None,
     rows: Sequence[dict[str, str]],
@@ -428,6 +500,7 @@ def push(
     upload_images: bool = True,
     allow_partial: bool = False,
     on_progress: Callable[[RowResult], None] | None = None,
+    inventory: dict[str, Any] | None = None,
 ) -> PushReport:
     """Apply a CSV to the shop.
 
@@ -472,7 +545,9 @@ def push(
 
     for item in prepared:
         if not item.result.failed:
-            _write_row(client, item, upload_images=upload_images)  # type: ignore[arg-type]
+            _write_row(  # type: ignore[arg-type]
+                client, item, upload_images=upload_images, inventory=inventory
+            )
         _emit(report, item.result, on_progress)
 
     return report
@@ -486,7 +561,13 @@ def _emit(
         on_progress(result)
 
 
-def _write_row(client: EtsyClient, item: PreparedRow, *, upload_images: bool) -> None:
+def _write_row(
+    client: EtsyClient,
+    item: PreparedRow,
+    *,
+    upload_images: bool,
+    inventory: dict[str, Any] | None = None,
+) -> None:
     result = item.result
     try:
         if item.is_update:
@@ -516,6 +597,20 @@ def _write_row(client: EtsyClient, item: PreparedRow, *, upload_images: bool) ->
         result.status = "error"
         result.message = str(exc)
         return
+
+    # Variations go on before the images: a draft with the right options and some photos
+    # missing is closer to done than the other way round. Only new drafts get them — an
+    # update never replaces options a seller may have tuned by hand.
+    if inventory and not item.is_update and result.listing_id:
+        try:
+            client.update_listing_inventory(result.listing_id, inventory)
+            result.message = f"{result.message} with {len(inventory['products'])} variations"
+        except (EtsyApiError, ValidationError, OSError, ValueError) as exc:
+            result.status = "partial"
+            result.message = (
+                f"{result.message} (id {result.listing_id}), but its variations could not "
+                f"be set: {exc}. The listing IS in your shop — add the options in Etsy."
+            )
 
     if not (upload_images and item.image_paths and result.listing_id):
         return
@@ -560,6 +655,7 @@ def pull(client: EtsyClient, *, state: str = "active", max_items: int | None = N
                 "shipping_profile_id": listing.get("shipping_profile_id") or "",
                 "return_policy_id": listing.get("return_policy_id") or "",
                 "shop_section_id": listing.get("shop_section_id") or "",
+                "readiness_state_id": listing.get("readiness_state_id") or "",
                 "processing_min": listing.get("processing_min") or "",
                 "processing_max": listing.get("processing_max") or "",
                 "is_supply": listing.get("is_supply"),
