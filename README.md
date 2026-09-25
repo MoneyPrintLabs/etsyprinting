@@ -33,6 +33,7 @@ stallkit seo keywords "ceramic mug"           # what actually ranks, and why
 - [Bulk listings](#bulk-listings)
 - [Orders and tracking](#orders-and-tracking)
 - [SEO](#seo)
+- [Pinterest (optional)](#pinterest-optional)
 - [Command reference](#command-reference)
 - [How it behaves](#how-it-behaves)
 - [Troubleshooting](#troubleshooting)
@@ -560,6 +561,59 @@ does not convert, and Etsy weights conversion heavily.
 
 ---
 
+## Pinterest (optional)
+
+Once a listing is live, `stallkit pinterest` turns its photos into Pins that link back
+to it — on **your own** Pinterest account, through **your own** Pinterest app. It is
+entirely optional: nothing Pinterest-related runs unless you set it up.
+
+**Setup, once:**
+
+1. Use a Pinterest **business** account (free to convert).
+2. Create an app at <https://developers.pinterest.com/apps/> and add the redirect URI
+   `http://localhost:8085/` to it.
+3. Put the app's id and secret in `.env`:
+
+   ```bash
+   PINTEREST_APP_ID=...
+   PINTEREST_APP_SECRET=...
+   ```
+
+4. Connect: `stallkit pinterest login`, then `stallkit pinterest boards` to see your boards.
+
+> New Pinterest apps start on **trial access**. If Pinterest only lets your app write to
+> its sandbox, generate a sandbox token in the developer portal and set
+> `PINTEREST_SANDBOX=1` and `PINTEREST_ACCESS_TOKEN=...` until standard access is granted.
+
+**Queue, then post a few a day.** Pinterest treats a burst of Pins pointing at one link
+as spam, so Pins are queued first and posted gradually:
+
+```bash
+stallkit pinterest queue 4001 4002 --board "Bedroom Wallpaper" --images 1-6 --per-day 2
+stallkit pinterest post          # posts whatever is due today — run it once a day
+stallkit pinterest list          # what is posted, waiting, or needs a look
+```
+
+- `--per-day` counts the **whole queue**, so queueing several listings in one sitting
+  still comes out at that many Pins a day.
+- Each Pin's title is the listing title cut to Pinterest's 100 characters on a `|`
+  boundary; the description is built from the title's phrases and the listing's tags.
+  `--description` overrides it.
+- `--images 1-6` picks which listing photos become Pins — leave out size charts and info
+  cards, which make poor Pins.
+- `--ai-modified` declares the imagery as AI-created or AI-modified, which Pinterest asks
+  creators to disclose. If your designs are AI-assisted, use it.
+- Only **active** listings can be queued: a Pin to a draft would lead nowhere.
+- The same image is never queued twice for the same board.
+- A Pin that was sent but not confirmed (a timeout, a server error) is marked
+  **uncertain** and never re-sent automatically — it may already exist. Check the board,
+  then `stallkit pinterest retry <listing_id>` if it did not land.
+
+To post daily without thinking about it, schedule `stallkit pinterest post` with Windows
+Task Scheduler or cron.
+
+---
+
 ## Command reference
 
 | Command | What it does |
@@ -587,6 +641,12 @@ does not convert, and Etsy weights conversion heavily.
 | `stallkit seo audit` | Score all listings |
 | `stallkit seo keywords` | Market research for a term |
 | `stallkit seo suggest` | Audit + tag suggestions for one listing |
+| `stallkit pinterest login` | Connect your own Pinterest account (optional) |
+| `stallkit pinterest boards` | List your Pinterest boards |
+| `stallkit pinterest queue` | Queue Pins for active listings, spread over days |
+| `stallkit pinterest post` | Post the Pins due today |
+| `stallkit pinterest list` | Show the Pin queue |
+| `stallkit pinterest retry` | Re-queue failed or uncertain Pins after checking |
 
 Every command supports `--help`.
 

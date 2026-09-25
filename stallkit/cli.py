@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import sys
+import time
+from datetime import date
 from pathlib import Path
 from typing import Any, Optional
 
@@ -15,6 +17,7 @@ from rich.table import Table
 from . import __version__, auth, clipboard, csvio
 from . import listings as listings_mod
 from . import orders as orders_mod
+from . import pinterest as pinterest_mod
 from . import seo as seo_mod
 from . import setup as setup_mod
 from .client import EtsyClient
@@ -98,6 +101,11 @@ app.add_typer(listings_app, name="listings")
 app.add_typer(orders_app, name="orders")
 app.add_typer(seo_app, name="seo")
 app.add_typer(drop_app, name="drop")
+pinterest_app = typer.Typer(
+    help="Optional: queue Pins for your published listings on your own Pinterest account.",
+    no_args_is_help=True,
+)
+app.add_typer(pinterest_app, name="pinterest")
 
 
 def _client(*, require_auth: bool = True) -> EtsyClient:
@@ -1538,6 +1546,210 @@ def drop_auto(
         _warn(f"Needs Etsy review before retrying: {item}")
     if report.needs_review or report.uploaded.errors or report.uploaded.partial:
         raise typer.Exit(1)
+
+
+# --- pinterest -----------------------------------------------------------------
+
+
+def _pinterest() -> pinterest_mod.PinterestClient:
+    return pinterest_mod.PinterestClient(pinterest_mod.PinterestConfig.load())
+
+
+@pinterest_app.command("login")
+def pinterest_login(
+    paste: bool = typer.Option(False, "--paste", help="Paste the redirect address instead of listening."),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Print the URL without opening it."),
+) -> None:
+    """Connect your own Pinterest account through your own Pinterest app."""
+    config = pinterest_mod.PinterestConfig.load()
+    token = pinterest_mod.login(config, paste=paste, open_browser=not no_browser)
+    _ok(f"Pinterest connected. Token saved to {pinterest_mod.token_path()}")
+    console.print(f"  scopes: {token.scope or ', '.join(pinterest_mod.SCOPES)}")
+
+
+@pinterest_app.command("status")
+def pinterest_status() -> None:
+    """Show whether Pinterest is connected and what is waiting in the queue."""
+    config = pinterest_mod.PinterestConfig.load()
+    token = pinterest_mod.load_token()
+    if config.access_token:
+        console.print("token        PINTEREST_ACCESS_TOKEN from .env (not refreshable)")
+    elif token is None:
+        _warn("Pinterest is not connected. Run: stallkit pinterest login")
+    else:
+        left = int(token.expires_at - time.time()) if token.expires_at else 0
+        console.print(f"token        {pinterest_mod.token_path()}")
+        console.print(f"expires in   {'expired' if left <= 0 else f'{left // 3600}h'} (refreshed automatically)")
+    console.print(f"environment  {'sandbox' if config.sandbox else 'production'}")
+    counts = pinterest_mod.Queue.load().counts()
+    console.print("queue        " + (", ".join(f"{n} {s}" for s, n in sorted(counts.items())) or "empty"))
+
+
+@pinterest_app.command("logout")
+def pinterest_logout() -> None:
+    """Delete the stored Pinterest token."""
+    if pinterest_mod.clear_token():
+        _ok("Pinterest token deleted.")
+    else:
+        _warn("No Pinterest token was stored.")
+
+
+@pinterest_app.command("boards")
+def pinterest_boards() -> None:
+    """List your boards, to pick one for `pinterest queue --board`."""
+    with _pinterest() as client:
+        boards = list(client.boards())
+    if not boards:
+        _warn("No boards on this account. Create one on Pinterest first.")
+        raise typer.Exit(1)
+    table = Table(title="Your Pinterest boards")
+    table.add_column("board id")
+    table.add_column("name")
+    table.add_column("privacy")
+    for board in boards:
+        table.add_row(str(board.get("id")), _hide(board.get("name", "")), board.get("privacy", ""))
+    console.print(table)
+
+
+@pinterest_app.command("queue")
+def pinterest_queue(
+    listing_ids: list[int] = typer.Argument(..., help="Active listing ids to pin."),
+    board: str = typer.Option(..., "--board", "-b", help="Board name or id (see `pinterest boards`)."),
+    images: Optional[str] = typer.Option(
+        None, "--images", help="Which image ranks to pin, e.g. 1-6 or 1,3,5. Default: all."
+    ),
+    per_day: int = typer.Option(2, "--per-day", help="Pins per day across the whole queue."),
+    start: Optional[str] = typer.Option(None, "--start", help="First day, YYYY-MM-DD. Default: today."),
+    ai_modified: bool = typer.Option(
+        False, "--ai-modified",
+        help="Declare the images AI-created or AI-modified, as Pinterest asks.",
+    ),
+    description: Optional[str] = typer.Option(
+        None, "--description", help="Pin description. Default: built from the title and tags."
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show the schedule without saving it."),
+) -> None:
+    """Queue Pins for published listings, spread over days. Nothing is posted here."""
+    ranks = pinterest_mod.parse_ranks(images)
+    try:
+        first_day = date.fromisoformat(start) if start else date.today()
+    except ValueError as exc:
+        raise typer.BadParameter("--start takes YYYY-MM-DD") from exc
+
+    with _pinterest() as pin_client:
+        target = pinterest_mod.resolve_board(pin_client.boards(), board)
+    pins: list[dict[str, Any]] = []
+    with _client() as etsy:
+        for listing_id in listing_ids:
+            listing = etsy.listing(listing_id)
+            listing_images = (etsy.get(f"/listings/{listing_id}/images") or {}).get("results") or []
+            pins += pinterest_mod.pins_for_listing(
+                listing, listing_images, str(target["id"]),
+                ranks=ranks, ai_modified=ai_modified, description=description,
+            )
+
+    queue = pinterest_mod.Queue.load()
+    added = queue.add(pins, start=first_day, per_day=per_day)
+    table = Table(title=f"{len(added)} Pin(s) for board {_hide(target.get('name', ''))!s}")
+    table.add_column("due")
+    table.add_column("listing")
+    table.add_column("image")
+    table.add_column("title")
+    for entry in added:
+        table.add_row(entry["due"], _hide(entry["listing_id"], "id"), str(entry["rank"]),
+                      _hide(entry["payload"]["title"][:60]))
+    console.print(table)
+    skipped = len(pins) - len(added)
+    if skipped:
+        _warn(f"{skipped} Pin(s) were already queued for that board and were skipped.")
+    if dry_run:
+        _ok("Dry run: nothing was saved.")
+        return
+    queue.save()
+    _ok(f"Queued {len(added)} Pin(s) in {queue.path}")
+    console.print("Post the due ones with: [cyan]stallkit pinterest post[/] — run it once a day.")
+
+
+@pinterest_app.command("post")
+def pinterest_post(
+    limit: Optional[int] = typer.Option(None, "--max", help="Post at most this many now."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what is due without posting."),
+) -> None:
+    """Post the Pins that are due today. Meant to run once a day from a scheduler."""
+    queue = pinterest_mod.Queue.load()
+    if not queue.due(date.today()):
+        _ok("Nothing is due today.")
+        return
+
+    def report(entry: dict[str, Any]) -> None:
+        mark = {"posted": f"[green]{TICK}[/]", "failed": f"[red]{CROSS}[/]",
+                "uncertain": "[yellow]?[/]"}.get(entry["status"], "·")
+        note = f" — {entry['message']}" if entry.get("message") else ""
+        console.print(f"{mark} {entry['due']} listing {_hide(entry['listing_id'], 'id')} "
+                      f"image {entry['rank']}{note}")
+
+    if dry_run:
+        done = pinterest_mod.post_due(None, queue, today=date.today(), limit=limit,  # type: ignore[arg-type]
+                                      dry_run=True, on_progress=report)
+        _ok(f"Dry run: {len(done)} Pin(s) are due. Nothing was posted.")
+        return
+    with _pinterest() as client:
+        done = pinterest_mod.post_due(client, queue, today=date.today(), limit=limit, on_progress=report)
+    posted = sum(1 for e in done if e["status"] == "posted")
+    _ok(f"Posted {posted} of {len(done)} due Pin(s).")
+    uncertain = [e for e in done if e["status"] == "uncertain"]
+    if uncertain:
+        _warn(
+            f"{len(uncertain)} Pin(s) may or may not have been created — check the board. "
+            "They are not retried automatically, so a duplicate is never posted."
+        )
+
+
+@pinterest_app.command("retry")
+def pinterest_retry(
+    listing_id: int = typer.Argument(..., help="The listing whose Pins to put back in the queue."),
+    image: Optional[int] = typer.Option(None, "--image", help="Only this image rank."),
+) -> None:
+    """Re-queue failed or uncertain Pins for today — only after checking the board.
+
+    An uncertain Pin may already exist on Pinterest. Look at the board first; retrying
+    one that did land posts it twice.
+    """
+    queue = pinterest_mod.Queue.load()
+    today = date.today().isoformat()
+    touched = 0
+    for entry in queue.entries:
+        if entry["listing_id"] != listing_id or entry["status"] not in {"failed", "uncertain", "sending"}:
+            continue
+        if image is not None and entry["rank"] != image:
+            continue
+        entry.update(status="pending", due=today, message="")
+        touched += 1
+    if not touched:
+        _warn("Nothing to retry for that listing.")
+        raise typer.Exit(1)
+    queue.save()
+    _ok(f"{touched} Pin(s) are due again today. Post them with: stallkit pinterest post")
+
+
+@pinterest_app.command("list")
+def pinterest_list(
+    show: int = typer.Option(20, "--show", help="How many upcoming Pins to list."),
+) -> None:
+    """Show the queue: what is posted, waiting, or needs a look."""
+    queue = pinterest_mod.Queue.load()
+    if not queue.entries:
+        _ok("The Pin queue is empty.")
+        return
+    console.print(", ".join(f"{n} {s}" for s, n in sorted(queue.counts().items())))
+    upcoming = [e for e in queue.entries if e["status"] in {"pending", "uncertain", "sending", "failed"}]
+    table = Table()
+    for col in ("due", "status", "listing", "image", "note"):
+        table.add_column(col)
+    for entry in sorted(upcoming, key=lambda e: e["due"])[:show]:
+        table.add_row(entry["due"], entry["status"], _hide(entry["listing_id"], "id"),
+                      str(entry["rank"]), (entry.get("message") or "")[:60])
+    console.print(table)
 
 
 def main() -> None:

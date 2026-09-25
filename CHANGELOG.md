@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Pinterest, optional.** `stallkit pinterest` turns an active listing's photos into
+  Pins linking back to it, on the seller's own Pinterest account through their own app.
+  Pins are queued and posted a few a day across the whole queue, never twice for the
+  same image and board, and a Pin that was sent but not confirmed is parked for a human
+  rather than re-sent. `--ai-modified` sets Pinterest's AI disclosure.
 - **Variations on new drafts.** `listings push --inventory-from <listing_id>` copies that
   listing's options — properties, per-option prices and quantities, and processing
   profile — onto every draft it creates, and `drop auto` does the same from its template

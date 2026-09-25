@@ -20,6 +20,8 @@ project — but you will be credited in the release notes unless you prefer othe
 |---|---|---|
 | Keystring, shared secret, redirect URI | `.env` in your working directory | `0600` when written by `stallkit init` |
 | OAuth access + refresh token | `~/.stallkit/token.json` (override with `STALLKIT_HOME`) | `0600` |
+| Pinterest token (optional) | `~/.stallkit/pinterest_token.json` | `0600` |
+| Pinterest Pin queue (optional) | `~/.stallkit/pinterest-queue.json` | default |
 
 POSIX modes are not enforced on Windows; the files still sit inside your user profile.
 
