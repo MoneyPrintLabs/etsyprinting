@@ -10,7 +10,8 @@ Open-source command line automation for Etsy sellers, built on the official
 analysis — running locally, on your own machine, against your own Etsy app.
 
 There is no hosted service, no account, and no middleman. You create an Etsy API
-app, paste the keystring into a `.env` file, and everything runs from your terminal.
+app, paste the keystring into a `.env` file, and everything runs from your terminal —
+or from the [desktop app](#desktop-app-no-terminal), with no terminal at all.
 Your data never leaves your computer.
 
 ```bash
@@ -27,6 +28,7 @@ stallkit seo keywords "ceramic mug"           # what actually ranks, and why
 ## Contents
 
 - [Why this exists](#why-this-exists)
+- [Desktop app (no terminal)](#desktop-app-no-terminal)
 - [Install](#install)
 - [Getting an Etsy API key](#getting-an-etsy-api-key)
 - [First run](#first-run)
@@ -55,7 +57,41 @@ is measured from the listings Etsy actually returns for a term.
 
 ---
 
+## Desktop app (no terminal)
+
+**[Download the latest release →](https://github.com/MoneyPrintLabs/etsyprinting/releases/latest)**
+
+| Your computer | File |
+|---|---|
+| Windows 10 / 11 | `stallkit-…-windows.exe` — one file, nothing to install |
+| Mac with Apple Silicon (M1 and newer) | `stallkit-…-macos.zip` — unzip, move `stallkit.app` to Applications |
+
+No Python needed. The window has a tab for each part of the tool — **Setup**, **Upload
+products** (`drop`), **Listings**, **Orders**, **SEO** and **Pinterest** — and a log at
+the bottom that shows exactly what ran and what came back. Every button runs the same
+command documented below, so everything in this README applies to the app too. The
+window is in English and Turkish and follows your system language.
+
+The app is not code-signed, so the first launch needs one extra click:
+
+- **Windows:** *"Windows protected your PC"* → **More info** → **Run anyway**.
+- **macOS:** System Settings → Privacy & Security → **Open Anyway**.
+
+Keys and tokens are stored in `~/.stallkit`, shared with the command line, so you can
+switch between the two freely. With Python already installed, `stallkit desktop` opens
+the same window, and `stallkit.exe <command>` runs any command from the downloaded app
+(useful for Task Scheduler, e.g. `stallkit.exe pinterest post`).
+
+> **Türkçe:** [Son sürümü indir](https://github.com/MoneyPrintLabs/etsyprinting/releases/latest).
+> Windows için `.exe` dosyasını çift tıkla; kurulum ve Python gerekmez. İlk açılışta
+> "Windows kişisel bilgisayarınızı korudu" çıkarsa **Ek bilgi → Yine de çalıştır**. Sonra
+> **1 · Kurulum** sekmesini yukarıdan aşağı takip et.
+
+---
+
 ## Install
+
+For the command line. (Just want the window? [Download the desktop app](#desktop-app-no-terminal) instead.)
 
 Requires Python 3.9 or newer.
 
@@ -620,6 +656,7 @@ Task Scheduler or cron.
 |---|---|
 | `stallkit init` | Write `.env` interactively and verify the credential |
 | `stallkit doctor` | Check config, key and connectivity |
+| `stallkit desktop` | Open the desktop window |
 | `stallkit auth login` | OAuth consent flow (PKCE) |
 | `stallkit auth status` | Token, scopes, shop, remaining daily quota |
 | `stallkit auth refresh` | Force a token refresh |

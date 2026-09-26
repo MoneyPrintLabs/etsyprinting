@@ -7,8 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-09-26
+
 ### Added
 
+- **A desktop app — no terminal, no Python.** Download one file from the Releases page:
+  a single `.exe` for Windows, or `stallkit.app` for Apple Silicon Macs. Every command
+  has a button, grouped into Setup, Upload products, Listings, Orders, SEO and Pinterest
+  tabs, with a log underneath showing exactly what ran and what came back. The buttons
+  run the same commands as the terminal, so validation, dry runs and error messages are
+  identical. Anything that reaches the live shop asks first in a dialog. The window is
+  in English and Turkish and follows the system language. Keys and tokens live in
+  `~/.stallkit`, shared with the command line.
+- **`stallkit desktop`** opens the same window from an installed copy, and the
+  downloaded app runs any command when given arguments (`stallkit.exe pinterest post`),
+  so it can be scheduled without Python installed.
+- **Release builds on GitHub.** Pushing a version tag builds both apps on GitHub's
+  runners, checks that each packaged app starts and builds its window, and publishes
+  them to a GitHub Release.
 - **Pinterest, optional.** `stallkit pinterest` turns an active listing's photos into
   Pins linking back to it, on the seller's own Pinterest account through their own app.
   Pins are queued and posted a few a day across the whole queue, never twice for the
@@ -96,4 +112,6 @@ Recorded here and in the code so nobody has to re-derive them:
 - There is no idempotency key, so non-idempotent writes are never retried on a timeout
   or a 5xx — a repeat would mean a duplicate listing, or a second email to a buyer.
 
+[Unreleased]: https://github.com/MoneyPrintLabs/etsyprinting/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/MoneyPrintLabs/etsyprinting/releases/tag/v0.2.0
 [0.1.0]: https://github.com/MoneyPrintLabs/etsyprinting/releases/tag/v0.1.0

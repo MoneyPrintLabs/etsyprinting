@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "stallkit"
-version = "0.1.0"
+version = "0.2.0"
 description = "Open-source Etsy seller automation CLI: bulk listings, order/tracking sync, and SEO analysis via the official Etsy Open API v3."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -41,6 +41,10 @@ Changelog = "https://github.com/MoneyPrintLabs/etsyprinting/blob/main/CHANGELOG.
 [project.scripts]
 stallkit = "stallkit.cli:main"
 
+# A windowed launcher: no console window behind the app on Windows.
+[project.gui-scripts]
+stallkit-desktop = "stallkit.desktop:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["stallkit"]
 
@@ -61,3 +65,8 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Capture at the Python level, not by swapping file descriptors. On Windows the fd
+# swap intermittently makes Tcl fail to read its own library files (a bare tk.Tk()
+# fails ~3% of the time under --capture=fd, never under sys), which turns the desktop
+# window tests into coin flips. No test here reads captured output via capfd.
+addopts = "--capture=sys"

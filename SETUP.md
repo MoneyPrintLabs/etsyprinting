@@ -12,6 +12,10 @@ stallkit setup
 That walks the whole list, asks you about the parts no program can check, and ends with
 the single next command to run. Run it again any time something stops working.
 
+> **Using the [desktop app](README.md#desktop-app-no-terminal)?** Steps 1–2 are done for
+> you. Steps 3–9 are the **1 · Setup** tab, top to bottom; **Check everything** runs the
+> same checklist as `stallkit setup`.
+
 ---
 
 ## What you need before you start
@@ -199,6 +203,10 @@ stallkit setup
 
 Tüm listeyi tek tek gezer, programın kontrol edemeyeceği kısımları sana sorar ve sonunda
 çalıştırman gereken **tek komutu** yazar. Bir şey bozulduğunda tekrar çalıştır.
+
+> **[Masaüstü uygulamasını](README.md#desktop-app-no-terminal) mı kullanıyorsun?** 1–2.
+> adımlar zaten hazır. 3–9. adımlar **1 · Kurulum** sekmesinde, yukarıdan aşağı sırayla.
+> **Her şeyi kontrol et** düğmesi `stallkit setup` ile aynı listeyi çalıştırır.
 
 ## Gerekenler
 

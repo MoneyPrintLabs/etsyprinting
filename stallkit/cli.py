@@ -440,6 +440,18 @@ def doctor() -> None:
     raise typer.Exit(_run_checklist(interactive=False))
 
 
+@app.command("desktop")
+def desktop() -> None:
+    """Open the desktop window: every command behind a button, no terminal needed."""
+    try:
+        from .desktop.app import launch
+    except ImportError as exc:  # Python built without Tk, common on Linux
+        _fail(f"The desktop window needs Tk, which this Python does not have ({exc}).")
+        console.print("On Debian/Ubuntu: [cyan]sudo apt install python3-tk[/]")
+        raise typer.Exit(1) from exc
+    launch()
+
+
 # ---------------------------------------------------------------- shop
 
 
