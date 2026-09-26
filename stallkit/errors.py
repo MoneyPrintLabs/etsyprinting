@@ -15,6 +15,11 @@ class AuthError(StallKitError):
     """Not authenticated, token refresh failed, or OAuth flow aborted."""
 
 
+class AuthUnreachable(AuthError):
+    """Etsy's token endpoint could not be reached. The sign-in itself may be fine:
+    the answer is to wait for the connection, not to connect the shop again."""
+
+
 class ValidationError(StallKitError):
     """Input failed local validation before any network call was made."""
 
@@ -47,6 +52,23 @@ class EtsyApiError(StallKitError):
         """A human-readable next step, since Etsy's own error strings are terse."""
         if self.status == 401:
             return "Token expired or revoked. Run: stallkit auth login"
+        said = f"{self.message} {self.body}".lower()
+        if (
+            self.status == 403
+            and self.path.endswith("/tracking")
+            and "unauthorized" in said
+            and "scope" not in said
+        ):
+            # Not a scope problem, whatever the token holds: Etsy has withdrawn
+            # tracking uploads from new API keys country by country (Türkiye since
+            # June 2024, then the US, Canada, much of Europe), and says so on the
+            # createReceiptShipment reference. Retrying or reconnecting cannot help.
+            return (
+                "Etsy does not let this API key add tracking for your shop: since 2024 "
+                "tracking uploads through the API are restricted for newer keys in many "
+                "countries, Türkiye included. Add the tracking number in Shop Manager, or "
+                "through a shipping service Etsy has approved for your country."
+            )
         if self.status == 403:
             return (
                 "Forbidden. Usually a missing OAuth scope, or the shop_id does not "

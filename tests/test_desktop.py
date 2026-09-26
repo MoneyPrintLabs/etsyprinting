@@ -19,8 +19,10 @@ from pathlib import Path
 import pytest
 
 from stallkit import __version__, cli
+from stallkit.client import EtsyClient
 from stallkit.config import write_env_file
 from stallkit.desktop import i18n, runner, settings
+from stallkit.errors import AuthError, EtsyApiError
 
 try:
     from stallkit.desktop import app as app_mod
@@ -47,16 +49,6 @@ def drain(sink: queue.Queue) -> str:
 def streams():
     sink: queue.Queue = queue.Queue()
     return sink, runner.LogStream(sink, "out"), runner.LogStream(sink, "err")
-
-
-@pytest.fixture
-def env_guard(monkeypatch):
-    """settings.save() writes os.environ directly; make sure the test undoes it."""
-    for key in ("ETSY_KEYSTRING", "ETSY_SHARED_SECRET", "ETSY_REDIRECT_URI", "ETSY_SHOP_ID",
-                "PINTEREST_APP_ID", "PINTEREST_APP_SECRET", "PINTEREST_REDIRECT_URI",
-                "PINTEREST_SANDBOX"):
-        monkeypatch.setenv(key, "placeholder")
-        monkeypatch.delenv(key)
 
 
 # --- LogStream / PromptStream ---------------------------------------------------
@@ -157,7 +149,7 @@ def test_a_confirmation_prompt_is_answered_by_the_window(streams, monkeypatch):
 # --- settings ---------------------------------------------------------------------
 
 
-def test_save_merges_into_the_env_file_and_the_running_process(env_guard):
+def test_save_merges_into_the_env_file_and_the_running_process():
     write_env_file(settings.env_path(), {"ETSY_SHOP_ID": "5", "ETSY_KEYSTRING": "old"})
     path = settings.save({"ETSY_KEYSTRING": " abc ", "ETSY_SHARED_SECRET": "sec"})
 
@@ -172,7 +164,7 @@ def test_save_merges_into_the_env_file_and_the_running_process(env_guard):
     assert "ETSY_SHARED_SECRET" not in os.environ
 
 
-def test_saved_keys_are_what_the_cli_reads(env_guard):
+def test_saved_keys_are_what_the_cli_reads():
     from stallkit.config import Config
 
     settings.save({"ETSY_KEYSTRING": "key123", "ETSY_SHARED_SECRET": "sec456",
@@ -185,10 +177,32 @@ def test_saved_keys_are_what_the_cli_reads(env_guard):
 
 
 def test_prefs_round_trip_and_survive_a_corrupt_file():
-    settings.save_prefs({"language": "tr", "workspace": "C:/x"})
-    assert settings.load_prefs() == {"language": "tr", "workspace": "C:/x"}
-    settings.prefs_path().write_text("{not json", encoding="utf-8")
-    assert settings.load_prefs() == {}
+    settings.save_app_prefs({"language": "tr"})
+    settings.save_shop_prefs({"workspace": "C:/x"})
+    assert settings.load_app_prefs() == {"language": "tr"}
+    assert settings.load_shop_prefs() == {"workspace": "C:/x"}
+    settings.app_prefs_path().write_text("{not json", encoding="utf-8")
+    assert settings.load_app_prefs() == {}
+
+
+def test_each_shop_has_its_own_keys_and_preferences():
+    from stallkit import shops
+
+    settings.save({"ETSY_KEYSTRING": "first-key", "ETSY_SHARED_SECRET": "first-secret"})
+    settings.save_shop_prefs({"workspace": "first-folder"})
+    second = shops.add()
+
+    settings.use_shop(second.id)
+    assert settings.current("ETSY_KEYSTRING") == ""  # nothing leaks from the first shop
+    assert settings.load_shop_prefs() == {}
+    settings.save({"ETSY_KEYSTRING": "second-key", "ETSY_SHARED_SECRET": "second-secret"})
+    assert (second.home / ".env").is_file()
+
+    settings.use_shop("")
+    assert settings.current("ETSY_KEYSTRING") == "first-key"
+    assert settings.load_shop_prefs() == {"workspace": "first-folder"}
+    settings.use_shop(second.id)
+    assert settings.current("ETSY_KEYSTRING") == "second-key"
 
 
 # --- languages --------------------------------------------------------------------
@@ -206,6 +220,12 @@ def test_every_language_has_every_string_with_the_same_placeholders():
         for key, value in table.items():
             assert value.strip(), (code, key)
             assert _fields(value) == _fields(english[key]), (code, key)
+
+
+def test_a_placeholder_may_share_a_name_with_a_parameter():
+    """keys_saved has a {key} placeholder; it once collided with text(key=...)."""
+    assert "abc123" in i18n.text("en", "keys_saved", path="p", key="abc123", n=10)
+    assert "abc123" in i18n.text("tr", "keys_saved", path="p", key="abc123", n=10)
 
 
 def test_text_falls_back_to_english_then_to_the_key():
@@ -229,6 +249,10 @@ def test_listing_numbers_can_be_typed_any_way():
 
 
 # --- the window -------------------------------------------------------------------
+
+
+def _offline(*_args, **_kwargs):
+    raise EtsyApiError(0, "offline (test)")
 
 
 def _tk_root(tk):
@@ -258,8 +282,10 @@ def window(monkeypatch, tmp_path):
 
     from stallkit.drop import workspace as workspace_mod
 
-    # Never read or write the real Desktop.
-    monkeypatch.setattr(workspace_mod, "default_root", lambda: tmp_path / "Etsy Studio")
+    # Never read or write the real Desktop, and never reach Etsy.
+    monkeypatch.setattr(workspace_mod, "desktop_dir", lambda: tmp_path)
+    monkeypatch.setattr(EtsyClient, "ping", _offline)
+    monkeypatch.setattr(EtsyClient, "shop", _offline)
     root = _tk_root(tk)
     root.withdraw()
     window = app_mod.App(root, language="en")
@@ -267,6 +293,12 @@ def window(monkeypatch, tmp_path):
     window.shutdown()
     del window
     root.destroy()
+    # Collect the window here, on the main thread. Left to chance, the collector
+    # runs inside the next test's worker thread, and a Tk object freed there calls
+    # into an interpreter whose main loop is gone and waits forever.
+    import gc
+
+    gc.collect()
 
 
 def pump(window, *, until, timeout: float = 30.0) -> None:
@@ -301,7 +333,7 @@ def test_the_window_builds_every_tab_and_keeps_typed_values_across_languages(win
     assert window.lang == "tr"
     assert window.notebook.tab(0, "text") == i18n.text("tr", "tab_setup")
     assert window.vars["keystring"].get() == "typed-before-switch"
-    assert settings.load_prefs()["language"] == "tr"
+    assert settings.load_app_prefs()["language"] == "tr"
 
 
 def test_a_button_runs_the_command_and_its_output_reaches_the_log(window):
@@ -320,7 +352,7 @@ def test_creating_the_folder_uses_the_folder_in_the_form(window, tmp_path):
     window.run(["drop", "init", *window._ws_args()])
     pump(window, until=lambda: window.busy == 0)
     assert (target / "2-PRODUCTS").is_dir()
-    assert settings.load_prefs()["workspace"] == str(target)
+    assert settings.load_shop_prefs()["workspace"] == str(target)
 
 
 def test_a_command_that_asks_gets_a_dialog(window, monkeypatch):
@@ -339,7 +371,7 @@ def test_a_command_that_asks_gets_a_dialog(window, monkeypatch):
     assert "Cancelled." in log_text(window)
 
 
-def test_saving_keys_refuses_half_a_credential(window, monkeypatch, env_guard):
+def test_saving_keys_refuses_half_a_credential(window, monkeypatch):
     warnings = []
     monkeypatch.setattr(app_mod.messagebox, "showwarning", lambda *a, **k: warnings.append(a[1]))
     window.vars["keystring"].set("only-the-keystring")
@@ -392,7 +424,6 @@ def test_every_button_builds_the_command_it_says(window, monkeypatch, tmp_path):
     window.suggest()
     window.queue_pins(dry_run=True)
     window.queue_pins(dry_run=False)
-    window.connect_shop()
     window.disconnect_shop()
     window.disconnect_pinterest()
 
@@ -416,7 +447,6 @@ def test_every_button_builds_the_command_it_says(window, monkeypatch, tmp_path):
          "--images", "1-3", "--ai-modified", "--dry-run"],
         ["pinterest", "queue", "1", "2", "--board", "My Board", "--per-day", "2",
          "--images", "1-3", "--ai-modified"],
-        ["auth", "login"],
         ["auth", "logout"],
         ["pinterest", "logout"],
     ]
@@ -439,7 +469,7 @@ def test_saying_no_sends_nothing_to_the_shop(window, monkeypatch, tmp_path):
     assert ran == []
 
 
-def test_pinterest_keys_are_saved_beside_the_etsy_keys(window, env_guard):
+def test_pinterest_keys_are_saved_beside_the_etsy_keys(window):
     window.vars["pin_app_id"].set("app-1")
     window.vars["pin_secret"].set("secret-2")
     window.vars["pin_sandbox"].set(True)
@@ -449,3 +479,292 @@ def test_pinterest_keys_are_saved_beside_the_etsy_keys(window, env_guard):
     assert "PINTEREST_APP_SECRET=secret-2" in content
     assert "PINTEREST_SANDBOX=1" in content
     assert f"PINTEREST_REDIRECT_URI={settings.PINTEREST_REDIRECT_DEFAULT}" in content
+
+
+# --- connecting a shop ------------------------------------------------------------
+
+
+def wait_for_status(window, timeout: float = 20.0) -> str:
+    window.shop_state = ("", "")
+    window.refresh_status()
+    pump(window, until=lambda: window.shop_state[0] != "", timeout=timeout)
+    return window.shop_state[0]
+
+
+def save_keys(keystring: str = "key123", secret: str = "sec456") -> None:
+    settings.save({"ETSY_KEYSTRING": keystring, "ETSY_SHARED_SECRET": secret,
+                   "ETSY_REDIRECT_URI": settings.ETSY_REDIRECT_DEFAULT})
+
+
+def store_token() -> None:
+    from stallkit.auth import Token, save_token
+    from stallkit.config import DEFAULT_SCOPES
+
+    save_token(Token("1.access", "refresh", time.time() + 3600, DEFAULT_SCOPES))
+
+
+def step_marks(window) -> list[str]:
+    return [frame.cget("text").split("  ")[0] if "  " in frame.cget("text") else ""
+            for frame, _title in window.step_frames.values()]
+
+
+def test_the_status_check_tells_each_setup_state_apart(window, monkeypatch):
+    assert wait_for_status(window) == "keys"
+
+    save_keys()
+
+    def invalid_key(*_a, **_k):
+        raise EtsyApiError(403, "Invalid API key: should be in the format 'keystring:shared_secret'.")
+
+    monkeypatch.setattr(EtsyClient, "ping", invalid_key)
+    assert wait_for_status(window) == "bad_keys"
+
+    monkeypatch.setattr(EtsyClient, "ping", lambda self: {"application_id": 1})
+    assert wait_for_status(window) == "disconnected"
+
+    store_token()
+    monkeypatch.setattr(EtsyClient, "shop", lambda self: {"shop_name": "Demo Shop", "shop_id": 7})
+    assert wait_for_status(window) == "connected"
+    assert window.shop_state == ("connected", "Demo Shop")
+    from stallkit import shops
+    assert shops.current().name == "Demo Shop"
+
+    def revoked(*_a, **_k):
+        raise EtsyApiError(401, "invalid_token")
+
+    monkeypatch.setattr(EtsyClient, "shop", revoked)
+    assert wait_for_status(window) == "reconnect"
+    monkeypatch.setattr(EtsyClient, "shop", _offline)
+    assert wait_for_status(window) == "offline"
+
+
+def test_the_setup_steps_are_ticked_as_they_are_done(window):
+    expected = {
+        "keys": ["→", "→", ""],
+        "bad_keys": ["", "✗", ""],
+        "disconnected": ["✓", "✓", "→"],
+        "connected": ["✓", "✓", "✓"],
+    }
+    for state, marks in expected.items():
+        window.shop_state = (state, "Demo Shop")
+        window._render_status()
+        assert step_marks(window) == marks, state
+        assert bool(window.next_row.grid_info()) is (state == "connected"), state
+    window.shop_state = ("connected", "Demo Shop")
+    window._render_status()
+    assert "Demo Shop" in window.connect_result.cget("text")
+    assert "Demo Shop" in window.status_label.cget("text")
+    window.vars["anonymise"].set(True)
+    window._render_status()
+    assert "Demo Shop" not in window.status_label.cget("text")
+
+
+def test_an_unfinished_setup_opens_on_the_setup_tab(window):
+    window.notebook.select(3)
+    window._first_status = True
+    assert wait_for_status(window) == "keys"
+    assert window.notebook.index(window.notebook.select()) == 0
+
+
+def test_connecting_can_be_cancelled(window, monkeypatch):
+    from stallkit import auth
+
+    save_keys()
+    started = threading.Event()
+
+    def slow_login(config, *, cancel=None, **_kwargs):
+        started.set()
+        assert cancel is not None
+        cancel.wait(20)
+        raise AuthError("Cancelled before Etsy sent the browser back. Nothing was changed.")
+
+    monkeypatch.setattr(auth, "login", slow_login)
+    window.connect_shop()
+    pump(window, until=started.is_set)
+    assert window.cancel_button.winfo_manager() == "pack"
+    window.cancel_running()
+    pump(window, until=lambda: window.busy == 0)
+    assert "Cancelled before Etsy" in log_text(window)
+    assert window.cancel_button.winfo_manager() == ""
+
+
+def test_connecting_shows_the_shop_it_connected(window, monkeypatch):
+    from stallkit import auth, shops
+    from stallkit.auth import Token
+    from stallkit.config import DEFAULT_SCOPES
+
+    save_keys()
+
+    def login(config, **_kwargs):
+        token = Token("1.a", "r", time.time() + 3600, DEFAULT_SCOPES)
+        auth.save_token(token)  # as the real exchange does
+        return token
+
+    monkeypatch.setattr(auth, "login", login)
+    monkeypatch.setattr(EtsyClient, "shop", lambda self: {"shop_name": "Demo Shop", "shop_id": 7})
+    window.connect_shop()
+    pump(window, until=lambda: window.busy == 0 and window.shop_state[0] == "connected")
+    assert i18n.text("en", "connected_as", shop="Demo Shop") in log_text(window)
+    assert shops.current().name == "Demo Shop"
+
+
+def test_new_keys_drop_the_sign_in_made_with_the_old_ones(window, monkeypatch):
+    from stallkit.config import token_path
+
+    save_keys("old-key", "old-secret")
+    store_token()
+    pump(window, until=window.worker.idle)
+    window.vars["keystring"].set("new-key")
+    window.vars["secret"].set("new-secret")
+    window.save_etsy_keys()
+    assert not token_path().exists()
+    assert i18n.text("en", "token_cleared") in log_text(window)
+    pump(window, until=lambda: window.busy == 0)
+
+
+def test_shops_are_added_switched_and_removed_without_mixing_them(window, monkeypatch):
+    from stallkit import shops
+
+    save_keys("first-key", "first-secret")
+    window.vars["keystring"].set("first-key")
+    pump(window, until=window.worker.idle)
+    window.add_shop()
+    assert shops.current().id == "shop-2"
+    assert window.vars["keystring"].get() == ""  # the new shop starts empty
+    assert window.vars["workspace"].get().endswith("Etsy Studio - shop-2")
+    assert list(window.shop_picker.cget("values"))[-1] == i18n.text("en", "add_shop")
+    assert window.notebook.index(window.notebook.select()) == 0
+
+    save_keys("second-key", "second-secret")
+    window.switch_shop("")
+    assert window.vars["keystring"].get() == "first-key"
+    assert settings.load_app_prefs()["shop"] == ""
+    window.switch_shop("shop-2")
+    assert window.vars["keystring"].get() == "second-key"
+
+    monkeypatch.setattr(app_mod.messagebox, "askyesno", lambda *a, **k: True)
+    window.remove_shop()
+    pump(window, until=lambda: shops.current().id == "")
+    assert not (settings.base_home() / "shops" / "shop-2").exists()
+    assert window.vars["keystring"].get() == "first-key"
+
+
+def test_the_shop_picker_is_locked_while_something_runs(window, monkeypatch):
+    shown = []
+    monkeypatch.setattr(app_mod.messagebox, "showinfo", lambda *a, **k: shown.append(a[1]))
+    window.busy = 1
+    window._set_busy_widgets()
+    assert str(window.shop_picker.cget("state")) == "disabled"
+    window.shop_picker.current(len(window._shop_ids))  # "+ Add a shop"
+    window._shop_picked(None)
+    assert shown and len(window._shop_ids) == 1  # nothing was added
+    window.busy = 0
+    window._set_busy_widgets()
+
+
+def test_fields_get_a_right_click_menu(window):
+    sequence = "<Button-2>" if sys.platform == "darwin" else "<Button-3>"
+    assert window.root.bind_class("TEntry", sequence)
+
+
+def test_saving_keys_writes_them_and_checks_them_with_etsy(window, monkeypatch):
+    pinged = []
+    monkeypatch.setattr(EtsyClient, "ping", lambda self: pinged.append(self) or {"application_id": 1})
+    window.vars["keystring"].set("  key123:sec456  ")  # the colon-joined form, with stray spaces
+    window.vars["secret"].set("")
+    window.save_etsy_keys()
+    pump(window, until=lambda: window.busy == 0 and window.shop_state[0] == "disconnected")
+    content = settings.env_path().read_text(encoding="utf-8")
+    assert "ETSY_KEYSTRING=key123" in content and "ETSY_SHARED_SECRET=sec456" in content
+    assert window.vars["secret"].get() == "sec456"
+    assert pinged
+    assert i18n.text("en", "keys_ok") in log_text(window)
+    assert step_marks(window) == ["✓", "✓", "→"]
+
+
+def test_switching_shops_waits_for_a_background_job_to_finish(window, monkeypatch):
+    """A status check mid-refresh must never see the other shop's folders."""
+    from stallkit import shops
+
+    save_keys()
+    pump(window, until=window.worker.idle)
+    started, release = threading.Event(), threading.Event()
+
+    def slow_ping(self):
+        started.set()
+        release.wait(20)
+        raise EtsyApiError(0, "offline (test)")
+
+    monkeypatch.setattr(EtsyClient, "ping", slow_ping)
+    window.refresh_status()
+    pump(window, until=started.is_set)
+    window.add_shop()
+    window.root.update()
+    assert shops.current().id == ""  # deferred while the check runs
+    # ...and nothing can be clicked meanwhile: a command queued now would run
+    # against the next shop with this shop's form values.
+    assert window.busy == 1
+    assert all(str(b.cget("state")) == "disabled" for b in window.buttons)
+    release.set()
+    pump(window, until=lambda: shops.current().id == "shop-2")
+    assert window.vars["keystring"].get() == ""
+    pump(window, until=lambda: window.busy == 0)
+
+
+def test_the_worker_reports_idle_only_when_nothing_is_queued_or_running():
+    sink: queue.Queue = queue.Queue()
+    worker = runner.Worker(sink)
+    try:
+        assert worker.idle()
+        gate = threading.Event()
+        worker.submit(lambda: gate.wait(5), lambda *_: None)
+        assert not worker.idle()
+        gate.set()
+        deadline = time.time() + 5
+        while not worker.idle() and time.time() < deadline:
+            time.sleep(0.01)
+        assert worker.idle()
+    finally:
+        worker.stop(wait=2)
+
+
+def test_a_mac_opened_from_finder_follows_the_system_language(monkeypatch):
+    import subprocess as sp
+
+    monkeypatch.setattr(i18n.sys, "platform", "darwin")
+    for name in ("LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"):
+        monkeypatch.delenv(name, raising=False)
+    answer = '(\n    "tr-TR",\n    "en-GB"\n)\n'
+    monkeypatch.setattr(i18n.subprocess, "run",
+                        lambda *a, **k: sp.CompletedProcess(a, 0, stdout=answer, stderr=""))
+    assert i18n.detect_language() == "tr"
+    answer = '(\n    "de-DE"\n)\n'
+    assert i18n.detect_language() == "en"
+
+
+@needs_tk
+def test_step_one_copies_the_callback_the_app_will_send(window, monkeypatch):
+    copied = []
+    monkeypatch.setattr(window, "_copy", copied.append)
+    window.vars["redirect"].set("http://localhost:3004/oauth/redirect")
+    frame = window.step_frames[1][0]
+    buttons = [w for row in frame.winfo_children() for w in row.winfo_children()
+               if isinstance(w, app_mod.ttk.Button) and w.cget("text") == i18n.text("en", "copy")]
+    buttons[0].invoke()
+    assert copied == ["http://localhost:3004/oauth/redirect"]
+
+
+def test_hiding_the_shop_name_hides_it_everywhere_on_screen(window, monkeypatch):
+    from stallkit import shops
+
+    shops.remember("SecretShop", 1)
+    window.shop_state = ("connected", "SecretShop")
+    window._fill_shop_picker()
+    assert "SecretShop" in window.shop_picker.get()
+    window.vars["anonymise"].set(True)
+    window._anonymise_changed()
+    assert "SecretShop" not in window.shop_picker.get()
+    assert "SecretShop" not in window.status_label.cget("text")
+    monkeypatch.setattr(window.worker, "submit", lambda *a, **k: None)
+    window.run(["drop", "auto", "--path", "C:/Etsy Studio - SecretShop"])
+    assert "SecretShop" not in log_text(window)

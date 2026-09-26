@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html
 import http.server
 import ipaddress
 import secrets
@@ -56,7 +57,7 @@ from .config import (
     token_path,
     write_json_private,
 )
-from .errors import AuthError
+from .errors import AuthError, AuthUnreachable
 
 # Refresh this many seconds before the token actually expires, so a long-running
 # batch never dies mid-flight on a token that lapsed between check and request.
@@ -152,6 +153,12 @@ def _post_token(form: dict[str, str]) -> dict[str, Any]:
     for url in OAUTH_TOKEN_URLS:
         try:
             resp = httpx.post(url, data=form, timeout=30.0)
+            # Some apps get a 403 "should be in the format 'keystring:shared_secret'"
+            # for a form-encoded token request that succeeds, unchanged, as JSON
+            # (etsy/open-api#1678, 2026). Etsy accepts both bodies, so retry once as
+            # JSON before reporting a rejection the seller cannot fix.
+            if resp.status_code == 403 and "keystring" in resp.text.lower():
+                resp = httpx.post(url, json=form, timeout=30.0)
         except httpx.HTTPError as exc:
             last = exc
             continue
@@ -161,7 +168,7 @@ def _post_token(form: dict[str, str]) -> dict[str, Any]:
         if 400 <= resp.status_code < 500:
             raise AuthError(f"Token endpoint rejected the request ({resp.status_code}): {resp.text}")
         last = AuthError(f"{url} returned {resp.status_code}: {resp.text}")
-    raise AuthError(f"Could not reach any Etsy token endpoint. Last error: {last}")
+    raise AuthUnreachable(f"Could not reach any Etsy token endpoint. Last error: {last}")
 
 
 def refresh(token: Token, config: Config) -> Token:
@@ -230,8 +237,15 @@ def validate_redirect_uri(uri: str) -> None:
 
 
 def is_loopback(uri: str) -> bool:
-    """True when stallkit can serve the callback itself on this machine."""
-    return (urllib.parse.urlparse(uri).hostname or "").lower() == "localhost"
+    """True when stallkit can serve the callback itself on this machine.
+
+    Only for plain http: the listener speaks no TLS, so a browser sent to
+    https://localhost would fail its handshake and the code would never arrive.
+    An https callback uses the paste flow instead — the page does not load, and
+    the code is read from the address bar.
+    """
+    parsed = urllib.parse.urlparse(uri)
+    return parsed.scheme == "http" and (parsed.hostname or "").lower() == "localhost"
 
 
 def build_authorization_url(config: Config) -> AuthRequest:
@@ -314,6 +328,10 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
 
     result: dict[str, str] = {}
     expected_path = "/"
+    # Browsers open speculative connections to localhost and send nothing. The
+    # server is single-threaded, so without a per-connection timeout one such
+    # socket blocks serve_forever, and shutdown() — Cancel — waits on it.
+    timeout = 2
 
     def do_GET(self) -> None:  # noqa: N802 — name fixed by BaseHTTPRequestHandler
         parsed = urllib.parse.urlparse(self.path)
@@ -328,12 +346,22 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
                 type(self).result[key] = params[key][0]
 
         ok = "code" in params
-        title = "Authorised" if ok else "Authorisation failed"
-        detail = (
-            "stallkit received the code. You can close this tab and return to the terminal."
-            if ok
-            else params.get("error_description", params.get("error", ["Unknown error"]))[0]
-        )
+        # Shown to whoever just clicked "Allow" — most likely in the desktop app,
+        # and as likely Turkish as English — so it says both, and nothing about a
+        # terminal. Etsy's error text is echoed, so it is escaped.
+        if ok:
+            # Receipt, not success: the state check and the token exchange happen
+            # after this page is sent, and either can still fail.
+            title = "Etsy answered · Etsy yanıt verdi"
+            detail = (
+                "Go back to stallkit to see that the connection finished.<br>"
+                "Bağlantının tamamlandığını görmek için stallkit'e dön."
+            )
+        else:
+            title = "Not connected · Bağlanamadı"
+            detail = html.escape(
+                params.get("error_description", params.get("error", ["Unknown error"]))[0]
+            )
         body = f"""<!doctype html><meta charset="utf-8"><title>{title}</title>
 <div style="font:16px/1.6 system-ui,sans-serif;max-width:34rem;margin:14vh auto;padding:0 1.5rem">
 <h1 style="font-size:1.4rem;margin:0 0 .5rem">{title}</h1>
@@ -349,7 +377,13 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
         """Silence the default stderr access log — it would clutter CLI output."""
 
 
-def _capture_via_listener(request: AuthRequest, config: Config, port: int, timeout: float) -> str:
+def _capture_via_listener(
+    request: AuthRequest,
+    config: Config,
+    port: int,
+    timeout: float,
+    cancel: threading.Event | None = None,
+) -> str:
     parsed = urllib.parse.urlparse(config.redirect_uri)
     _CallbackHandler.result = {}
     _CallbackHandler.expected_path = parsed.path or "/"
@@ -366,12 +400,16 @@ def _capture_via_listener(request: AuthRequest, config: Config, port: int, timeo
     deadline = time.time() + timeout
     try:
         while time.time() < deadline and not _CallbackHandler.result:
+            if cancel is not None and cancel.is_set():
+                break
             time.sleep(0.25)
     finally:
         server.shutdown()
         server.server_close()
 
     result = dict(_CallbackHandler.result)
+    if not result and cancel is not None and cancel.is_set():
+        raise AuthError("Cancelled before Etsy sent the browser back. Nothing was changed.")
     if not result:
         raise AuthError(f"Timed out after {int(timeout)}s waiting for the redirect.")
     if "error" in result:
@@ -394,8 +432,13 @@ def login(
     paste: bool = False,
     timeout: float = 300.0,
     prompt: Callable[[str], str] = input,
+    cancel: threading.Event | None = None,
 ) -> Token:
-    """Run the consent flow and persist the resulting token."""
+    """Run the consent flow and persist the resulting token.
+
+    `cancel` lets a caller that cannot press Ctrl+C — the desktop window — stop
+    waiting for the browser; the listener is closed and nothing is stored.
+    """
     request = build_authorization_url(config)
 
     # A localhost callback can be served right here, so do that unless told otherwise.
@@ -415,7 +458,7 @@ def login(
             pass  # Headless box: the printed URL above is the fallback.
 
     if listen_port:
-        code = _capture_via_listener(request, config, listen_port, timeout)
+        code = _capture_via_listener(request, config, listen_port, timeout, cancel)
     else:
         print(
             f"Etsy will send your browser to {config.redirect_uri}\n"

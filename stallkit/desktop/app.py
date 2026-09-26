@@ -9,6 +9,7 @@ shop, and a log that stays on screen.
 
 from __future__ import annotations
 
+import gc
 import os
 import queue
 import re
@@ -25,7 +26,16 @@ from typing import Callable
 from .. import __version__
 from . import i18n, runner, settings
 
-ETSY_APPS_URL = "https://www.etsy.com/developers/your-apps"
+# Etsy's own form for a seller's app for their own shop (the "Seller App" tier,
+# July 2026): two fields, usually approved in minutes. The dashboard is where the
+# keys are shown and the callback address is added once the app is approved.
+ETSY_SELLER_APP_URL = "https://www.etsy.com/developers/register-seller-app"
+ETSY_DASHBOARD_URL = "https://www.etsy.com/developers/"
+# Required by Etsy's API Terms, prominently, in every application that uses the API.
+TRADEMARK_NOTICE = (
+    "The term 'Etsy' is a trademark of Etsy, Inc. "
+    "This Application uses Etsy's API, but is not endorsed or certified by Etsy."
+)
 PINTEREST_APPS_URL = "https://developers.pinterest.com/apps/"
 HELP_URL = "https://github.com/MoneyPrintLabs/etsyprinting#readme"
 
@@ -56,8 +66,10 @@ class App:
 
     def __init__(self, root: tk.Tk, *, language: str | None = None) -> None:
         self.root = root
-        self.prefs = settings.load_prefs()
-        self.lang = language or self.prefs.get("language") or i18n.detect_language()
+        self.app_prefs = settings.load_app_prefs()
+        self._open_saved_shop()
+        self.prefs = settings.load_shop_prefs()
+        self.lang = language or self.app_prefs.get("language") or i18n.detect_language()
         self.events: queue.Queue = queue.Queue()
         self.out = runner.LogStream(self.events, "out")
         self.err = runner.LogStream(self.events, "err")
@@ -65,7 +77,13 @@ class App:
         self.worker = runner.Worker(self.events)
         self.busy = 0
         self.buttons: list[ttk.Button] = []
-        self.shop_label_value = ""
+        # (state, shop name) of the open shop; state is "" until the first check.
+        self.shop_state: tuple[str, str] = ("", "")
+        # Bumped on every shop switch, so a status check that started for the
+        # previous shop cannot paint its answer onto the new one.
+        self._shop_generation = 0
+        self._first_status = True
+        self._cancel: threading.Event | None = None
         self.closing = False
 
         self.vars: dict[str, tk.Variable] = {}
@@ -87,18 +105,30 @@ class App:
 
     # ------------------------------------------------------------------ setup
 
-    def t(self, key: str, **kwargs: object) -> str:
+    def t(self, key: str, /, **kwargs: object) -> str:
         return i18n.text(self.lang, key, **kwargs)
 
-    def _init_vars(self) -> None:
+    def _open_saved_shop(self) -> None:
+        """Reopen the shop that was open last time, if it still exists."""
+        from .. import shops
+
+        wanted = str(self.app_prefs.get("shop") or "")
+        known = {shop.id for shop in shops.all_shops()}
+        settings.use_shop(wanted if wanted in known else "")
+
+    def _default_workspace(self) -> str:
+        """The same per-shop folder the command line uses: see `default_root`."""
         from ..drop import workspace as workspace_mod
 
+        return str(workspace_mod.default_root())
+
+    def _init_vars(self) -> None:
         p = self.prefs
         text = {
             "keystring": settings.current("ETSY_KEYSTRING"),
             "secret": settings.current("ETSY_SHARED_SECRET"),
             "redirect": settings.current("ETSY_REDIRECT_URI", settings.ETSY_REDIRECT_DEFAULT),
-            "workspace": p.get("workspace") or str(workspace_mod.default_root()),
+            "workspace": p.get("workspace") or self._default_workspace(),
             "template_listing": p.get("template_listing", ""),
             "pull_state": "active",
             "push_csv": p.get("push_csv", ""),
@@ -123,7 +153,7 @@ class App:
             "unshipped": True,
             "pin_sandbox": settings.current("PINTEREST_SANDBOX").lower() in {"1", "true", "yes"},
             "pin_ai": True,
-            "anonymise": bool(p.get("anonymise", False)),
+            "anonymise": bool(self.app_prefs.get("anonymise", False)),
             "show_pin_secret": False,
         }
         for key, value in text.items():
@@ -193,6 +223,7 @@ class App:
         self.container.pack(fill="both", expand=True)
 
         self._header(self.container)
+        ttk.Label(self.container, text=TRADEMARK_NOTICE, style="Hint.TLabel").pack(side="bottom", anchor="w", pady=(6, 0))
         panes = ttk.PanedWindow(self.container, orient="vertical")
         panes.pack(fill="both", expand=True, pady=(8, 0))
 
@@ -208,11 +239,53 @@ class App:
             builder(self.notebook)
         panes.add(self.notebook, weight=4)
         panes.add(self._log_panel(panes), weight=1)
-        tab = self.prefs.get("tab", 0)
+        tab = self.app_prefs.get("tab", 0)
         self.notebook.select(tab if isinstance(tab, int) and 0 <= tab < len(self.notebook.tabs()) else 0)
         self.notebook.bind("<<NotebookTabChanged>>", self._remember_tab)
+        self._install_edit_menu()
         self._render_status()
         self._set_busy_widgets()
+
+    def _install_edit_menu(self) -> None:
+        """Right-click Cut/Copy/Paste on every field, and Ctrl+A to select all.
+
+        Tk entries have neither by default, and "right-click, Paste" is how most
+        people put a key copied from a web page into a form.
+        """
+        if getattr(self, "_edit_menu_installed", False):
+            return
+        self._edit_menu_installed = True
+
+        def popup(event: tk.Event) -> None:
+            widget = event.widget
+            menu = tk.Menu(self.root, tearoff=0)
+            for label, action in (
+                (self.t("cut"), "<<Cut>>"),
+                (self.t("copy"), "<<Copy>>"),
+                (self.t("paste"), "<<Paste>>"),
+            ):
+                menu.add_command(label=label, command=lambda a=action: widget.event_generate(a))
+            menu.add_separator()
+            menu.add_command(label=self.t("select_all"), command=lambda: select_all(widget))
+            try:
+                widget.focus_set()
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+
+        def select_all(widget: tk.Widget) -> str:
+            try:
+                widget.select_range(0, "end")  # type: ignore[attr-defined]
+                widget.icursor("end")  # type: ignore[attr-defined]
+            except (AttributeError, tk.TclError):
+                widget.tag_add("sel", "1.0", "end")  # type: ignore[attr-defined]
+            return "break"
+
+        buttons = ("<Button-2>", "<Control-Button-1>") if sys.platform == "darwin" else ("<Button-3>",)
+        for cls in ("TEntry", "TCombobox", "Text"):
+            for sequence in buttons:
+                self.root.bind_class(cls, sequence, popup, add="+")
+            self.root.bind_class(cls, "<Control-a>", lambda e: select_all(e.widget), add="+")
 
     def _header(self, parent: ttk.Frame) -> None:
         bar = ttk.Frame(parent)
@@ -225,8 +298,110 @@ class App:
         languages.bind("<<ComboboxSelected>>", lambda _e: self._switch_language(languages.get()))
         languages.pack(side="right")
         ttk.Button(bar, text=self.t("help"), command=lambda: webbrowser.open(HELP_URL)).pack(side="right", padx=(0, 8))
+
+        self.shop_picker = ttk.Combobox(bar, state="readonly", width=24)
+        self.shop_picker.bind("<<ComboboxSelected>>", self._shop_picked)
+        self.shop_picker.pack(side="right", padx=(0, 16))
+        ttk.Label(bar, text=self.t("shop")).pack(side="right", padx=(0, 6))
+        self._fill_shop_picker()
+
         self.status_label = ttk.Label(bar, text="", style="Status.TLabel")
         self.status_label.pack(side="right", padx=(0, 16))
+
+    # ------------------------------------------------------------------ shops
+
+    def _shop_label(self, shop, index: int) -> str:
+        if "anonymise" in self.vars and self.vars["anonymise"].get():
+            return self.t("shop_n", n=index + 1)
+        return shop.name or self.t("shop_n", n=index + 1)
+
+    def _fill_shop_picker(self) -> None:
+        from .. import shops
+
+        every = shops.all_shops()
+        self._shop_ids = [shop.id for shop in every]
+        self.shop_picker.configure(values=[self._shop_label(s, i) for i, s in enumerate(every)] + [self.t("add_shop")])
+        current = shops.current().id
+        self.shop_picker.current(self._shop_ids.index(current) if current in self._shop_ids else 0)
+
+    def _shop_picked(self, _event: tk.Event) -> None:
+        from .. import shops
+
+        index = self.shop_picker.current()
+        if self.busy:
+            messagebox.showinfo("stallkit", self.t("wait_for_task"), parent=self.root)
+            self._fill_shop_picker()
+            return
+        if index >= len(self._shop_ids):
+            self.add_shop()
+        elif self._shop_ids[index] != shops.current().id:
+            wanted = self._shop_ids[index]
+            self._when_idle(lambda: self.switch_shop(wanted))
+
+    def _when_idle(self, action: Callable[[], None]) -> None:
+        """Run `action` now if the worker is idle, else as soon as it is.
+
+        Anything that changes which shop is open must not overlap a background
+        job: a status check mid-refresh would save one shop's token into the
+        other shop's folder.
+        """
+        if self.worker.idle():
+            action()
+            return
+        # Busy until it has run: a button clicked in between would capture this
+        # shop's form values and then run against the next shop's keys.
+        self._start(self.t("please_wait"))
+
+        def then() -> None:
+            try:
+                action()
+            finally:
+                self._finish()
+
+        self.worker.run_exclusive(then)
+
+    def switch_shop(self, shop_id: str) -> None:
+        """Open another shop: its keys, its token, its folders. Call it through
+        `_when_idle` unless the worker is known to be idle."""
+        settings.use_shop(shop_id)
+        self.app_prefs["shop"] = shop_id
+        settings.save_app_prefs(self.app_prefs)
+        self.prefs = settings.load_shop_prefs()
+        self._shop_generation += 1
+        self.shop_state = ("", "")
+        self._init_vars()
+        self.build()
+        self.refresh_status()
+
+    def add_shop(self) -> None:
+        def now() -> None:
+            from .. import shops
+
+            shop = shops.add()
+            self.switch_shop(shop.id)
+            self.notebook.select(0)
+            self._log(self.t("shop_added") + "\n", "ok")
+
+        self._when_idle(now)
+
+    def remove_shop(self) -> None:
+        from .. import shops
+
+        shop = shops.current()
+        if not shop.id:
+            return
+        label = shop.name or shop.id
+        if not messagebox.askyesno("stallkit", self.t("confirm_remove_shop", shop=label),
+                                   parent=self.root, icon="warning"):
+            return
+
+        def now() -> None:
+            self.switch_shop("")
+            shops.remove(shop.id)
+            self._fill_shop_picker()
+            self._log(self.t("shop_removed", shop=label) + "\n", "ok")
+
+        self._when_idle(now)
 
     def _tab(self, notebook: ttk.Notebook, title: str) -> ttk.Frame:
         """A scrollable tab: forms grow, windows do not."""
@@ -304,39 +479,88 @@ class App:
 
     # ------------------------------------------------------------------ tabs
 
-    def _tab_setup(self, notebook: ttk.Notebook) -> None:
-        tab = self._tab(notebook, self.t("tab_setup"))
+    def _copy_row(self, frame: ttk.Frame, label: str, value: str = "", *, var: str = "",
+                  width: int = 44) -> None:
+        """A read-only value with a Copy button: what to paste into Etsy's form.
 
-        app = self._section(tab, self.t("setup_app_title"), self.t("setup_app_hint"))
-        callback = ttk.Frame(app)
-        callback.grid(row=self._row(app), column=0, columnspan=4, sticky="ew")
-        ttk.Label(callback, text=self.t("callback_label")).pack(side="left", padx=(0, 10))
-        shown = ttk.Entry(callback, width=40)
-        shown.insert(0, settings.ETSY_REDIRECT_DEFAULT)
-        shown.configure(state="readonly")
+        With `var`, it mirrors that field, so what is shown and copied is always
+        what the app will send — a callback changed in step 2 changes here too.
+        """
+        row = ttk.Frame(frame)
+        row.grid(row=self._row(frame), column=0, columnspan=4, sticky="w", pady=2)
+        ttk.Label(row, text=label, width=22).pack(side="left")
+        if var:
+            shown = ttk.Entry(row, width=width, textvariable=self.vars[var], state="readonly")
+        else:
+            shown = ttk.Entry(row, width=width)
+            shown.insert(0, value)
+            shown.configure(state="readonly")
         shown.pack(side="left")
-        ttk.Button(callback, text=self.t("copy"), command=lambda: self._copy(settings.ETSY_REDIRECT_DEFAULT)).pack(
-            side="left", padx=(8, 0)
-        )
-        self._buttons(app, (self.t("open_etsy_apps"), lambda: webbrowser.open(ETSY_APPS_URL)), track=False)
+        current = (lambda: self.vars[var].get()) if var else (lambda: value)
+        ttk.Button(row, text=self.t("copy"), command=lambda: self._copy(current())).pack(side="left", padx=(8, 0))
 
-        keys = self._section(tab, self.t("setup_keys_title"), self.t("setup_keys_hint"))
+    def _result_label(self, frame: ttk.Frame) -> ttk.Label:
+        label = ttk.Label(frame, text="", style="Status.TLabel", justify="left")
+        label.grid(row=self._row(frame), column=0, columnspan=4, sticky="w", pady=(8, 0))
+        frame.bind("<Configure>", lambda e, lb=label: lb.configure(wraplength=max(200, e.width - 30)), add="+")
+        return label
+
+    def _tab_setup(self, notebook: ttk.Notebook) -> None:
+        from .. import shops
+
+        tab = self._tab(notebook, self.t("tab_setup"))
+        self.step_frames: dict[int, tuple[ttk.LabelFrame, str]] = {}
+
+        # Step 1: the one-off Etsy app. Everything to type into Etsy's form is here
+        # with a Copy button, because a mistyped callback is the classic failure.
+        title = self.t("setup_app_title")
+        app = self._section(tab, title, self.t("setup_app_hint"))
+        self.step_frames[1] = (app, title)
+        steps = ttk.Label(app, text=self.t("setup_app_steps"), justify="left")
+        steps.grid(row=self._row(app), column=0, columnspan=4, sticky="w", pady=(0, 8))
+        app.bind("<Configure>", lambda e: steps.configure(wraplength=max(200, e.width - 30)), add="+")
+        self._copy_row(app, self.t("callback_label"), var="redirect")
+        self._copy_row(app, self.t("app_description_label"), self.t("app_description_value"), width=60)
+        self._buttons(
+            app,
+            (self.t("open_seller_app"), lambda: webbrowser.open(ETSY_SELLER_APP_URL)),
+            (self.t("open_dashboard"), lambda: webbrowser.open(ETSY_DASHBOARD_URL)),
+            primary=0,
+            track=False,
+        )
+        self._note(app, self.t("setup_app_wait"))
+
+        # Step 2: paste the two keys; saving checks them with Etsy straight away.
+        title = self.t("setup_keys_title")
+        keys = self._section(tab, title, self.t("setup_keys_hint"))
+        self.step_frames[2] = (keys, title)
         self._field(keys, "Keystring", "keystring")
         self._field(keys, "Shared secret", "secret", secret="show_secret")
         self._field(keys, self.t("callback_field"), "redirect")
         self._buttons(keys, (self.t("save_verify"), self.save_etsy_keys), primary=0)
+        self.keys_result = self._result_label(keys)
         self._note(keys, self.t("saved_to", path=settings.env_path()))
 
-        shop = self._section(tab, self.t("setup_connect_title"), self.t("setup_connect_hint"))
-        self._buttons(
-            shop,
-            (self.t("connect_shop"), self.connect_shop),
-            (self.t("run_checks"), lambda: self.run(["doctor"])),
+        # Step 3: one click, Etsy's own consent page, done.
+        title = self.t("setup_connect_title")
+        connect = self._section(tab, title, self.t("setup_connect_hint"))
+        self.step_frames[3] = (connect, title)
+        self._buttons(connect, (self.t("connect_shop"), self.connect_shop), primary=0)
+        self.connect_result = self._result_label(connect)
+        self.next_row = self._buttons(connect, (self.t("go_to_upload"), lambda: self.notebook.select(1)),
+                                      track=False)
+
+        tools = self._section(tab, self.t("setup_tools_title"))
+        specs = [
+            (self.t("run_checks"), lambda: self.run(["doctor", *self._ws_args()])),
             (self.t("shop_info"), lambda: self.run(["shop", "info"])),
             (self.t("shop_profiles"), lambda: self.run(["shop", "profiles"])),
             (self.t("disconnect"), self.disconnect_shop),
-            primary=0,
-        )
+        ]
+        if shops.current().id:
+            specs.append((self.t("remove_shop"), self.remove_shop))
+        self._buttons(tools, *specs)
+        self._note(tools, self.t("setup_tools_hint"))
 
     def _tab_drop(self, notebook: ttk.Notebook) -> None:
         tab = self._tab(notebook, self.t("tab_drop"))
@@ -457,7 +681,7 @@ class App:
         account = self._section(tab, self.t("pin_account_title"))
         self._buttons(
             account,
-            (self.t("connect_pinterest"), lambda: self.run(["pinterest", "login"])),
+            (self.t("connect_pinterest"), self.connect_pinterest),
             (self.t("status"), lambda: self.run(["pinterest", "status"])),
             (self.t("my_boards"), lambda: self.run(["pinterest", "boards"])),
             (self.t("disconnect"), self.disconnect_pinterest),
@@ -495,6 +719,7 @@ class App:
         self.progress.pack(side="left", padx=(12, 0))
         self.running_label = ttk.Label(bar, text="", style="Hint.TLabel")
         self.running_label.pack(side="left", padx=(8, 0))
+        self.cancel_button = ttk.Button(bar, text=self.t("cancel"), command=self.cancel_running)
         ttk.Button(bar, text=self.t("clear"), command=self.clear_log).pack(side="right")
         ttk.Button(bar, text=self.t("copy_log"), command=self.copy_log).pack(side="right", padx=(0, 8))
         ttk.Checkbutton(bar, text=self.t("anonymise"), variable=self.vars["anonymise"],
@@ -528,8 +753,12 @@ class App:
 
     def run(self, args: list[str], *, then: Callable[[int], None] | None = None) -> None:
         """Run `stallkit <args>` in the background, streaming its output to the log."""
-        self._log(f"\n▶ stallkit {' '.join(self._quote(a) for a in args)}\n", "cmd")
         anonymise = bool(self.vars["anonymise"].get())
+        shown = " ".join(self._quote(a) for a in args)
+        name = self.shop_state[1]
+        if anonymise and name:
+            shown = shown.replace(name, "‹your shop›")
+        self._log(f"\n▶ stallkit {shown}\n", "cmd")
 
         def job() -> int:
             return runner.run_cli(args, out=self.out, err=self.err, anonymise=anonymise)
@@ -550,19 +779,31 @@ class App:
         self.worker.submit(job, done)
 
     def run_python(self, label: str, job: Callable[[], object],
-                   then: Callable[[object], None] | None = None) -> None:
-        """Run a function in the background, with the same busy state as a command."""
+                   then: Callable[[object], None] | None = None,
+                   cancel: threading.Event | None = None) -> None:
+        """Run a function in the background, with the same busy state as a command.
+
+        With `cancel`, a Cancel button appears while it runs and sets that event;
+        the job is expected to watch it.
+        """
         self._log(f"\n▶ {label}\n", "cmd")
 
         def done(result: object, error: BaseException | None) -> None:
+            self._cancel = None
             self._finish()
             if error is not None:
                 self._log(f"✗ {error}\n", "err")
             elif then:
                 then(result)
 
+        self._cancel = cancel
         self._start(label)
         self.worker.submit(job, done)
+
+    def cancel_running(self) -> None:
+        if self._cancel is not None and not self._cancel.is_set():
+            self._cancel.set()
+            self._log(self.t("cancelling") + "\n", "warn")
 
     def _start(self, label: str) -> None:
         self.busy += 1
@@ -582,6 +823,10 @@ class App:
                 button.configure(state=state)
             except tk.TclError:
                 pass
+        try:
+            self.shop_picker.configure(state="disabled" if self.busy else "readonly")
+        except (AttributeError, tk.TclError):
+            pass
         # Idle, an indeterminate bar still shows a parked block that reads as
         # "something is half done", so it is only on screen while work is.
         if self.busy:
@@ -592,6 +837,11 @@ class App:
             self.progress.stop()
             self.progress.pack_forget()
             self.running_label.configure(text="")
+        if self.busy and self._cancel is not None:
+            if not self.cancel_button.winfo_ismapped():
+                self.cancel_button.pack(side="left", padx=(12, 0), after=self.running_label)
+        else:
+            self.cancel_button.pack_forget()
 
     def _drain(self) -> None:
         """Move worker output and results onto the Tk thread, a batch at a time.
@@ -629,6 +879,12 @@ class App:
             finally:
                 # The worker is blocked until this is set; never leave it waiting.
                 slot["event"].set()
+        elif kind == "exclusive":
+            _, action, finished = event
+            try:
+                action()
+            finally:
+                finished.set()
 
     def _ask_from_worker(self, question: str) -> str | None:
         """Called on the worker thread by PromptStream; blocks for the answer."""
@@ -691,59 +947,133 @@ class App:
     # ------------------------------------------------------------------ status
 
     def refresh_status(self) -> None:
-        """Ask Etsy which shop the stored token belongs to, without logging it."""
-        def job() -> tuple[str, str]:
-            from .. import auth
+        """Work out, quietly, how far the open shop is through setup.
+
+        States: "keys" (none saved), "bad_keys" (Etsy refused them), "disconnected"
+        (keys accepted, shop not connected), "connected", "reconnect" (the sign-in
+        expired or was revoked), "offline" (Etsy unreachable) and "error".
+        """
+        generation = self._shop_generation
+
+        def job() -> tuple[str, str, str]:
+            from .. import auth, shops
             from ..client import EtsyClient
             from ..config import Config
-            from ..errors import StallKitError
+            from ..errors import AuthError, AuthUnreachable, EtsyApiError, StallKitError
 
             try:
                 config = Config.load()
             except StallKitError:
-                return ("keys", "")
+                return ("keys", "", "")
             token = auth.load_token()
-            if token is None:
-                return ("disconnected", "")
             try:
-                with EtsyClient(config, token=token) as client:
+                with EtsyClient(config, token=token, require_auth=False) as client:
+                    if token is None:
+                        client.ping()
+                        return ("disconnected", "", "")
                     shop = client.shop()
-            except StallKitError:
-                return ("error", "")
-            return ("connected", str(shop.get("shop_name") or ""))
+            except EtsyApiError as exc:
+                if exc.status == 0:
+                    return ("offline", "", str(exc))
+                if exc.status == 403 and "api key" in str(exc).lower():
+                    return ("bad_keys", "", exc.message)
+                if exc.status == 401:
+                    return ("reconnect", "", exc.message)
+                return ("error", "", str(exc))
+            except AuthUnreachable as exc:
+                return ("offline", "", str(exc))
+            except AuthError as exc:
+                return ("reconnect", "", str(exc))
+            except StallKitError as exc:
+                return ("error", "", str(exc))
+            name = str(shop.get("shop_name") or "")
+            shops.remember(name, shop.get("shop_id"))
+            return ("connected", name, "")
 
         def done(result: object, error: BaseException | None) -> None:
-            state, name = result if isinstance(result, tuple) else ("error", "")
-            self.shop_label_value = f"{state}|{name}"
+            if generation != self._shop_generation or self.closing:
+                return  # an answer about the shop that was open before a switch
+            if not isinstance(result, tuple):
+                result = ("offline" if error is not None else "error", "", str(error or ""))
+            self.shop_state = (result[0], result[1])
+            self._status_detail = result[2]
+            if result[0] == "connected":
+                self._shop_connected(result[1])
+            first, self._first_status = self._first_status, False
+            if first and result[0] in ("keys", "bad_keys", "disconnected", "reconnect"):
+                self.notebook.select(0)  # setup is not finished: start where it stops
             self._render_status()
 
         self.worker.submit(job, done)
 
+    def _shop_connected(self, name: str) -> None:
+        """Etsy told us the shop's name: label the picker with it."""
+        self._fill_shop_picker()
+
     def _render_status(self) -> None:
         if not hasattr(self, "status_label"):
             return
-        state, _, name = self.shop_label_value.partition("|")
-        if not state:
-            text, colour = self.t("status_checking"), "#6b6b6b"
-        elif state == "connected":
-            shown = "‹your shop›" if self.vars["anonymise"].get() else name
-            text, colour = self.t("status_connected", shop=shown), "#1b7a3a"
-        elif state == "keys":
-            text, colour = self.t("status_keys"), "#9a5b00"
-        elif state == "disconnected":
-            text, colour = self.t("status_disconnected"), "#9a5b00"
-        else:
-            text, colour = self.t("status_error"), "#b3261e"
+        state, name = self.shop_state
+        shown = "‹your shop›" if self.vars["anonymise"].get() else name
+        texts = {
+            "": (self.t("status_checking"), "#6b6b6b"),
+            "connected": (self.t("status_connected", shop=shown), "#1b7a3a"),
+            "keys": (self.t("status_keys"), "#9a5b00"),
+            "bad_keys": (self.t("status_bad_keys"), "#b3261e"),
+            "disconnected": (self.t("status_disconnected"), "#9a5b00"),
+            "reconnect": (self.t("status_reconnect"), "#b3261e"),
+            "offline": (self.t("status_offline"), "#b3261e"),
+        }
+        text, colour = texts.get(state, (self.t("status_error"), "#b3261e"))
         self.status_label.configure(text=text, foreground=colour)
+        self._render_steps()
+
+    def _render_steps(self) -> None:
+        """Tick the setup steps that are done and point at the one that is next."""
+        if not hasattr(self, "step_frames"):
+            return
+        state, name = self.shop_state
+        keys_ok = state in ("disconnected", "connected", "reconnect")
+        marks = {
+            1: "✓" if keys_ok else ("→" if state in ("keys", "") else ""),
+            2: "✓" if keys_ok else ("✗" if state == "bad_keys" else ("→" if state == "keys" else "")),
+            3: "✓" if state == "connected" else ("→" if state in ("disconnected", "reconnect") else ""),
+        }
+        for number, (frame, title) in self.step_frames.items():
+            mark = marks[number]
+            try:
+                frame.configure(text=f"{mark}  {title}" if mark else title)
+            except tk.TclError:
+                return
+        detail = getattr(self, "_status_detail", "")
+        if state == "bad_keys":
+            self.keys_result.configure(text=self.t("keys_rejected", detail=detail), foreground="#b3261e")
+        elif keys_ok:
+            self.keys_result.configure(text=self.t("keys_accepted"), foreground="#1b7a3a")
+        else:
+            self.keys_result.configure(text="")
+        shown = "‹your shop›" if self.vars["anonymise"].get() else name
+        if state == "connected":
+            self.connect_result.configure(text=self.t("connected_as", shop=shown), foreground="#1b7a3a")
+            self.next_row.grid()
+        else:
+            message = {
+                "reconnect": self.t("reconnect_needed"),
+                "offline": self.t("offline_detail"),
+            }.get(state, "")
+            self.connect_result.configure(text=message, foreground="#b3261e")
+            self.next_row.grid_remove()
 
     def _anonymise_changed(self) -> None:
-        self.prefs["anonymise"] = bool(self.vars["anonymise"].get())
-        settings.save_prefs(self.prefs)
+        self.app_prefs["anonymise"] = bool(self.vars["anonymise"].get())
+        settings.save_app_prefs(self.app_prefs)
+        self._fill_shop_picker()
         self._render_status()
 
     # ------------------------------------------------------------------ actions: setup
 
     def save_etsy_keys(self) -> None:
+        from .. import auth
         from ..config import split_credential
 
         keystring, secret = split_credential(self.vars["keystring"].get(), self.vars["secret"].get())
@@ -752,8 +1082,6 @@ class App:
             messagebox.showwarning("stallkit", self.t("need_both_keys"), parent=self.root)
             return
         try:
-            from .. import auth
-
             auth.validate_redirect_uri(redirect)
         except Exception as exc:  # noqa: BLE001 — shown to the person, not raised
             messagebox.showwarning("stallkit", str(exc), parent=self.root)
@@ -761,24 +1089,64 @@ class App:
         self.vars["keystring"].set(keystring)
         self.vars["secret"].set(secret)
         self.vars["redirect"].set(redirect)
-        path = settings.save(
-            {"ETSY_KEYSTRING": keystring, "ETSY_SHARED_SECRET": secret, "ETSY_REDIRECT_URI": redirect}
-        )
-        self._log(self.t("keys_saved", path=path, key=keystring[:6], n=len(secret)) + "\n", "ok")
 
-        def verify() -> bool:
+        def now() -> None:
+            # Not while a status check runs: its token refresh could land after the
+            # old sign-in is cleared below, and bring it back.
+            previous = settings.current("ETSY_KEYSTRING")
+            path = settings.save(
+                {"ETSY_KEYSTRING": keystring, "ETSY_SHARED_SECRET": secret, "ETSY_REDIRECT_URI": redirect}
+            )
+            self._log(self.t("keys_saved", path=path, key=keystring[:6], n=len(secret)) + "\n", "ok")
+            # A token belongs to the app that issued it. New keys make the old sign-in
+            # useless, and keeping it would only turn every command into a 401.
+            if previous and previous != keystring and auth.clear_token():
+                self._log(self.t("token_cleared") + "\n", "warn")
+
+            def verify() -> bool:
+                from ..client import EtsyClient
+                from ..config import Config
+
+                with EtsyClient(Config.load(), require_auth=False) as client:
+                    client.ping()
+                return True
+
+            self.run_python(self.t("verifying"), verify,
+                            then=lambda _r: self._log(self.t("keys_ok") + "\n", "ok"))
+
+        self._when_idle(now)
+
+    def connect_shop(self) -> None:
+        """Etsy's consent page in the browser; the answer comes back to this computer.
+
+        Called directly rather than through `auth login` so that it can be cancelled:
+        someone who closes the browser tab should not wait five minutes for a timeout.
+        """
+        cancel = threading.Event()
+
+        def job() -> tuple[str, tuple[str, ...]]:
+            from .. import auth, shops
             from ..client import EtsyClient
             from ..config import Config
 
-            with EtsyClient(Config.load(), require_auth=False) as client:
-                client.ping()
-            return True
+            config = Config.load()
+            auth.validate_redirect_uri(config.redirect_uri)
+            token = auth.login(config, cancel=cancel)
+            with EtsyClient(config, token=token) as client:
+                shop = client.shop()
+            name = str(shop.get("shop_name") or "")
+            shops.remember(name, shop.get("shop_id"))
+            return name, token.missing_scopes(config.scopes)
 
-        self.run_python(self.t("verifying"), verify, then=lambda _r: self._log(self.t("keys_ok") + "\n", "ok"))
+        def then(result: object) -> None:
+            name, missing = result  # type: ignore[misc]
+            shown = "‹your shop›" if self.vars["anonymise"].get() else name
+            self._log(self.t("connected_as", shop=shown) + "\n", "ok")
+            if missing:
+                self._log(self.t("scopes_missing", scopes=" ".join(missing)) + "\n", "warn")
 
-    def connect_shop(self) -> None:
         self._log(self.t("login_browser") + "\n", "dim")
-        self.run(["auth", "login"])
+        self.run_python(self.t("connecting"), job, then=then, cancel=cancel)
 
     def disconnect_shop(self) -> None:
         if messagebox.askyesno("stallkit", self.t("confirm_disconnect"), parent=self.root):
@@ -789,7 +1157,7 @@ class App:
     def _ws_args(self) -> list[str]:
         path = self.vars["workspace"].get().strip()
         self.prefs["workspace"] = path
-        settings.save_prefs(self.prefs)
+        settings.save_shop_prefs(self.prefs)
         return ["--path", path] if path else []
 
     def _browse_workspace(self) -> None:
@@ -832,7 +1200,7 @@ class App:
             messagebox.showwarning("stallkit", self.t("need_listing_number"), parent=self.root)
             return
         self.prefs["template_listing"] = listing
-        settings.save_prefs(self.prefs)
+        settings.save_shop_prefs(self.prefs)
         self.run(["drop", "template", "--from-listing", listing, *self._ws_args()], then=self._render_template_state)
 
     def upload_drafts(self) -> None:
@@ -850,7 +1218,7 @@ class App:
         if chosen:
             self.vars[var].set(str(Path(chosen)))
             self.prefs[var] = str(Path(chosen))
-            settings.save_prefs(self.prefs)
+            settings.save_shop_prefs(self.prefs)
 
     def _save_csv(self, suggested: str) -> str | None:
         chosen = filedialog.asksaveasfilename(
@@ -862,7 +1230,7 @@ class App:
         )
         if chosen:
             self.prefs["last_save_dir"] = str(Path(chosen).parent)
-            settings.save_prefs(self.prefs)
+            settings.save_shop_prefs(self.prefs)
         return chosen or None
 
     def export_listings(self) -> None:
@@ -878,7 +1246,7 @@ class App:
                 if code == 0:
                     self.vars["push_csv"].set(out)
                     self.prefs["push_csv"] = out
-                    settings.save_prefs(self.prefs)
+                    settings.save_shop_prefs(self.prefs)
 
             self.run(["listings", "template", "-o", out], then=then)
 
@@ -897,7 +1265,7 @@ class App:
             self.prefs["inventory_from"] = listing
         else:
             self.prefs["inventory_from"] = ""
-        settings.save_prefs(self.prefs)
+        settings.save_shop_prefs(self.prefs)
         if dry_run:
             self.run(args + ["--dry-run"])
             return
@@ -920,7 +1288,7 @@ class App:
     def _country(self) -> list[str]:
         country = self.vars["country"].get().strip().upper()
         self.prefs["country"] = country
-        settings.save_prefs(self.prefs)
+        settings.save_shop_prefs(self.prefs)
         return ["--country", country] if country else []
 
     def ship_orders(self, *, dry_run: bool) -> None:
@@ -976,6 +1344,21 @@ class App:
         )
         self._log(self.t("pin_saved", path=path) + "\n", "ok")
 
+    def connect_pinterest(self) -> None:
+        """Like connect_shop: called directly so that it can be cancelled."""
+        cancel = threading.Event()
+
+        def job() -> str:
+            from .. import pinterest
+
+            token = pinterest.login(pinterest.PinterestConfig.load(), cancel=cancel)
+            return token.scope or ""
+
+        self._log(self.t("login_browser") + "\n", "dim")
+        self.run_python(self.t("connecting_pinterest"), job,
+                        then=lambda _r: self._log(self.t("pinterest_connected") + "\n", "ok"),
+                        cancel=cancel)
+
     def disconnect_pinterest(self) -> None:
         if messagebox.askyesno("stallkit", self.t("confirm_disconnect_pin"), parent=self.root):
             self.run(["pinterest", "logout"])
@@ -990,7 +1373,7 @@ class App:
             messagebox.showwarning("stallkit", self.t("need_board"), parent=self.root)
             return
         self.prefs["pin_board"] = board
-        settings.save_prefs(self.prefs)
+        settings.save_shop_prefs(self.prefs)
         args = ["pinterest", "queue", *listings, "--board", board,
                 "--per-day", self.vars["pin_per_day"].get().strip() or "2"]
         images = self.vars["pin_images"].get().strip()
@@ -1018,18 +1401,18 @@ class App:
 
     def _remember_tab(self, _event: tk.Event) -> None:
         try:
-            self.prefs["tab"] = self.notebook.index(self.notebook.select())
+            self.app_prefs["tab"] = self.notebook.index(self.notebook.select())
         except tk.TclError:
             return
-        settings.save_prefs(self.prefs)
+        settings.save_app_prefs(self.app_prefs)
 
     def _switch_language(self, name: str) -> None:
         code = {label: code for code, label in i18n.LANGUAGES}.get(name, self.lang)
         if code == self.lang:
             return
         self.lang = code
-        self.prefs["language"] = code
-        settings.save_prefs(self.prefs)
+        self.app_prefs["language"] = code
+        settings.save_app_prefs(self.app_prefs)
         self.build()
 
     def close(self) -> None:
@@ -1056,6 +1439,12 @@ class App:
                 self.events.get_nowait()
             except queue.Empty:
                 break
+        # The same goes for the window's own Tk objects. The icon in particular:
+        # a PhotoImage freed on the worker thread calls into Tk from there and
+        # waits for a main loop that has already ended — a silent hang.
+        self._icon = None
+        self.vars.clear()
+        gc.collect()
 
 
 def launch() -> None:
@@ -1068,6 +1457,9 @@ def launch() -> None:
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
         except (AttributeError, OSError):
             pass
+    # Keys come from each shop's own home, never from a .env that happens to sit in
+    # the folder the app was started from — with several shops it would win for all.
+    os.environ["STALLKIT_IGNORE_CWD_ENV"] = "1"
     root = tk.Tk()
     app = App(root)
     # Everything printed from here on — by a command, or by a library it calls —

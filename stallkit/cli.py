@@ -20,8 +20,9 @@ from . import orders as orders_mod
 from . import pinterest as pinterest_mod
 from . import seo as seo_mod
 from . import setup as setup_mod
+from . import shops as shops_mod
 from .client import EtsyClient
-from .config import Config, split_credential, token_path, write_env_file
+from .config import Config, home_dir, split_credential, token_path, write_env_file
 from .drop import automation, pipeline
 from .drop import mockup as mockup_mod
 from .drop import template as template_mod
@@ -106,6 +107,10 @@ pinterest_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(pinterest_app, name="pinterest")
+shops_app = typer.Typer(
+    help="Several Etsy shops on one computer: list, add and remove them.", no_args_is_help=True
+)
+app.add_typer(shops_app, name="shops")
 
 
 def _client(*, require_auth: bool = True) -> EtsyClient:
@@ -148,11 +153,23 @@ def _root(
         help="Hide your shop name, listing ids, titles and URLs in the output, so a "
         "screenshot can be shared without exposing your shop. Also STALLKIT_ANONYMISE=1.",
     ),
+    shop: Optional[str] = typer.Option(
+        None,
+        "--shop",
+        help="Which of your shops to use, by the id `stallkit shops list` shows. "
+        "Default: the first one. Also STALLKIT_SHOP.",
+    ),
 ) -> None:
     """stallkit — Etsy seller automation over the official Open API v3."""
     global ANONYMISE
     if anonymise:
         ANONYMISE = True
+    # The option and the environment variable resolve the same way, with the same
+    # "no such shop" error — a typo must not quietly create an empty shop.
+    requested = shop if shop is not None else os.environ.get(shops_mod.SHOP_ENV)
+    if requested is not None:
+        requested = requested.strip()
+        shops_mod.select("" if requested.lower() in ("", "default") else requested)
 
 
 # ---------------------------------------------------------------- auth
@@ -197,6 +214,7 @@ def auth_login(
             f"  shop:   {_hide(shop.get('shop_name'), 'shop')} "
             f"(id {_hide(shop.get('shop_id'), 'id')})"
         )
+    shops_mod.remember(str(shop.get("shop_name") or ""), shop.get("shop_id"))
 
 
 @auth_app.command("status")
@@ -255,7 +273,10 @@ def init(
         None, "--redirect-uri", help="A callback URL registered on your Etsy app."
     ),
     shop_id: Optional[int] = typer.Option(None, "--shop-id", help="Only if you own several shops."),
-    path: Path = typer.Option(Path(".env"), "--path", help="Where to write the file."),
+    path: Optional[Path] = typer.Option(
+        None, "--path", help="Where to write the file. Default: the selected shop's home, "
+        "~/.stallkit/.env for the first shop — where the desktop app reads it too."
+    ),
     force: bool = typer.Option(False, "--force", help="Overwrite an existing .env."),
     check: bool = typer.Option(True, "--check/--no-check", help="Verify the credential with Etsy."),
     from_clipboard: bool = typer.Option(
@@ -270,6 +291,7 @@ def init(
     The shared secret is typed hidden, is never echoed, and goes straight into a
     0600 file — it does not appear in your shell history or on screen.
     """
+    path = path or home_dir() / ".env"
     if path.exists() and not force:
         _warn(f"{path} already exists. Re-run with --force to overwrite it.")
         raise typer.Exit(1)
@@ -326,14 +348,14 @@ def init(
     console.print("\nNext: [cyan]stallkit auth login[/]")
 
 
-def _run_checklist(*, interactive: bool) -> int:
+def _run_checklist(*, interactive: bool, workspace: Optional[Path] = None) -> int:
     """Walk every prerequisite, ask about the ones no code can verify, and report."""
     console.print("[bold]stallkit setup[/] — everything that must be true before this works\n")
 
     results: list[tuple[setup_mod.Step, setup_mod.StepResult]] = []
     blocked = False
 
-    for step in setup_mod.build_steps():
+    for step in setup_mod.build_steps(workspace):
         # Once something required is missing, later checks would only report knock-on
         # failures. Show them as pending rather than as new problems.
         if blocked and step.required:
@@ -435,9 +457,13 @@ def setup_command(
 
 
 @app.command("doctor")
-def doctor() -> None:
+def doctor(
+    path: Optional[Path] = typer.Option(
+        None, "--path", help="The products folder to check. Default: the shop's own."
+    ),
+) -> None:
     """The same checklist, without asking anything. Good for scripts."""
-    raise typer.Exit(_run_checklist(interactive=False))
+    raise typer.Exit(_run_checklist(interactive=False, workspace=path))
 
 
 @app.command("desktop")
@@ -1762,6 +1788,56 @@ def pinterest_list(
         table.add_row(entry["due"], entry["status"], _hide(entry["listing_id"], "id"),
                       str(entry["rank"]), (entry.get("message") or "")[:60])
     console.print(table)
+
+
+# --- shops ---------------------------------------------------------------------
+
+
+@shops_app.command("list")
+def shops_list() -> None:
+    """Show every shop set up on this computer, and which one commands use."""
+    active = shops_mod.current().id
+    table = Table()
+    for col in ("", "id", "shop", "connected", "keys and token in"):
+        table.add_column(col)
+    for shop in shops_mod.all_shops():
+        row = shops_mod.describe(shop)
+        table.add_row(
+            "→" if shop.id == active else "",
+            row["id"],
+            _hide(row["name"], "shop") if shop.name else row["name"],
+            row["connected"],
+            row["home"],
+        )
+    console.print(table)
+    console.print("[dim]Use one with --shop <id>, e.g.[/] [cyan]stallkit --shop shop-2 shop info[/]")
+
+
+@shops_app.command("add")
+def shops_add() -> None:
+    """Make room for one more shop, with its own keys and its own sign-in."""
+    shop = shops_mod.add()
+    _ok(f"Added shop {shop.id} at {shop.home}")
+    console.print(
+        "Give it keys and connect it:\n"
+        f"  [cyan]stallkit --shop {shop.id} init --path \"{shop.home / '.env'}\"[/]\n"
+        f"  [cyan]stallkit --shop {shop.id} auth login[/]"
+    )
+
+
+@shops_app.command("remove")
+def shops_remove(
+    shop_id: str = typer.Argument(..., help="The id `stallkit shops list` shows."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Do not ask for confirmation."),
+) -> None:
+    """Forget one extra shop on this computer. The shop on Etsy is not touched."""
+    if not yes and not typer.confirm(
+        f"Delete the keys, token and queue stored for {shop_id} on this computer?"
+    ):
+        _warn("Cancelled.")
+        raise typer.Exit(1)
+    shops_mod.remove(shop_id)
+    _ok(f"Removed {shop_id}. Its listings and orders on Etsy are unchanged.")
 
 
 def main() -> None:

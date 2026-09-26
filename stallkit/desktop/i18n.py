@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import locale
 import os
+import re
+import subprocess
 import sys
 
 LANGUAGES = (("en", "English"), ("tr", "Türkçe"))
@@ -27,24 +29,74 @@ STRINGS: dict[str, dict[str, str]] = {
         "all_files": "All files",
         # setup
         "tab_setup": "1 · Setup",
-        "setup_app_title": "Step 1 — Your Etsy app (once)",
-        "setup_app_hint": "Create a free app on Etsy's developer page. Once it is approved, Etsy shows "
-                          "you a Keystring and a Shared secret. In the app's settings, add the callback "
-                          "address below exactly as written.",
-        "callback_label": "Callback address to register:",
-        "open_etsy_apps": "Open Etsy's app page",
+        "setup_app_title": "Step 1 — Create your Etsy seller app (once)",
+        "setup_app_hint": "Everyone connects their own shop through their own free Etsy app. Etsy's "
+                          "\"Seller App\" for your own shop is usually approved within minutes.",
+        "callback_label": "Callback address:",
+        "open_seller_app": "Create a seller app",
+        "open_dashboard": "Open the Dashboard",
         "setup_keys_title": "Step 2 — Your keys",
         "setup_keys_hint": "Paste both values from your Etsy app page. They stay on this computer.",
         "callback_field": "Callback address",
         "save_verify": "Save and check with Etsy",
         "saved_to": "Saved in: {path}",
         "setup_connect_title": "Step 3 — Connect your shop",
-        "setup_connect_hint": "Your browser opens; approve the request on Etsy and come back. "
-                              "You repeat this about every 90 days.",
+        "setup_connect_hint": "Your browser opens Etsy's own permission page; approve it and come back. The "
+                              "app asks to read your listings and create drafts, read orders and add tracking "
+                              "numbers — never to delete anything. Unused for 90 days, it needs connecting again.",
         "connect_shop": "Connect my Etsy shop",
         "run_checks": "Check everything",
         "shop_info": "Shop details",
         "shop_profiles": "Shipping & return profiles",
+        # shops and connection
+        "shop": "Shop",
+        "shop_n": "Shop {n}",
+        "add_shop": "＋ Add a shop",
+        "shop_added": "✓ New shop added. Do the three setup steps for it; your other shops are unchanged.",
+        "remove_shop": "Remove this shop from this computer",
+        "confirm_remove_shop": "Remove {shop} from this computer?\n\nIts keys and sign-in stored here are deleted. "
+                               "The shop on Etsy, its listings and its orders are not touched.",
+        "shop_removed": "✓ {shop} was removed from this computer.",
+        "wait_for_task": "Wait until the running task finishes, then switch shops.",
+        "setup_app_steps": "1. Sign in to Etsy with the shop's account and press “Create a seller app”.\n"
+                           "2. App name: anything without the word “Etsy” — e.g. your shop's name + Tools.\n"
+                           "3. “Why you want to use the API”: paste the text below, then press "
+                           "“Read Terms and Create App”.\n"
+                           "4. Once approved (usually minutes), open the Dashboard, open your app's ⋮ menu → "
+                           "“Edit callback URLs”, add the callback address below and save.\n"
+                           "5. On the same page, copy the Keystring and the Shared secret (eye icon) into step 2.",
+        "app_description_label": "Why (paste):",
+        "app_description_value": "I manage my own shop with a tool that runs on my own computer: creating draft listings in "
+                                 "bulk from my product photos, updating my listings and adding tracking numbers to my "
+                                 "orders. It connects only to my shop, and the keys stay on my computer.",
+        "setup_app_wait": "Already have an Etsy app? Etsy allows one per account — use its keys instead. "
+                          "Do not switch on “Developer Mode” in the developer settings: it hides your shop "
+                          "from search.",
+        "setup_tools_title": "Tools",
+        "setup_tools_hint": "“Check everything” lists what is still missing, one step at a time.",
+        "keys_accepted": "✓ Etsy accepts these keys.",
+        "keys_rejected": "✗ Etsy refused these keys: {detail}\nCheck both values on your Etsy app page: the "
+                         "Keystring and the Shared secret are two different values. A brand-new app may still be "
+                         "waiting for Etsy's approval.",
+        "connecting": "Connecting your shop",
+        "connected_as": "✓ Connected: {shop}",
+        "scopes_missing": "! Etsy granted fewer permissions than needed (missing: {scopes}). Connect again and "
+                          "approve everything.",
+        "go_to_upload": "Next: Upload products →",
+        "reconnect_needed": "! The sign-in has expired or was withdrawn. Press “Connect my Etsy shop” again.",
+        "offline_detail": "! Etsy cannot be reached right now. Check the internet connection.",
+        "token_cleared": "! The keys changed, so the old sign-in was removed. Connect the shop again.",
+        "cancel": "Cancel",
+        "cancelling": "Cancelling…",
+        "please_wait": "waiting for the current check to finish",
+        "connecting_pinterest": "Connecting Pinterest",
+        "pinterest_connected": "✓ Pinterest connected.",
+        "cut": "Cut",
+        "paste": "Paste",
+        "select_all": "Select all",
+        "status_bad_keys": "✗ Keys refused",
+        "status_reconnect": "! Reconnect needed",
+        "status_offline": "● No connection",
         # drop
         "tab_drop": "2 · Upload products",
         "drop_folder_title": "Your products folder",
@@ -190,24 +242,73 @@ STRINGS: dict[str, dict[str, str]] = {
         "all_files": "Tüm dosyalar",
         # setup
         "tab_setup": "1 · Kurulum",
-        "setup_app_title": "Adım 1: Etsy uygulaman (bir kez)",
-        "setup_app_hint": "Etsy'nin geliştirici sayfasında ücretsiz bir uygulama aç. Onaylanınca "
-                          "Etsy sana bir Keystring ve bir Shared secret verir. Uygulamanın ayarlarına "
-                          "aşağıdaki geri dönüş adresini aynen ekle.",
-        "callback_label": "Eklenecek geri dönüş adresi:",
-        "open_etsy_apps": "Etsy uygulama sayfasını aç",
+        "setup_app_title": "Adım 1: Etsy'de satıcı uygulamanı aç (bir kez)",
+        "setup_app_hint": "Herkes kendi mağazasını kendi ücretsiz Etsy uygulamasıyla bağlar. Etsy'nin "
+                          "kendi mağazan için verdiği \"Seller App\" genelde birkaç dakikada onaylanır.",
+        "callback_label": "Geri dönüş adresi:",
+        "open_seller_app": "Satıcı uygulaması oluştur",
+        "open_dashboard": "Dashboard'u aç",
         "setup_keys_title": "Adım 2: Anahtarların",
         "setup_keys_hint": "İki değeri de Etsy uygulama sayfandan yapıştır. Sadece bu bilgisayarda kalırlar.",
         "callback_field": "Geri dönüş adresi",
         "save_verify": "Kaydet ve Etsy ile kontrol et",
         "saved_to": "Kaydedildiği yer: {path}",
         "setup_connect_title": "Adım 3: Mağazanı bağla",
-        "setup_connect_hint": "Tarayıcı açılır, Etsy'de izin verip buraya dönersin. "
-                              "Bunu yaklaşık 90 günde bir tekrarlarsın.",
+        "setup_connect_hint": "Tarayıcıda Etsy'nin kendi izin sayfası açılır, onaylayıp buraya dönersin. "
+                              "İstenen izinler: ilanlarını okuma ve taslak oluşturma, siparişleri okuma ve kargo "
+                              "takip numarası ekleme. Silme izni istenmez. 90 gün kullanmazsan yeniden bağlaman gerekir.",
         "connect_shop": "Etsy mağazamı bağla",
         "run_checks": "Her şeyi kontrol et",
         "shop_info": "Mağaza bilgileri",
         "shop_profiles": "Kargo ve iade profilleri",
+        # shops and connection
+        "shop": "Mağaza",
+        "shop_n": "Mağaza {n}",
+        "add_shop": "＋ Mağaza ekle",
+        "shop_added": "✓ Yeni mağaza eklendi. Onun için 3 kurulum adımını yap, diğer mağazaların değişmedi.",
+        "remove_shop": "Bu mağazayı bu bilgisayardan kaldır",
+        "confirm_remove_shop": "{shop} bu bilgisayardan kaldırılsın mı?\n\nBurada saklanan anahtarları ve "
+                               "bağlantısı silinir. Etsy'deki mağazaya, listinglerine ve siparişlerine dokunulmaz.",
+        "shop_removed": "✓ {shop} bu bilgisayardan kaldırıldı.",
+        "wait_for_task": "Çalışan iş bitince mağaza değiştirebilirsin.",
+        "setup_app_steps": "1. Mağazanın hesabıyla Etsy'ye giriş yap ve “Satıcı uygulaması oluştur”a bas.\n"
+                           "2. App name: içinde “Etsy” geçmeyen bir isim, örneğin mağazanın adı + Tools.\n"
+                           "3. “Why you want to use the API” kutusuna aşağıdaki metni yapıştır, sonra "
+                           "“Read Terms and Create App”e bas.\n"
+                           "4. Onaylanınca (genelde birkaç dakika) Dashboard'u aç, uygulamanın ⋮ menüsünden "
+                           "“Edit callback URLs”e gir, aşağıdaki geri dönüş adresini ekleyip kaydet.\n"
+                           "5. Aynı sayfadaki Keystring'i ve Shared secret'ı (göz ikonu) 2. adıma kopyala.",
+        "app_description_label": "Kullanım amacı:",
+        "app_description_value": "I manage my own shop with a tool that runs on my own computer: creating draft listings in "
+                                 "bulk from my product photos, updating my listings and adding tracking numbers to my "
+                                 "orders. It connects only to my shop, and the keys stay on my computer.",
+        "setup_app_wait": "Zaten bir Etsy uygulaman var mı? Etsy hesap başına bir tane izin veriyor, onun "
+                          "anahtarlarını kullan. Geliştirici ayarlarındaki “Developer Mode”u açma, mağazanı "
+                          "aramada gizler.",
+        "setup_tools_title": "Araçlar",
+        "setup_tools_hint": "“Her şeyi kontrol et” eksik kalanları adım adım listeler.",
+        "keys_accepted": "✓ Etsy bu anahtarları kabul ediyor.",
+        "keys_rejected": "✗ Etsy bu anahtarları kabul etmedi: {detail}\nEtsy uygulama sayfandaki iki değeri de "
+                         "kontrol et: Keystring ve Shared secret farklı değerlerdir. Yeni açılan bir uygulama "
+                         "henüz Etsy'nin onayını bekliyor olabilir.",
+        "connecting": "Mağazan bağlanıyor",
+        "connected_as": "✓ Bağlandı: {shop}",
+        "scopes_missing": "! Etsy gerekenden az izin verdi (eksik: {scopes}). Yeniden bağlan ve hepsine izin ver.",
+        "go_to_upload": "Sıradaki: Ürün yükle →",
+        "reconnect_needed": "! Bağlantının süresi doldu ya da izin geri alındı. “Etsy mağazamı bağla”ya tekrar bas.",
+        "offline_detail": "! Şu an Etsy'ye ulaşılamıyor. İnternet bağlantını kontrol et.",
+        "token_cleared": "! Anahtarlar değiştiği için eski bağlantı silindi. Mağazayı yeniden bağla.",
+        "cancel": "İptal",
+        "cancelling": "İptal ediliyor…",
+        "please_wait": "süren kontrolün bitmesi bekleniyor",
+        "connecting_pinterest": "Pinterest bağlanıyor",
+        "pinterest_connected": "✓ Pinterest bağlandı.",
+        "cut": "Kes",
+        "paste": "Yapıştır",
+        "select_all": "Tümünü seç",
+        "status_bad_keys": "✗ Anahtarlar hatalı",
+        "status_reconnect": "! Yeniden bağlan",
+        "status_offline": "● Bağlantı yok",
         # drop
         "tab_drop": "2 · Ürün yükle",
         "drop_folder_title": "Ürün klasörün",
@@ -342,11 +443,28 @@ STRINGS: dict[str, dict[str, str]] = {
 }
 
 
-def text(language: str, key: str, **kwargs: object) -> str:
-    """The string for `key`, in `language` if it has one, else in English."""
+def text(language: str, key: str, /, **kwargs: object) -> str:
+    """The string for `key`, in `language` if it has one, else in English.
+
+    Positional-only, so a placeholder may be called anything — including `key` or
+    `language` — without colliding with the parameters.
+    """
     table = STRINGS.get(language) or STRINGS["en"]
     value = table.get(key) or STRINGS["en"].get(key) or key
     return value.format(**kwargs) if kwargs else value
+
+
+def _mac_language() -> str:
+    """The first of macOS's preferred languages, as a two-letter code, or ""."""
+    try:
+        out = subprocess.run(
+            ["defaults", "read", "-g", "AppleLanguages"],
+            capture_output=True, text=True, timeout=3,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    found = re.search(r"[A-Za-z]{2}", out.partition("(")[2])
+    return found.group(0).lower() if found else ""
 
 
 def detect_language() -> str:
@@ -361,6 +479,12 @@ def detect_language() -> str:
             return "en"
         except (AttributeError, OSError):
             pass
+    if sys.platform == "darwin":
+        # An app opened from Finder gets no LANG; the language the person chose
+        # lives in the user defaults instead.
+        preferred = _mac_language()
+        if preferred:
+            return "tr" if preferred == "tr" else "en"
     for name in ("LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"):
         value = os.environ.get(name, "")
         if value:

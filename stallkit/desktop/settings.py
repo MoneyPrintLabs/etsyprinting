@@ -1,9 +1,14 @@
 """Where the desktop window keeps what it is told.
 
-Credentials go in the same `.env` the command line reads — `STALLKIT_HOME/.env`,
-`~/.stallkit/.env` by default — so a shop set up in the window works from a terminal
-and the other way round. Window-only preferences (language, last folder, last CSV)
-go beside it in `desktop.json`, which holds nothing secret.
+Credentials go in the same `.env` the command line reads — the current shop's home,
+`~/.stallkit/.env` for the first shop — so a shop set up in the window works from a
+terminal and the other way round.
+
+Preferences are split in two, neither holding anything secret:
+
+* `desktop.json` in the base home — the window's own: language, which shop is open;
+* `desktop-shop.json` in each shop's home — that shop's products folder, template
+  listing, last CSV files. Two shops never share a products folder by accident.
 """
 
 from __future__ import annotations
@@ -15,18 +20,39 @@ from typing import Any
 
 from dotenv import dotenv_values
 
-from ..config import home_dir, load_env, write_env_file
+from .. import shops
+from ..config import base_home, home_dir, load_env, write_env_file
 
 ETSY_REDIRECT_DEFAULT = "http://localhost:3003/oauth/redirect"
 PINTEREST_REDIRECT_DEFAULT = "http://localhost:8085/"
+
+# Everything a shop's .env may set. Switching shops clears these from the process so
+# the next shop's file is read fresh — load_env() never overrides a variable already set.
+MANAGED_KEYS = (
+    "ETSY_KEYSTRING",
+    "ETSY_SHARED_SECRET",
+    "ETSY_REDIRECT_URI",
+    "ETSY_SHOP_ID",
+    "ETSY_SCOPES",
+    "STALLKIT_RATE_PER_SEC",
+    "PINTEREST_APP_ID",
+    "PINTEREST_APP_SECRET",
+    "PINTEREST_REDIRECT_URI",
+    "PINTEREST_SANDBOX",
+    "PINTEREST_ACCESS_TOKEN",
+)
 
 
 def env_path() -> Path:
     return home_dir() / ".env"
 
 
-def prefs_path() -> Path:
-    return home_dir() / "desktop.json"
+def app_prefs_path() -> Path:
+    return base_home() / "desktop.json"
+
+
+def shop_prefs_path() -> Path:
+    return home_dir() / "desktop-shop.json"
 
 
 def _file_values() -> dict[str, str]:
@@ -43,7 +69,7 @@ def current(key: str, default: str = "") -> str:
 
 
 def save(updates: dict[str, str]) -> Path:
-    """Merge `updates` into the .env and the running process.
+    """Merge `updates` into the current shop's .env and the running process.
 
     Keys that are not being changed are kept, including ones the window has no field
     for (ETSY_SHOP_ID, ETSY_SCOPES, a raised rate limit). An empty value removes the
@@ -65,17 +91,25 @@ def save(updates: dict[str, str]) -> Path:
     return path
 
 
-def load_prefs() -> dict[str, Any]:
+def use_shop(shop_id: str) -> shops.Shop:
+    """Make `shop_id` the shop every command reads and writes ("" = the first shop)."""
+    shop = shops.select(shop_id)
+    for key in MANAGED_KEYS:
+        os.environ.pop(key, None)
+    load_env()
+    return shop
+
+
+def _load(path: Path) -> dict[str, Any]:
     try:
-        data = json.loads(prefs_path().read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
 
 
-def save_prefs(prefs: dict[str, Any]) -> None:
+def _save(path: Path, prefs: dict[str, Any]) -> None:
     """Best effort: a preference that fails to save is not worth an error dialog."""
-    path = prefs_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
@@ -83,3 +117,19 @@ def save_prefs(prefs: dict[str, Any]) -> None:
         tmp.replace(path)
     except OSError:
         pass
+
+
+def load_app_prefs() -> dict[str, Any]:
+    return _load(app_prefs_path())
+
+
+def save_app_prefs(prefs: dict[str, Any]) -> None:
+    _save(app_prefs_path(), prefs)
+
+
+def load_shop_prefs() -> dict[str, Any]:
+    return _load(shop_prefs_path())
+
+
+def save_shop_prefs(prefs: dict[str, Any]) -> None:
+    _save(shop_prefs_path(), prefs)

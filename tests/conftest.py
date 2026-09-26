@@ -20,14 +20,28 @@ ETSY_VARS = (
     "ETSY_SCOPES",
     "STALLKIT_RATE_PER_SEC",
     "STALLKIT_HOME",
+    "STALLKIT_SHOP",
+    "STALLKIT_IGNORE_CWD_ENV",
+    "PINTEREST_APP_ID",
+    "PINTEREST_APP_SECRET",
+    "PINTEREST_REDIRECT_URI",
+    "PINTEREST_SANDBOX",
+    "PINTEREST_ACCESS_TOKEN",
 )
 
 
 @pytest.fixture(autouse=True)
 def isolate_environment(monkeypatch, tmp_path):
-    """No inherited credentials, no inherited .env, no writing to a real token store."""
+    """No inherited credentials, no inherited .env, no writing to a real token store.
+
+    Each variable is set and then deleted, rather than only deleted, so monkeypatch
+    records it and undoes whatever the test itself writes: `load_env()`, shop
+    selection and the desktop settings all write os.environ directly, and a value
+    left behind would leak into every later test.
+    """
     for name in ETSY_VARS:
-        monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
 
     home = tmp_path / "stallkit-home"
     home.mkdir()

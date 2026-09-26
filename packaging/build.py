@@ -53,6 +53,20 @@ def _version_tuple() -> tuple[int, int, int, int]:
     return tuple(parts + [0] * (4 - len(parts)))  # type: ignore[return-value]
 
 
+def _stamp_bundle_version(app: Path) -> None:
+    """PyInstaller's command line cannot set a bundle version, so every .app would
+    say 0.0.0. Write the real one, then re-sign: an edited Info.plist breaks the
+    ad-hoc signature, and Gatekeeper calls an unsigned Apple Silicon app damaged."""
+    import plistlib
+
+    info_path = app / "Contents" / "Info.plist"
+    info = plistlib.loads(info_path.read_bytes())
+    info["CFBundleShortVersionString"] = __version__
+    info["CFBundleVersion"] = __version__
+    info_path.write_bytes(plistlib.dumps(info))
+    subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(app)], check=True)
+
+
 def main() -> int:
     import PyInstaller.__main__
 
@@ -68,7 +82,6 @@ def main() -> int:
     args = [
         str(ROOT / "packaging" / "stallkit_app.py"),
         "--name", "stallkit",
-        "--windowed",
         "--noconfirm",
         "--clean",
         "--distpath", str(DIST),
@@ -87,11 +100,22 @@ def main() -> int:
         version_file.write_text(
             WINDOWS_VERSION_INFO.format(tuple=_version_tuple(), version=__version__), encoding="utf-8"
         )
-        args += ["--onefile", "--icon", str(ico), "--version-file", str(version_file)]
+        # Windowed, so a double-click opens the window and nothing else. (A console
+        # build with --hide-console would print to terminals natively, but on
+        # Windows 11 its console opens in Windows Terminal, which cannot be hidden:
+        # pyinstaller/pyinstaller#8022.) Run from a terminal with arguments, the app
+        # attaches to that terminal itself — see stallkit.desktop._attach_console.
+        args += [
+            "--onefile", "--windowed",
+            "--icon", str(ico), "--version-file", str(version_file),
+        ]
     else:
         png = BUILD / "stallkit.png"
         icon.render(512).save(png)
-        args += ["--icon", str(png), "--osx-bundle-identifier", "io.github.moneyprintlabs.stallkit"]
+        args += [
+            "--windowed", "--icon", str(png),
+            "--osx-bundle-identifier", "io.github.moneyprintlabs.stallkit",
+        ]
 
     PyInstaller.__main__.run(args)
 
@@ -99,6 +123,7 @@ def main() -> int:
         target = RELEASE / f"stallkit-{__version__}-windows.exe"
         shutil.copy2(DIST / "stallkit.exe", target)
     else:
+        _stamp_bundle_version(DIST / "stallkit.app")
         target = RELEASE / f"stallkit-{__version__}-macos.zip"
         target.unlink(missing_ok=True)
         # ditto keeps the bundle's symlinks and permissions; zipfile would not.

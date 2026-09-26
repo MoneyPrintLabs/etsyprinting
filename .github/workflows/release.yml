@@ -27,6 +27,7 @@ jobs:
   build:
     name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -66,7 +67,12 @@ jobs:
         run: |
           $exe = (Get-ChildItem dist/release/*.exe | Select-Object -First 1).FullName
           foreach ($run in @(@('--self-test'), @('listings', 'push', 'examples/listings.csv', '--dry-run'))) {
-            $p = Start-Process -FilePath $exe -ArgumentList $run -Wait -PassThru
+            $p = Start-Process -FilePath $exe -ArgumentList $run -NoNewWindow -PassThru
+            $null = $p.Handle  # keeps ExitCode readable after the process ends
+            if (-not $p.WaitForExit(300000)) {
+              Stop-Process -Id $p.Id -Force
+              throw "stallkit $run did not finish in 5 minutes"
+            }
             Get-Content "$env:USERPROFILE/.stallkit/logs/*.log" -ErrorAction SilentlyContinue
             if ($p.ExitCode -ne 0) { throw "stallkit $run exited with $($p.ExitCode)" }
           }
@@ -89,6 +95,7 @@ jobs:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
 

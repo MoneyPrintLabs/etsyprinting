@@ -196,23 +196,50 @@ class Worker:
     def __init__(self, events: queue.Queue) -> None:
         self._events = events
         self._jobs: queue.Queue = queue.Queue()
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._outstanding = 0  # submitted and not yet finished, running or queued
         self._thread = threading.Thread(target=self._loop, name="stallkit-worker", daemon=True)
         self._thread.start()
 
     def submit(self, job: Callable[[], object], on_done: Callable[[object, BaseException | None], None]) -> None:
         """Run `job` in the background; `on_done(result, error)` runs on the Tk thread."""
-        self._jobs.put((job, on_done))
+        with self._lock:
+            self._outstanding += 1
+        self._jobs.put(("job", job, on_done))
+
+    def idle(self) -> bool:
+        """True when nothing is running or waiting. Only the Tk thread submits, so
+        from the Tk thread the answer cannot go stale before it acts on it."""
+        with self._lock:
+            return self._outstanding == 0
+
+    def run_exclusive(self, action: Callable[[], None]) -> None:
+        """Run `action` on the Tk thread at a point where no job is running.
+
+        The worker reaches this item after everything queued before it, hands the
+        action to the Tk thread, and waits until it has finished before starting
+        anything queued after it. Switching shops changes process-wide environment
+        variables; doing it while a job runs could let that job write one shop's
+        token into another shop's folder.
+        """
+        with self._lock:
+            self._outstanding += 1
+        self._jobs.put(("exclusive", action, None))
 
     def stop(self, wait: float = 0.0) -> bool:
         """Finish the current job, drop the rest, and end the thread.
 
         Returns False if a job was still running after `wait` seconds.
         """
+        self._stop.set()
         while True:
             try:
                 self._jobs.get_nowait()
             except queue.Empty:
                 break
+        with self._lock:
+            self._outstanding = 0
         self._jobs.put(None)
         if wait:
             self._thread.join(wait)
@@ -223,13 +250,29 @@ class Worker:
             item = self._jobs.get()
             if item is None:
                 return
-            job, on_done = item
+            kind, job, on_done = item
+            if kind == "exclusive":
+                finished = threading.Event()
+                self._events.put(("exclusive", job, finished))
+                # Wait for the Tk thread, but not forever: once the window is
+                # closing, nobody will ever set it.
+                while not finished.wait(0.2):
+                    if self._stop.is_set():
+                        return
+                self._finish_one()
+                item = job = finished = None
+                continue
             try:
                 result, error = job(), None
             except BaseException as exc:  # noqa: BLE001 — reported to the window, not lost
                 result, error = None, exc
+            self._finish_one()
             self._events.put(("done", on_done, result, error))
             # The job and its callback close over the window. Holding them until the
             # next job arrives would make this thread the one that frees the window,
             # and Tk objects must only be freed by the thread that created them.
             item = job = on_done = result = error = None
+
+    def _finish_one(self) -> None:
+        with self._lock:
+            self._outstanding = max(0, self._outstanding - 1)

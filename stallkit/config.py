@@ -82,10 +82,27 @@ WHEN_MADE = (
 LISTING_TYPES = ("physical", "download", "both")
 
 
-def home_dir() -> Path:
-    """Directory holding tokens and cache. Override with STALLKIT_HOME."""
+SHOPS_DIR = "shops"
+
+
+def base_home() -> Path:
+    """The root of everything stallkit stores. Override with STALLKIT_HOME."""
     raw = os.environ.get("STALLKIT_HOME")
     return Path(raw).expanduser() if raw else Path.home() / ".stallkit"
+
+
+def home_dir() -> Path:
+    """Directory holding the current shop's credentials, token and cache.
+
+    One shop — the common case — keeps everything in the base home itself. Each
+    further shop gets its own subdirectory, selected with STALLKIT_SHOP (or the
+    `--shop` option), so no key, token or queue can leak from one shop to another.
+    See `stallkit.shops`.
+    """
+    shop = (os.environ.get("STALLKIT_SHOP") or "").strip()
+    if shop.lower() == "default":
+        shop = ""
+    return base_home() / SHOPS_DIR / shop if shop else base_home()
 
 
 def token_path() -> Path:
@@ -97,11 +114,18 @@ def cache_dir() -> Path:
 
 
 def load_env() -> None:
-    """Load .env from the working directory, then from STALLKIT_HOME.
+    """Load .env from the working directory, then from the current shop's home.
 
     Real environment variables always win, so CI and shell exports override files.
+    The working directory is skipped for any shop but the first: loaded first, its
+    values would win over the selected shop's own keys, so `--shop shop-2` would
+    quietly run with shop 1's app. STALLKIT_IGNORE_CWD_ENV=1 skips it for the first
+    shop too; the desktop app sets it, since a stray .env beside the executable would
+    otherwise apply to whichever shop is open.
     """
-    load_dotenv(Path.cwd() / ".env", override=False)
+    ignore = (os.environ.get("STALLKIT_IGNORE_CWD_ENV") or "").strip().lower() in {"1", "true", "yes"}
+    if not ignore and home_dir() == base_home():
+        load_dotenv(Path.cwd() / ".env", override=False)
     load_dotenv(home_dir() / ".env", override=False)
 
 
@@ -143,7 +167,7 @@ class Config:
         if require_key and not keystring:
             raise ConfigError(
                 "ETSY_KEYSTRING is not set.\n"
-                "  1. Create an app at https://www.etsy.com/developers/your-apps\n"
+                "  1. Create a seller app at https://www.etsy.com/developers/register-seller-app\n"
                 "  2. Copy .env.example to .env and paste your keystring into it\n"
                 "     (or export ETSY_KEYSTRING=... in your shell)"
             )

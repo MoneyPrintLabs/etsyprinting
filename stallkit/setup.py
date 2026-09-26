@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable
 
 from . import auth
@@ -170,8 +171,8 @@ def check_connected() -> StepResult:
     return StepResult(OK, f"connected, token valid for {token.seconds_left // 60} min")
 
 
-def check_workspace() -> StepResult:
-    root = workspace_mod.default_root()
+def check_workspace(root: Path | None = None) -> StepResult:
+    root = root or workspace_mod.default_root()
     ws = workspace_mod.Workspace(root)
     if not root.is_dir():
         return StepResult(
@@ -206,7 +207,7 @@ def check_workspace() -> StepResult:
 # --- the checklist --------------------------------------------------------------
 
 
-def build_steps() -> list[Step]:
+def build_steps(workspace: Path | None = None) -> list[Step]:
     return [
         Step(1, "Python 3.9 or newer", check_python),
         Step(2, "stallkit installed", check_installed),
@@ -224,7 +225,7 @@ def build_steps() -> list[Step]:
             "An Etsy API app",
             check_app,
             question=(
-                "Have you created an app at https://www.etsy.com/developers/your-apps ? "
+                "Have you created an app at https://www.etsy.com/developers/register-seller-app ? "
                 "It is free, and personal use is usually approved quickly"
             ),
         ),
@@ -241,7 +242,8 @@ def build_steps() -> list[Step]:
         ),
         Step(8, "Etsy accepts the credential", check_api_reachable),
         Step(9, "Your shop connected", check_connected),
-        Step(10, "Drop workspace (only for `stallkit drop`)", check_workspace, required=False),
+        Step(10, "Drop workspace (only for `stallkit drop`)",
+             lambda: check_workspace(workspace), required=False),
     ]
 
 
@@ -251,13 +253,13 @@ ANSWER_FIXES = {
         "stallkit works on an existing shop — it does not create one.",
     ],
     4: [
-        "Create one at https://www.etsy.com/developers/your-apps",
-        "Describe it honestly — 'personal tools for managing my own shop' is fine.",
+        "Create one at https://www.etsy.com/developers/register-seller-app",
+        "App name without 'Etsy'; say it is your own tool for your own shop, run on your computer.",
         "You will be given a Keystring and a Shared secret. You need BOTH.",
     ],
     7: [
-        "Open your app at https://www.etsy.com/developers/your-apps",
-        "Choose 'Edit callback URLs' and add the exact string from step 6.",
+        "Open the Dashboard at https://www.etsy.com/developers/",
+        "In your app's ⋮ menu choose 'Edit callback URLs' and add the exact string from step 6.",
         "Etsy's own rules: http:// or https://, the host must be a domain name,",
         "and IP addresses are rejected — use 'localhost', never '127.0.0.1'.",
     ],
