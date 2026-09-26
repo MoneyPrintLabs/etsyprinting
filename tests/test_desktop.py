@@ -317,10 +317,24 @@ def window(monkeypatch, tmp_path, tk_root):
     gc.collect()
 
 
+def process_events(window, limit: int = 200) -> None:
+    """Handle a bounded batch of Tk events.
+
+    Not root.update(): that returns only once the event queue is empty, and on
+    macOS an animating progress bar keeps it from ever emptying — update() then
+    never returns. The app itself runs mainloop() and does not have the problem.
+    """
+    import _tkinter
+
+    for _ in range(limit):
+        if not window.root.tk.dooneevent(_tkinter.DONT_WAIT):
+            break
+
+
 def pump(window, *, until, timeout: float = 30.0) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
-        window.root.update()
+        process_events(window)
         if until():
             return
         time.sleep(0.02)
@@ -719,7 +733,7 @@ def test_switching_shops_waits_for_a_background_job_to_finish(window, monkeypatc
     window.refresh_status()
     pump(window, until=started.is_set)
     window.add_shop()
-    window.root.update()
+    process_events(window)
     assert shops.current().id == ""  # deferred while the check runs
     # ...and nothing can be clicked meanwhile: a command queued now would run
     # against the next shop with this shop's form values.
