@@ -636,9 +636,13 @@ def test_shops_are_added_switched_and_removed_without_mixing_them(window, monkey
     assert window.notebook.index(window.notebook.select()) == 0
 
     save_keys("second-key", "second-secret")
+    # switch_shop is only ever called with the worker idle (the window routes it
+    # through _when_idle); a status check still running would race the switch.
+    pump(window, until=window.worker.idle)
     window.switch_shop("")
     assert window.vars["keystring"].get() == "first-key"
     assert settings.load_app_prefs()["shop"] == ""
+    pump(window, until=window.worker.idle)
     window.switch_shop("shop-2")
     assert window.vars["keystring"].get() == "second-key"
 
