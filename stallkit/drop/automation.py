@@ -1,4 +1,9 @@
-"""Prepare product folders and upload drafts with a durable duplicate guard."""
+"""Prepare product folders and upload drafts with a durable duplicate guard.
+
+The history and lock helpers below are shared with `drop.stream` (the web UI's
+streaming run), so both writers keep one upload-history.json per workspace, keyed by
+shop and product name, and never run at the same time.
+"""
 
 from __future__ import annotations
 
@@ -26,7 +31,28 @@ class AutoReport:
     needs_review: list[str] = field(default_factory=list)
 
 
-def _save(path: Path, state: dict) -> None:
+HISTORY_FILE = "upload-history.json"
+LOCK_FILE = ".auto-upload.lock"
+
+
+class UploadLocked(ValidationError):
+    """Another run holds the workspace's upload lock (or a crashed one left it behind)."""
+
+    def __init__(self, message: str, path: Path) -> None:
+        super().__init__(message)
+        self.path = path
+
+
+def history_path(root: Path) -> Path:
+    return root / HISTORY_FILE
+
+
+def lock_path(root: Path) -> Path:
+    return root / LOCK_FILE
+
+
+def save_history(path: Path, state: dict) -> None:
+    """Write the history atomically, or stop: an unsaved entry is a future duplicate."""
     temporary = path.with_suffix(".tmp")
     try:
         with temporary.open("w", encoding="utf-8") as handle:
@@ -39,14 +65,16 @@ def _save(path: Path, state: dict) -> None:
 
 
 @contextmanager
-def _lock(root: Path):
-    path = root / ".auto-upload.lock"
+def upload_lock(root: Path):
+    """One writer per workspace. Raises UploadLocked while another run holds it."""
+    path = lock_path(root)
     try:
         handle = path.open("x", encoding="utf-8")
     except FileExistsError as exc:
-        raise ValidationError(
+        raise UploadLocked(
             f"Another auto run may be active. If it crashed, stop that process, "
-            f"then remove {path}. Keep upload-history.json."
+            f"then remove {path}. Keep upload-history.json.",
+            path,
         ) from exc
     try:
         with handle:
@@ -56,7 +84,64 @@ def _lock(root: Path):
         path.unlink()
 
 
-class _RecordedClient:
+def load_history(path: Path) -> dict:
+    """The whole history file ({shop: {product: entry}}); {} when there is none yet."""
+    try:
+        state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        if not isinstance(state, dict) or any(not isinstance(v, dict) for v in state.values()):
+            raise ValueError("invalid history")
+    except (ValueError, OSError) as exc:
+        raise ValidationError("Cannot read upload-history.json; stopped to avoid duplicates.") from exc
+    return state
+
+
+def shop_history(state: dict, shop: str | None) -> dict:
+    """The entries that guard `shop`; with no shop (a dry run), every shop's entries.
+
+    For a real shop this is the section itself, not a copy, so entries added to it
+    reach `state` once the caller stores it back under `state[shop]`.
+    """
+    if shop is None:
+        # A dry run cannot know which shop it rehearses for, so it checks against
+        # every shop in the file. Otherwise it reads an empty history, validates
+        # products the real run will skip, and says nothing about a half-uploaded
+        # draft that needs looking at — the one thing a rehearsal is for.
+        history: dict = {}
+        for section in state.values():
+            if isinstance(section, dict):
+                history.update(section)
+    else:
+        history = state.get(shop, {})
+    if any(not isinstance(v, dict) or "status" not in v for v in history.values()):
+        raise ValidationError("Invalid upload history; review it before continuing.")
+    return history
+
+
+def known_products(history: dict, names: set[str]) -> tuple[list[str], list[str]]:
+    """(already done, needs review) among the entries whose product is still in the folder.
+
+    `names` are the casefolded names of the products in 2-PRODUCTS: Windows folder
+    names are case-insensitive, so `Mug` renamed to `mug` is still the same product.
+    """
+    already_done: list[str] = []
+    needs_review: list[str] = []
+    for name, entry in history.items():
+        if name.casefold() in names:
+            if entry["status"] == "ok":
+                already_done.append(name)
+            else:
+                needs_review.append(
+                    f"{name}: {entry['status']}, listing {entry.get('listing_id') or 'unknown'}"
+                )
+    return already_done, needs_review
+
+
+# The names these helpers had before they were shared.
+_save = save_history
+_lock = upload_lock
+
+
+class RecordedClient:
     """Save the draft id before uploading its first image."""
 
     def __init__(self, client, path, state, entry):
@@ -71,20 +156,23 @@ class _RecordedClient:
             # Leave the entry pending: listings.push reports it, and a pending entry is
             # never retried automatically.
             pass
-        _save(self.path, self.state)
+        save_history(self.path, self.state)
         return result
 
     def update_listing_inventory(self, listing_id, inventory):
         result = self.client.update_listing_inventory(listing_id, inventory)
         self.entry["variations"] = len(inventory["products"])
-        _save(self.path, self.state)
+        save_history(self.path, self.state)
         return result
 
     def upload_listing_image(self, listing_id, image, *, rank):
         result = self.client.upload_listing_image(listing_id, image, rank=rank)
         self.entry["images_uploaded"] = rank
-        _save(self.path, self.state)
+        save_history(self.path, self.state)
         return result
+
+
+_RecordedClient = RecordedClient
 
 
 def run(workspace: Workspace, template: Template, *, client: EtsyClient | None = None,
@@ -99,40 +187,16 @@ def run(workspace: Workspace, template: Template, *, client: EtsyClient | None =
         raise ValidationError("Connect your Etsy shop before uploading drafts.")
     if template.fields.get("type", "physical") != "physical":
         raise ValidationError("Automatic upload currently supports physical products only; digital delivery files are not supported.")
-    with _lock(workspace.root):
-        path = workspace.root / "upload-history.json"
-        try:
-            state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-            if not isinstance(state, dict) or any(not isinstance(v, dict) for v in state.values()):
-                raise ValueError("invalid history")
-        except (ValueError, OSError) as exc:
-            raise ValidationError("Cannot read upload-history.json; stopped to avoid duplicates.") from exc
+    with upload_lock(workspace.root):
+        path = history_path(workspace.root)
+        state = load_history(path)
         shop = str(client.shop_id()) if client is not None else None
-        if shop is None:
-            # A dry run cannot know which shop it rehearses for, so it checks against
-            # every shop in the file. Otherwise it reads an empty history, validates
-            # products the real run will skip, and says nothing about a half-uploaded
-            # draft that needs looking at — the one thing a rehearsal is for.
-            history = {}
-            for section in state.values():
-                if isinstance(section, dict):
-                    history.update(section)
-        else:
-            history = state.get(shop, {})
-        if any(not isinstance(v, dict) or "status" not in v for v in history.values()):
-            raise ValidationError("Invalid upload history; review it before continuing.")
+        history = shop_history(state, shop)
         report = AutoReport()
         # Windows folder names are case-insensitive, so `Mug` renamed to `mug` is still
         # the same product; matching exactly would upload it a second time.
         names = {p.name.casefold() for p, _ in workspace.product_groups()}
-        for name, entry in history.items():
-            if name.casefold() in names:
-                if entry["status"] == "ok":
-                    report.already_done.append(name)
-                else:
-                    report.needs_review.append(
-                        f"{name}: {entry['status']}, listing {entry.get('listing_id') or 'unknown'}"
-                    )
+        report.already_done, report.needs_review = known_products(history, names)
         prepared = pipeline.run(workspace, template, client=client, exclude_products=set(history))
         report.prepared = prepared
         if prepared.skipped:
@@ -175,13 +239,13 @@ def run(workspace: Workspace, template: Template, *, client: EtsyClient | None =
                      "review_csv": str(prepared.csv_path)}
             history[product.source.name] = entry
             # Persist intent BEFORE the request, including ambiguous network failures.
-            _save(path, state)
-            recorder = _RecordedClient(client, path, state, entry)
+            save_history(path, state)
+            recorder = RecordedClient(client, path, state, entry)
             result = listings.push(
                 recorder, [row], base_dir=prepared.csv_path.parent, inventory=inventory
             ).results[0]
             result.row = line
             entry.update(status=result.status, message=result.message)
-            _save(path, state)
+            save_history(path, state)
             report.uploaded.results.append(result)
         return report

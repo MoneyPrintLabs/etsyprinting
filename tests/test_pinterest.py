@@ -363,3 +363,50 @@ def test_retry_puts_only_unsettled_pins_back(tmp_path):
     after = pin.Queue.load().entries
     assert [e["status"] for e in after] == ["pending", "posted"]
     assert after[0]["due"] == date.today().isoformat()
+
+
+# --- the redirect listener ------------------------------------------------------
+
+
+def _serve_callback(return_url):
+    import socket
+    import threading
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    pin._Callback.result = {}
+    pin._Callback.return_url = return_url
+    server = pin.LoopbackServer(("127.0.0.1", port), pin._Callback)
+    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
+    return server, f"http://127.0.0.1:{port}"
+
+
+def test_the_listener_sends_the_browser_back_to_the_app_when_asked():
+    server, base = _serve_callback("http://localhost:3000/oauth-done")
+    try:
+        with httpx.Client(trust_env=False) as http:
+            resp = http.get(f"{base}/?code=c1&state=s1")
+            # The favicon request that follows must not wipe out the answer.
+            assert http.get(f"{base}/favicon.ico").status_code == 404
+    finally:
+        server.shutdown()
+        server.server_close()
+        pin._Callback.return_url = None
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "http://localhost:3000/oauth-done"
+    assert pin._Callback.result == {"code": "c1", "state": "s1"}
+
+
+def test_without_a_return_address_the_listener_shows_its_own_page():
+    server, base = _serve_callback(None)
+    try:
+        with httpx.Client(trust_env=False) as http:
+            ok = http.get(f"{base}/?code=c1&state=s1")
+            refused = http.get(f"{base}/?error=access_denied&state=s1")
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert ok.status_code == 200 and "connected" in ok.text
+    assert refused.status_code == 200 and "access_denied" in refused.text
+    assert pin._Callback.result == {"error": "access_denied", "state": "s1"}

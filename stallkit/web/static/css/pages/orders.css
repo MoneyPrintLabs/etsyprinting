@@ -1,1 +1,488 @@
-/* Styles for the orders page (filled by the page owner). */
+/* Siparişler (/siparisler) - frame t280. Scoped under .page-orders. */
+
+.page-orders {
+  gap: 16px;
+}
+
+/* ---- toolbar: tabs, ship-from country, "24/24 uploaded", search */
+
+.page-orders .o-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.page-orders .o-bar > .spacer {
+  flex: 1 1 0;
+}
+.page-orders .o-bar > .tabs,
+.page-orders .o-bar > .o-country {
+  flex: none;
+}
+.page-orders .o-bar .tab {
+  white-space: nowrap;
+}
+/* t280: the active tab's count is a solid violet pill */
+.page-orders .o-bar .tab.is-active .tab-count {
+  background: var(--accent);
+  color: #fff;
+}
+.page-orders .o-country {
+  color: var(--muted);
+  font-weight: 550;
+}
+.page-orders .o-country:hover:not(:disabled) {
+  color: var(--text-2);
+}
+.o-country-menu {
+  max-height: min(440px, 70vh);
+  overflow-y: auto;
+}
+.page-orders .o-search {
+  flex: 0 1 264px;
+  width: 264px;
+  min-width: 160px;
+  height: 40px;
+}
+.page-orders .o-search .kbd {
+  display: none;
+}
+.page-orders .o-done {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  height: 36px;
+  padding: 0 15px;
+  border-radius: 10px;
+  background: var(--success-soft);
+  border: 1px solid rgba(52, 211, 153, 0.34);
+  color: var(--success);
+  font-size: 13.5px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.page-orders .o-done.is-partial {
+  background: var(--warning-soft);
+  border-color: rgba(245, 181, 68, 0.34);
+  color: var(--warning);
+}
+.page-orders .o-alerts:empty {
+  display: none;
+}
+.page-orders .o-alerts .note-action .btn {
+  gap: 6px;
+  text-decoration: none;
+}
+
+/* ---- the table */
+
+.page-orders .o-card {
+  overflow: hidden;
+}
+.page-orders .o-table .tbl th {
+  height: 44px;
+  background: var(--panel);
+}
+/* A narrower checkbox column than the default 48px, as in the video. */
+.page-orders .o-table .tbl colgroup col:first-child {
+  width: 42px !important;
+}
+.page-orders .o-table .tbl .tbl-check {
+  padding-left: 18px;
+}
+.page-orders .o-table .tbl td {
+  height: 57px;
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+.page-orders .o-table .tbl-skel td {
+  height: 57px;
+}
+.page-orders .o-table tbody tr.is-error td:first-child {
+  box-shadow: inset 2px 0 0 var(--danger);
+}
+.page-orders .o-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.page-orders .o-no {
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: 0.005em;
+}
+.page-orders .o-name {
+  color: var(--text);
+  font-weight: 600;
+}
+.page-orders .o-sub {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+.page-orders .o-gift {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent-2);
+  font-size: 10.5px;
+  font-weight: 650;
+  vertical-align: 1px;
+}
+.page-orders .o-product {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.page-orders .o-product .thumb {
+  border-radius: 8px;
+  background: #eceae4;
+  border-color: rgba(255, 255, 255, 0.08);
+  color: #8b8f99;
+}
+.page-orders .o-title {
+  color: var(--text);
+  font-weight: 550;
+}
+.page-orders .o-variant {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.page-orders .o-more {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--panel-3);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 650;
+}
+.page-orders .o-total {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+/* carrier pill: static after shipping, a select while waiting */
+.page-orders .o-carrier {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-2);
+  background: var(--panel-2);
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.page-orders .o-carrier > .icon {
+  flex: none;
+  color: var(--muted);
+}
+.page-orders .o-carrier-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.page-orders .o-td-carrier {
+  padding-right: 10px;
+}
+.page-orders .o-carrier.is-edit {
+  width: 100%;
+  padding-right: 24px;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.page-orders .o-carrier.is-edit:hover {
+  border-color: #3a3e4a;
+}
+.page-orders .o-carrier.is-edit:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(124, 108, 246, 0.18);
+}
+.page-orders .o-carrier-select {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.page-orders .o-carrier-select option {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.page-orders .o-carrier-select:disabled {
+  cursor: default;
+  color: var(--text-2);
+}
+.page-orders .o-chev {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-grid;
+  color: var(--muted);
+  pointer-events: none;
+}
+.page-orders .o-carrier.is-empty {
+  border-style: dashed;
+}
+.page-orders .o-carrier.is-empty .o-carrier-select {
+  color: var(--muted);
+}
+.page-orders .o-carrier.is-bad {
+  border-color: rgba(240, 107, 107, 0.6);
+}
+.page-orders .o-carrier.is-bad .o-carrier-select,
+.page-orders .o-carrier.is-bad > .icon {
+  color: var(--danger);
+}
+
+/* tracking number: ✓ + code once uploaded, an input while waiting */
+.page-orders .o-track {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  max-width: 100%;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.page-orders .o-track > .icon {
+  flex: none;
+  color: var(--success);
+}
+.page-orders .o-track .mono {
+  font-size: 12.5px;
+  letter-spacing: 0.01em;
+}
+.page-orders .o-track-input {
+  display: block;
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-2);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 12.5px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.page-orders .o-track-input::placeholder {
+  color: var(--muted-2);
+  font-family: var(--font);
+}
+.page-orders .o-track-input:hover:not(:disabled) {
+  border-color: #3a3e4a;
+}
+.page-orders .o-track-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(124, 108, 246, 0.18);
+}
+.page-orders .o-track-input:disabled {
+  opacity: 0.65;
+}
+
+.page-orders .o-status .badge {
+  height: 24px;
+  padding: 0 9px;
+  font-size: 12px;
+}
+.page-orders .o-status .badge .spinner {
+  border-color: rgba(155, 140, 255, 0.3);
+  border-top-color: var(--accent-2);
+}
+
+/* ---- footer, empty and error states, the note under the card */
+
+.page-orders .o-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 8px 16px 8px 18px;
+  border-top: 1px solid var(--border);
+}
+.page-orders .o-range {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.page-orders .o-range b {
+  color: var(--text);
+  font-weight: 650;
+}
+/* ‹ 1 2 3 › : chevrons instead of the default arrows */
+.page-orders .o-foot .page-arrow > svg {
+  display: none;
+}
+.page-orders .o-foot .page-arrow::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  margin-left: 3px;
+  border: solid currentColor;
+  border-width: 0 0 1.7px 1.7px;
+  transform: rotate(45deg);
+}
+.page-orders .o-foot .page-arrow:last-child::before {
+  margin-left: -3px;
+  transform: rotate(-135deg);
+}
+.page-orders .o-empty .empty {
+  padding: 40px 16px;
+}
+.page-orders .o-error {
+  padding: 20px;
+}
+.page-orders .o-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: -2px;
+  padding-left: 6px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.page-orders .o-note .icon {
+  flex: none;
+}
+.page-orders .o-setup .empty {
+  padding: 56px 16px;
+}
+
+/* ---- the confirm modal's list (rendered outside the page) */
+
+.o-confirm-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.o-confirm-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+}
+.o-confirm-row:last-child {
+  border-bottom: 0;
+}
+.o-confirm-row .o-cell {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.o-confirm-row .o-no {
+  color: var(--text);
+  font-weight: 650;
+}
+.o-confirm-row .o-sub {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.o-confirm-row .o-carrier {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 7px;
+  border: 1px solid var(--border-2);
+  background: var(--panel-2);
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  max-width: 130px;
+}
+.o-confirm-row .o-carrier .icon {
+  flex: none;
+  color: var(--muted);
+}
+.o-confirm-row .o-carrier-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.o-confirm-track {
+  color: var(--text-2);
+  text-align: right;
+}
+.o-confirm-more {
+  padding: 8px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  border-top: 1px solid var(--border);
+}
+
+/* ---- narrower windows */
+
+@media (max-width: 1360px) {
+  .page-orders .o-country .o-country-prefix {
+    display: none;
+  }
+  /* Narrower fixed columns so the product keeps some room (inline widths need !important). */
+  .page-orders .o-table .tbl colgroup col:nth-child(2) {
+    width: 122px !important;
+  }
+  .page-orders .o-table .tbl colgroup col:nth-child(3) {
+    width: 118px !important;
+  }
+  .page-orders .o-table .tbl colgroup col:nth-child(5) {
+    width: 84px !important;
+  }
+  .page-orders .o-table .tbl colgroup col:nth-child(6) {
+    width: 116px !important;
+  }
+  .page-orders .o-table .tbl colgroup col:nth-child(7) {
+    width: 166px !important;
+  }
+  .page-orders .o-table .tbl colgroup col:nth-child(8) {
+    width: 132px !important;
+  }
+  .page-orders .o-table .tbl td:last-child,
+  .page-orders .o-table .tbl th:last-child {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+  .page-orders .o-table .tbl {
+    min-width: 940px;
+  }
+}
+@media (max-width: 1180px) {
+  .page-orders .o-bar {
+    flex-wrap: wrap;
+  }
+}
+@media (max-width: 860px) {
+  .page-orders .o-bar > .spacer {
+    display: none;
+  }
+  .page-orders .o-search {
+    width: 100%;
+  }
+}

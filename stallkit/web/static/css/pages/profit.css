@@ -1,1 +1,1001 @@
-/* Styles for the profit page (filled by the page owner). */
+/* Kâr-Zarar (/kar-zarar) - frames t290 / t300.
+   Header controls live in the top bar (outside .page-profit), and the costs modal and the
+   rate popover live in <body>, so every class here carries the pf- prefix. */
+
+.page-profit {
+  --pf-gap: 22px;
+  --pf-fees: #f5b544;
+  --pf-cost: #a3a7b3;
+  --pf-ship: #626673;
+  --pf-net: var(--success);
+  --pf-track: #24262e;
+  gap: 20px;
+}
+.pf-content,
+.pf-other {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+.pf-content[hidden],
+.pf-other[hidden],
+.pf-status[hidden],
+.pf-notes[hidden] {
+  display: none;
+}
+
+/* ------------------------------------------------------------------ header controls */
+
+.pf-rate {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 8px;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: color 0.15s, background 0.15s;
+}
+.pf-rate:hover,
+.pf-rate[aria-expanded="true"] {
+  color: var(--text-2);
+  background: rgba(255, 255, 255, 0.035);
+}
+.pf-tip {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 70;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: #22242d;
+  border: 1px solid var(--border-2);
+  box-shadow: var(--shadow-pop);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-3px);
+  transition: opacity 0.12s, transform 0.12s;
+}
+.pf-rate:hover .pf-tip,
+.pf-rate:focus-visible .pf-tip {
+  opacity: 1;
+  transform: none;
+}
+.pf-rate[aria-expanded="true"] .pf-tip {
+  opacity: 0;
+}
+
+.pf-seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 36px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border-2);
+}
+.pf-seg-btn {
+  height: 28px;
+  min-width: 44px;
+  padding: 0 11px;
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  transition: background 0.15s, color 0.15s;
+}
+.pf-seg-btn:hover:not(:disabled):not(.is-active) {
+  color: var(--text-2);
+}
+.pf-seg-btn.is-active {
+  background: linear-gradient(180deg, #8a7bfb 0%, #7766f4 100%);
+  color: #fff;
+  box-shadow: 0 4px 14px -6px rgba(124, 108, 246, 0.9), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+.pf-seg-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.pf-seg-sm {
+  height: 32px;
+}
+.pf-seg-sm .pf-seg-btn {
+  height: 24px;
+}
+
+.select.pf-month {
+  height: 36px;
+  padding-left: 12px;
+  padding-right: 32px;
+  gap: 8px;
+}
+.pf-month .select-prefix {
+  display: inline-grid;
+  color: var(--text-2);
+}
+.pf-month .select-native {
+  font-weight: 650;
+  font-size: 13px;
+}
+
+/* ------------------------------------------------------------------ loading strip */
+
+.pf-loading {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  border: 1px solid rgba(124, 108, 246, 0.28);
+}
+.pf-loading-text {
+  flex: 1;
+  min-width: 0;
+}
+.pf-loading-title {
+  font-size: 13.5px;
+  font-weight: 650;
+}
+.pf-loading-msg {
+  margin-top: 1px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.pf-loading-bar {
+  flex: 0 1 220px;
+}
+.pf-loading-bar .progress {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+/* ------------------------------------------------------------------ KPI row */
+
+.pf-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(0, 1.29fr);
+  gap: var(--pf-gap);
+}
+.pf-kpi {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+.pf-kpi > .stat {
+  flex: 1;
+  min-width: 0;
+  padding: 18px 18px 18px;
+  gap: 2px;
+}
+.pf-kpi .stat-head {
+  margin-bottom: 12px;
+}
+.pf-kpi .stat-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 550;
+}
+.pf-kpi .stat-value {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+.pf-kpi .stat-sub {
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.pf-kpi .stat-foot {
+  margin-top: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pf-kpi .stat-foot b {
+  color: var(--text);
+  font-weight: 650;
+}
+.pf-kpi .stat-foot > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pf-kpi .icon-tile.tone-info {
+  background: rgba(88, 118, 230, 0.16);
+  color: #7f9cff;
+}
+.pf-kpi .icon-tile.tone-warning {
+  background: rgba(245, 181, 68, 0.15);
+  color: var(--warning);
+}
+
+/* Net profit: the highlighted card (violet border + glow, solid green icon). */
+.pf-kpi > .stat.pf-net-card {
+  border-color: rgba(124, 108, 246, 0.6);
+  background:
+    radial-gradient(120% 90% at 0% 0%, rgba(52, 211, 153, 0.07), transparent 60%),
+    radial-gradient(ellipse at 30% 0%, rgba(124, 108, 246, 0.14), transparent 70%),
+    #15151f;
+  box-shadow: 0 0 44px -10px rgba(124, 108, 246, 0.6), inset 0 0 0 1px rgba(124, 108, 246, 0.14);
+}
+.pf-net-card .icon-tile {
+  background: var(--success);
+  color: #07130e;
+  border-color: transparent;
+}
+.pf-net-card .stat-label {
+  font-size: 12.5px;
+  font-weight: 750;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.pf-kpi .pf-net-card .stat-value {
+  font-size: 33px;
+}
+.pf-net-card .stat-sub {
+  color: var(--success);
+}
+.pf-net-card.is-loss .stat-sub {
+  color: var(--danger);
+}
+.pf-net-card .stat-delta .badge {
+  height: 24px;
+  font-size: 12px;
+  border: 1px solid rgba(52, 211, 153, 0.22);
+}
+.pf-net-card .stat-delta .badge.tone-danger {
+  border-color: rgba(240, 107, 107, 0.25);
+}
+
+/* The circular operators between the cards: − − − = */
+.pf-op {
+  position: absolute;
+  left: calc(var(--pf-gap) / -2);
+  top: 50%;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin: -12px 0 0 -12px;
+  border-radius: 50%;
+  background: #101116;
+  border: 1px solid #353844;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* Thin bars: one share per card, the four-colour split under Gelir. */
+.pf-bar {
+  display: flex;
+  gap: 3px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--pf-track);
+  overflow: hidden;
+}
+.pf-bar.pf-stack {
+  background: transparent;
+}
+.pf-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  min-width: 0;
+}
+.pf-t-fees {
+  background: var(--pf-fees);
+}
+.pf-t-cost {
+  background: var(--pf-cost);
+}
+.pf-t-ship {
+  background: var(--pf-ship);
+}
+.pf-t-net {
+  background: var(--pf-net);
+}
+.pf-t-rest {
+  background: var(--pf-track);
+}
+.pf-kpis.is-loading .pf-bar {
+  opacity: 0.6;
+}
+.pf-warn {
+  color: var(--warning);
+  font-weight: 550;
+}
+.pf-foot .pf-warn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ------------------------------------------------------------------ notes / CTA */
+
+.pf-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.pf-cta {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 18px;
+  border-radius: var(--radius-lg);
+  background:
+    radial-gradient(ellipse at 0% 0%, rgba(124, 108, 246, 0.12), transparent 60%),
+    var(--panel);
+  border: 1px dashed rgba(124, 108, 246, 0.45);
+}
+.pf-cta-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  background: var(--accent-soft);
+  color: var(--accent-2);
+}
+.pf-cta-text {
+  flex: 1;
+  min-width: 0;
+}
+.pf-cta-title {
+  font-size: 14.5px;
+  font-weight: 650;
+}
+.pf-cta-msg {
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--text-2);
+  line-height: 1.5;
+}
+
+/* ------------------------------------------------------------------ grid */
+
+.pf-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.39fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+/* Products card */
+.pf-products > .card-head {
+  padding: 16px 20px 12px;
+  border-bottom: 0;
+}
+.pf-products .card-actions {
+  gap: 6px;
+}
+.select.pf-sort {
+  height: 32px;
+  padding-left: 11px;
+  padding-right: 30px;
+}
+.pf-sort .select-native {
+  font-size: 12.5px;
+}
+.pf-products .card-title,
+.pf-chart .card-title {
+  font-size: 17px;
+}
+.pf-products .tbl th {
+  background: rgba(0, 0, 0, 0.14);
+  border-top: 1px solid var(--border);
+  height: 36px;
+  padding: 0 12px;
+}
+.pf-products .tbl th:first-child,
+.pf-products .tbl td:first-child {
+  padding-left: 20px;
+}
+.pf-products .tbl th:last-child,
+.pf-products .tbl td:last-child {
+  padding-right: 20px;
+}
+.pf-products .tbl td {
+  height: 60px;
+  padding: 10px 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.pf-products .tbl tbody tr:last-child td {
+  border-bottom: 1px solid var(--border);
+}
+.pf-products .tbl-empty td {
+  height: auto;
+}
+.pf-c-qty {
+  color: var(--text-2);
+}
+.pf-c-rev {
+  color: var(--text);
+}
+.pf-prod {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.pf-prod .thumb {
+  flex: none;
+  background: #f4f2ee;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.pf-prod-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+.pf-prod-title {
+  max-width: 100%;
+  font-size: 13.5px;
+  font-weight: 650;
+  color: var(--text);
+}
+.pf-prod-type {
+  font-size: 12px;
+  color: var(--muted);
+}
+.pf-loss-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 19px;
+  padding: 0 7px;
+  border-radius: 6px;
+  background: rgba(240, 107, 107, 0.14);
+  color: #ff8585;
+  font-size: 11px;
+  font-weight: 650;
+}
+.pf-products .tbl tbody tr.pf-row-loss {
+  background: rgba(240, 107, 107, 0.055);
+}
+.pf-products .tbl tbody tr.pf-row-loss:hover {
+  background: rgba(240, 107, 107, 0.08);
+}
+.pf-products .tbl tbody tr.pf-row-loss td:first-child {
+  box-shadow: inset 2px 0 0 var(--danger);
+}
+.pf-net {
+  font-weight: 700;
+}
+.pf-net.is-pos {
+  color: var(--success);
+}
+.pf-net.is-neg {
+  color: var(--danger);
+}
+.pf-pill {
+  display: inline-grid;
+  place-items: center;
+  min-width: 48px;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: 7px;
+  font-size: 12.5px;
+  font-weight: 650;
+}
+.pf-pill.is-pos {
+  background: rgba(52, 211, 153, 0.12);
+  color: var(--success);
+}
+.pf-pill.is-neg {
+  background: rgba(240, 107, 107, 0.14);
+  color: #ff8585;
+}
+
+/* The MALİYET cell: click to type a unit cost. */
+.pf-c-cost {
+  color: var(--text-2);
+}
+.pf-cost-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  margin: 0 -8px 0 0;
+  padding: 0 8px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  color: inherit;
+  font-variant-numeric: tabular-nums;
+  cursor: text;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.pf-cost-btn:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--border-2);
+  color: var(--text);
+}
+.pf-cost-btn.is-own {
+  color: var(--text);
+}
+.pf-cost-btn.is-empty {
+  border: 1px dashed rgba(245, 181, 68, 0.5);
+  color: var(--warning);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pf-products .tbl td.pf-c-cost:has(.pf-cost-edit) {
+  overflow: visible;
+}
+.pf-cost-edit {
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  margin: -4px -6px -14px 0;
+}
+.input.pf-cost-input {
+  width: 78px;
+  height: 28px;
+  padding: 0 8px;
+  text-align: right;
+  font-size: 13px;
+}
+.pf-cost-unit {
+  font-size: 10.5px;
+  line-height: 1;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.pf-cost-edit .spinner {
+  position: absolute;
+  left: -20px;
+  top: 7px;
+}
+.pf-more-row {
+  display: flex;
+  justify-content: center;
+  padding: 8px 12px 10px;
+}
+.pf-more-row .btn[hidden] {
+  display: none;
+}
+
+/* Chart card */
+.pf-chart > .card-head {
+  margin-bottom: 8px;
+}
+.pf-chart-delta .badge {
+  height: 26px;
+  border: 1px solid rgba(52, 211, 153, 0.2);
+}
+.pf-chart-delta .badge.tone-danger {
+  border-color: rgba(240, 107, 107, 0.24);
+}
+.pf-chart .card-body {
+  container-type: inline-size;
+}
+.pf-chart-body {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.pf-chart-host {
+  min-height: 212px;
+}
+.pf-chart-host .bar-value {
+  font-size: 12.5px;
+}
+.pf-chart-host .bar-label {
+  font-size: 12.5px;
+}
+.pf-chart-skel {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-around;
+  height: 212px;
+  padding: 26px 8px 26px;
+}
+.pf-chart-skel .skeleton {
+  width: 38px;
+  border-radius: 7px 7px 3px 3px;
+}
+.pf-chart-note {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+@container (min-width: 760px) {
+  .pf-chart-body {
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 36px;
+  }
+  .pf-chart-col {
+    flex: 1.2;
+    min-width: 0;
+  }
+  .pf-chart-body > .pf-fees {
+    flex: 1;
+    min-width: 0;
+    padding-top: 8px;
+  }
+}
+
+/* Etsy kesintileri dökümü */
+.pf-fees-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.pf-fees-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 650;
+}
+.pf-fees-total {
+  font-size: 12.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.pf-fees-total b {
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 700;
+}
+.pf-fee-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.pf-fee-row {
+  display: grid;
+  grid-template-columns: minmax(96px, 38%) minmax(40px, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  font-size: 12.5px;
+}
+.pf-fee-label {
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pf-fee-track {
+  height: 5px;
+  border-radius: 999px;
+  background: var(--pf-track);
+  overflow: hidden;
+}
+.pf-fee-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #d59a33, var(--pf-fees));
+}
+.pf-fee-val {
+  min-width: 64px;
+  text-align: right;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+.pf-fees-note {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--warning-soft);
+  border: 1px solid rgba(245, 181, 68, 0.22);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.pf-fees-note .icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--warning);
+}
+
+/* ------------------------------------------------------------------ foot */
+
+.pf-foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  min-height: 20px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.pf-foot:empty {
+  display: none;
+}
+.pf-foot-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.pf-link {
+  color: var(--accent-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+.pf-link:hover {
+  text-decoration: underline;
+}
+
+.pf-setup,
+.pf-error {
+  padding: 40px 20px;
+}
+
+/* ------------------------------------------------------------------ rate popover */
+
+.popover .pf-ratepop {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 8px 8px 4px;
+}
+.pf-ratepop-title {
+  font-size: 13.5px;
+  font-weight: 650;
+}
+.pf-ratepop-desc {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.pf-ratepop-rate {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  font-size: 12px;
+}
+.pf-ratepop-rate b {
+  font-size: 13px;
+  font-weight: 650;
+  white-space: normal;
+}
+.pf-ratepop .note {
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.pf-ratepop-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.pf-ratepop-row {
+  display: flex;
+  gap: 8px;
+}
+.pf-ratepop-row .input-affix {
+  flex: 1;
+  height: 32px;
+}
+.pf-ratepop-foot {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 2px;
+  border-top: 1px solid var(--border);
+  margin: 0 -8px;
+  padding: 6px 8px 0;
+}
+
+/* ------------------------------------------------------------------ costs modal */
+
+.pf-costs-modal .modal-body {
+  max-height: min(64vh, 620px);
+  overflow: auto;
+}
+.pf-cm {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.pf-cm-cur {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.pf-cm-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.pf-cm-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pf-cm-h {
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.pf-cm-h-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+.pf-cm-h-row .search {
+  width: 200px;
+  height: 32px;
+}
+.pf-cm-hint {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.pf-cm-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px 150px;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.pf-cm-row:last-child {
+  border-bottom: 0;
+}
+.pf-cm-row-head {
+  padding: 0 0 4px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.pf-cm-row-head span:not(:first-child) {
+  text-align: right;
+}
+.pf-cm-row-default {
+  background: transparent;
+}
+.pf-cm-type {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.pf-cm-type-name {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.pf-cm-type-count {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.pf-cm .input-affix {
+  height: 34px;
+  padding: 0 10px;
+}
+.pf-cm .input-affix .affix-suf {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.pf-cm-prods {
+  display: flex;
+  flex-direction: column;
+}
+.pf-cm-prod {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 150px;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+}
+.pf-cm-prod:last-child {
+  border-bottom: 0;
+}
+.pf-cm-prod[hidden] {
+  display: none;
+}
+.pf-cm-prod .thumb {
+  background: #f4f2ee;
+}
+.pf-cm-prod-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.pf-cm-prod-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+.pf-cm-prod-type {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.pf-cm-empty {
+  padding: 14px 0;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+/* ------------------------------------------------------------------ narrower windows */
+
+@media (max-width: 1440px) {
+  .page-profit {
+    --pf-gap: 18px;
+  }
+  .pf-kpi > .stat {
+    padding: 16px 15px;
+  }
+  .pf-kpi .stat-value {
+    font-size: 24px;
+  }
+  .pf-kpi .pf-net-card .stat-value {
+    font-size: 28px;
+  }
+}
+@media (max-width: 1360px) {
+  .pf-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 1180px) {
+  .pf-rate-text {
+    display: none;
+  }
+  .pf-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .pf-kpi:last-child {
+    grid-column: 1 / -1;
+  }
+  .pf-op {
+    display: none;
+  }
+}
+@media (max-width: 640px) {
+  .pf-kpis {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .pf-cm-row {
+    grid-template-columns: minmax(0, 1fr) 110px 110px;
+  }
+  .pf-cm-prod {
+    grid-template-columns: 32px minmax(0, 1fr) 110px;
+  }
+  .pf-loading-bar {
+    display: none;
+  }
+}

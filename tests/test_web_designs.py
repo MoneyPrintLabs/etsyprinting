@@ -1,0 +1,449 @@
+"""Tasarım Yükle endpoints: uploads, the pending list, the draft run and its recovery."""
+
+from __future__ import annotations
+
+import io
+import json
+import threading
+import time
+
+import httpx
+import pytest
+from PIL import Image
+from web_helpers import ETSY_SHOP_ID, read_events, use_fake_etsy, wait_for_job
+
+from stallkit.drop import mockup
+from stallkit.drop.template import Template
+from stallkit.web.api import designs
+
+TEMPLATE_ID = 1000001
+SHOP = str(ETSY_SHOP_ID)
+
+
+def _png(colour=(200, 60, 40), transparent=True) -> bytes:
+    image = Image.new("RGBA", (40, 40), (0, 0, 0, 0) if transparent else (*colour, 255))
+    for x in range(10, 30):
+        for y in range(10, 30):
+            image.putpixel((x, y), (*colour, 255))
+    buffer = io.BytesIO()
+    image.save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+def _jpg(colour=(240, 240, 240)) -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (40, 40), colour).save(buffer, "JPEG")
+    return buffer.getvalue()
+
+
+def _put(web, path, data, **query):
+    return web.client.put("/api/designs/files", params={"path": path, **query}, content=data)
+
+
+@pytest.fixture
+def fast_images(monkeypatch):
+    """Compositing at the real 2000 px output is slow and beside the point here."""
+    def small_compose(design, template_image, out, *, area=None, **_kw):
+        out.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (30, 30), (200, 200, 200)).save(out, "JPEG")
+        return out
+
+    def small_flat(design, out, **_kw):
+        out.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (30, 30), (255, 255, 255)).save(out, "JPEG")
+        return out
+
+    monkeypatch.setattr(mockup, "compose", small_compose)
+    monkeypatch.setattr(mockup, "flatten_design", small_flat)
+
+
+def _setup_shop(web, *, connected=True, template=True, mockups=2):
+    fake = use_fake_etsy(web, connected=connected)
+    ws = web.ctx.workspace()
+    for n, name in enumerate(["tshirt-white.jpg", "mug-white.jpg", "tote-natural.jpg"][:mockups]):
+        (ws.mockups / name).write_bytes(_jpg((230 + n, 230, 230)))
+    if template:
+        ws.write_template(Template(TEMPLATE_ID, source_title="Retro Mountain Sunset Shirt", fields={
+            "taxonomy_id": 482, "price": 21.0, "quantity": 10, "who_made": "i_did",
+            "when_made": "made_to_order", "type": "physical", "shipping_profile_id": 5551,
+        }, description="Soft ringspun cotton tee.", tags=["gift for him"]).to_dict())
+    listing_ids = iter(range(2000001, 2000100))
+    created: list[dict] = []
+
+    def create(request: httpx.Request):
+        form = dict(httpx.QueryParams(request.content.decode()))
+        created.append(form)
+        return {"listing_id": next(listing_ids), "state": "draft"}
+
+    fake.add("POST", f"/shops/{ETSY_SHOP_ID}/listings", create)
+    for listing_id in range(2000001, 2000020):
+        fake.add("POST", f"/shops/{ETSY_SHOP_ID}/listings/{listing_id}/images",
+                 {"listing_image_id": listing_id * 10})
+    fake.add("GET", f"/listings/{TEMPLATE_ID}/inventory", {"products": [{
+        "product_id": 1, "sku": "", "is_deleted": False, "property_values": [],
+        "offerings": [{"offering_id": 2, "is_deleted": False, "is_enabled": True, "quantity": 10,
+                       "price": {"amount": 2100, "divisor": 100, "currency_code": "USD"}}]}]})
+
+    def search(request: httpx.Request):
+        keywords = request.url.params.get("keywords", "design")
+        first = keywords.split()[0]
+        return {"count": 30, "results": [
+            {"listing_id": 3000000 + n, "title": f"{keywords} shirt vintage gift {n}",
+             "tags": [f"{first} tee", "vintage gift", f"extra tag {n % 12}"],
+             "price": {"amount": 2000, "divisor": 100, "currency_code": "USD"},
+             "num_favorers": n} for n in range(30)]}
+
+    fake.add("GET", "/listings/active", search)
+    web.ctx.refresh_status(force=True)
+    fake.created = created
+    return fake, ws
+
+
+# --- setup and blockers -------------------------------------------------------------------
+
+
+def test_without_keys_the_pending_view_says_what_is_missing(web):
+    resp = web.client.get("/api/designs/pending")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["items"] == [] and data["ready"] is False
+    assert data["blockers"] == ["keys", "template", "empty"]
+    assert data["mockups"] == {"enabled": 0, "total": 0, "types": {}, "primary": None}
+    assert data["shop"]["connected"] is False
+
+    start = web.client.post("/api/designs/start", json={})
+    assert start.status_code == 409
+    error = start.json()["error"]
+    assert error["code"] == "setup_incomplete"
+    assert error["params"]["blockers"] == ["keys", "template", "empty"]
+
+
+def test_a_connected_shop_with_a_template_and_designs_is_ready(web, fast_images):
+    _fake, ws = _setup_shop(web)
+    assert _put(web, "retro-mountain-sunset.png", _png()).status_code == 200
+    assert _put(web, "IMG_2043.png", _png((10, 200, 30))).status_code == 200
+    data = web.client.get("/api/designs/pending").json()
+    assert data["ready"] is True and data["blockers"] == []
+    by_name = {item["name"]: item for item in data["items"]}
+    assert by_name["retro-mountain-sunset.png"]["concept"] == "retro mountain sunset"
+    assert by_name["retro-mountain-sunset.png"]["thumb_path"] == "2-PRODUCTS/retro-mountain-sunset.png"
+    assert by_name["IMG_2043.png"]["junk_reason"]
+    assert "junk" in data["warnings"]
+    assert data["mockups"]["enabled"] == 2 and data["mockups"]["types"] == {"tshirt": 1, "mug": 1}
+    assert data["template"]["title"] == "Retro Mountain Sunset Shirt"
+    assert data["template"]["price"] == 21.0 and data["template"]["shipping_profile"] is True
+    assert data["shop"] == {"connected": True, "name": "ExampleShop", "state": "connected"}
+    assert data["estimate_requests"] > 0
+
+
+def test_a_template_that_cannot_make_a_draft_blocks_the_start(web):
+    _fake, ws = _setup_shop(web)
+    data = json.loads(ws.template_path.read_text(encoding="utf-8"))
+    data["fields"]["price"] = -3
+    ws.write_template(data)
+    _put(web, "retro-mountain-sunset.png", _png())
+    pending = web.client.get("/api/designs/pending").json()
+    assert pending["blockers"] == ["template_invalid"]
+    assert "price" in pending["template"]["invalid"]
+
+
+def test_offline_is_a_blocker_for_a_real_run_but_not_for_a_check(web, fast_images):
+    fake, _ws = _setup_shop(web)
+    _put(web, "retro-mountain-sunset.png", _png())
+    fake.offline = True
+    web.ctx.refresh_status(force=True)
+    assert web.client.get("/api/designs/pending").json()["blockers"] == ["offline"]
+    assert web.client.post("/api/designs/start", json={}).json()["error"]["params"] == {
+        "blockers": ["offline"]}
+    job = web.client.post("/api/designs/start", json={"dry_run": True})
+    assert job.status_code == 200
+    final = wait_for_job(web, job.json()["id"])
+    assert final["status"] == "done"
+    assert final["state"]["items"][0]["status"] == "checked"
+
+
+# --- uploads ---------------------------------------------------------------------------------
+
+
+def test_uploads_land_in_the_products_folder_without_overwriting(web):
+    ws = web.ctx.workspace()
+    first = _put(web, "mountain sunset.png", _png())
+    assert first.status_code == 200
+    assert first.json() == {"name": "mountain sunset.png", "file": "mountain sunset.png",
+                            "folder": None, "path": "2-PRODUCTS/mountain sunset.png",
+                            "duplicate": False, "known": False, "ignored": None,
+                            "size": len(_png())}
+    same = _put(web, "mountain sunset.png", _png()).json()
+    assert same["duplicate"] is True and same["name"] == "mountain sunset.png"
+    other = _put(web, "Mountain Sunset.PNG", _png((1, 2, 3))).json()
+    assert other["name"] == "Mountain Sunset-2.png" and other["duplicate"] is False
+    assert sorted(p.name for p in ws.products.iterdir()) == [
+        "Mountain Sunset-2.png", "mountain sunset.png"]
+
+
+def test_a_dropped_folder_becomes_one_product_folder_per_batch(web):
+    ws = web.ctx.workspace()
+    for name in ("01-front.jpg", "02-back.jpg"):
+        resp = _put(web, f"desert cactus print/{name}", _jpg(), batch="b1")
+        assert resp.json()["name"] == "desert cactus print"
+    again = _put(web, "desert cactus print/01-front.jpg", _jpg((9, 9, 9)), batch="b2").json()
+    assert again["name"] == "desert cactus print-2", "a later drop never merges into an old product"
+    assert sorted(p.name for p in (ws.products / "desert cactus print").iterdir()) == [
+        "01-front.jpg", "02-back.jpg"]
+    pending = web.client.get("/api/designs/pending").json()
+    folder = next(i for i in pending["items"] if i["name"] == "desert cactus print")
+    assert folder["kind"] == "folder" and folder["files"] == 2
+    assert folder["thumb_path"] == "2-PRODUCTS/desert cactus print/01-front.jpg"
+
+
+@pytest.mark.parametrize("path, code", [
+    ("../escape.png", "invalid"),
+    ("a/b/c.png", "invalid"),
+    (".hidden.png", "invalid"),
+    ("notes.txt", "not_image"),
+])
+def test_bad_upload_paths_are_refused(web, path, code):
+    resp = _put(web, path, _png())
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == code
+
+
+def test_a_file_that_is_not_an_image_is_refused(web):
+    resp = _put(web, "sunset.png", b"this is not a png")
+    assert resp.status_code == 422 and resp.json()["error"]["code"] == "not_image"
+    assert not any(web.ctx.workspace().products.iterdir())
+
+
+def test_an_oversized_design_is_refused(web, monkeypatch):
+    monkeypatch.setattr(designs, "MAX_UPLOAD", 100)
+    resp = _put(web, "sunset.png", _png())
+    assert resp.status_code == 413 and resp.json()["error"]["code"] == "too_large"
+
+
+def test_a_preview_named_file_is_saved_but_flagged(web):
+    data = _put(web, "sunset-preview.png", _png()).json()
+    assert data["ignored"] == "preview_name"
+
+
+def test_removing_a_design_moves_it_to_the_archive(web):
+    ws = web.ctx.workspace()
+    _put(web, "sunset.png", _png())
+    (ws.archive / "sunset.png").write_bytes(b"older")
+    resp = web.client.request("DELETE", "/api/designs/files", params={"path": "sunset.png"})
+    assert resp.status_code == 200
+    assert resp.json()["archived"] == "archive/sunset-2.png"
+    assert not (ws.products / "sunset.png").exists()
+    assert (ws.archive / "sunset-2.png").read_bytes() == _png()
+    missing = web.client.request("DELETE", "/api/designs/files", params={"path": "nope.png"})
+    assert missing.status_code == 404
+
+
+# --- the run ------------------------------------------------------------------------------------
+
+
+def test_a_run_creates_drafts_and_reports_every_step(web, fast_images):
+    fake, ws = _setup_shop(web)
+    _put(web, "retro-mountain-sunset.png", _png())
+    _put(web, "but-first-coffee.png", _png((90, 60, 30)))
+    _put(web, "IMG_2043.png", _png((10, 200, 30)))
+
+    def trigger():
+        resp = web.client.post("/api/designs/start", json={})
+        assert resp.status_code == 200, resp.text
+
+    events = read_events(
+        web,
+        lambda evs: any(t == "job" and d["kind"] == "designs" and d["status"] == "done"
+                        for t, d in evs),
+        after_connect=trigger,
+        timeout=20,
+    )
+    job_id = next(d["id"] for t, d in events if t == "job" and d["kind"] == "designs")
+    final = wait_for_job(web, job_id)
+    assert final["status"] == "done"
+    result = final["result"]
+    assert result["created"] == 2 and result["errors"] == 1 and result["total"] == 3
+    state = final["state"]
+    by_name = {item["name"]: item for item in state["items"]}
+    good = by_name["retro-mountain-sunset.png"]
+    assert good["status"] == "ok" and good["listing_id"] >= 2000001
+    assert good["steps"] == {s: "done" for s in ("mockup", "research", "title", "tags",
+                                                  "check", "draft")}
+    assert good["title"].startswith("Retro Mountain Sunset") and len(good["tags"]) == 13
+    assert len(good["images"]) == 3 and good["images"][0].startswith("3-DRAFTS/")
+    junk = by_name["IMG_2043.png"]
+    assert junk["status"] == "error" and junk["error"]["code"] == "junk_name"
+
+    item_events = [d for t, d in events if t == "job-event" and d["type"] == "item"]
+    assert item_events and all(d["kind"] == "designs" for d in item_events)
+    assert any(d["type"] == "batch" for t, d in events if t == "job-event")
+
+    # Never a state on a create: drafts only.
+    assert len(fake.created) == 2
+    assert all("state" not in form and "listing_id" not in form for form in fake.created)
+    uploads = [call for call in fake.calls if call[0] == "POST" and call[1].endswith("/images")]
+    assert len(uploads) == 6
+
+    history = json.loads((ws.root / "upload-history.json").read_text(encoding="utf-8"))
+    assert {k: v["status"] for k, v in history[SHOP].items()} == {
+        "but-first-coffee.png": "ok", "retro-mountain-sunset.png": "ok"}
+    last = web.client.get("/api/designs/last").json()["run"]
+    assert last["summary"]["created"] == 2 and len(last["items"]) == 3
+    notes = web.client.get("/api/notifications").json()["items"]
+    assert notes[0]["ns"] == "designs" and notes[0]["key"] == "notify.done_errors"
+
+    pending = web.client.get("/api/designs/pending").json()
+    assert [item["name"] for item in pending["items"]] == ["IMG_2043.png"]
+
+
+def test_a_second_start_while_one_runs_is_refused(web, fast_images):
+    _setup_shop(web)
+    _put(web, "retro-mountain-sunset.png", _png())
+    release = threading.Event()
+    blocker = web.ctx.jobs.start("designs", "designs:job.title", lambda job: release.wait(5))
+    try:
+        resp = web.client.post("/api/designs/start", json={})
+        assert resp.status_code == 409 and resp.json()["error"]["code"] == "busy"
+        assert "running" in web.client.get("/api/designs/pending").json()["blockers"]
+        removal = web.client.request("DELETE", "/api/designs/files",
+                                     params={"path": "retro-mountain-sunset.png"})
+        assert removal.status_code == 409
+    finally:
+        release.set()
+        blocker.wait(5)
+
+
+def test_stopping_finishes_the_draft_in_flight_and_keeps_the_results(web, fast_images):
+    fake, ws = _setup_shop(web)
+    for name in ("a-retro-sunset.png", "b-ocean-waves.png", "c-cat-mom-club.png"):
+        _put(web, name, _png())
+    creating = threading.Event()
+    go_on = threading.Event()
+    ids = iter(range(2000001, 2000100))
+
+    def slow_create(request):
+        creating.set()
+        go_on.wait(5)
+        return {"listing_id": next(ids)}
+
+    fake.add("POST", f"/shops/{ETSY_SHOP_ID}/listings", slow_create)
+    job = web.client.post("/api/designs/start", json={}).json()
+    assert creating.wait(10)
+    cancel = web.client.post(f"/api/jobs/{job['id']}/cancel")
+    assert cancel.status_code == 200
+    go_on.set()
+    final = wait_for_job(web, job["id"], timeout=15)
+    assert final["status"] == "cancelled"
+    statuses = [item["status"] for item in final["state"]["items"]]
+    assert statuses == ["ok", "cancelled", "cancelled"]
+    assert final["state"]["result"]["cancelled"] is True
+    assert json.loads((ws.drafts / "last-run.json").read_text(encoding="utf-8"))["summary"][
+        "created"] == 1
+
+
+def test_a_dry_run_needs_no_connection_and_sends_nothing(web, fast_images):
+    fake, ws = _setup_shop(web, connected=False)
+    _put(web, "retro-mountain-sunset.png", _png())
+    assert web.client.get("/api/designs/pending").json()["blockers"] == ["connect"]
+    job = web.client.post("/api/designs/start", json={"dry_run": True}).json()
+    final = wait_for_job(web, job["id"], timeout=15)
+    assert final["status"] == "done"
+    item = final["state"]["items"][0]
+    assert item["status"] == "checked" and item["steps"]["draft"] == "todo"
+    assert not any(method == "POST" for method, _path in fake.calls)
+    assert not (ws.root / "upload-history.json").exists()
+    assert final["result"]["dry_run"] is True and final["result"]["csv"].endswith("review.csv")
+
+
+def test_a_stale_lock_is_a_blocker_the_seller_can_remove(web):
+    _fake, ws = _setup_shop(web)
+    _put(web, "ocean-waves.png", _png())
+    (ws.root / ".auto-upload.lock").write_text("4242")
+    pending = web.client.get("/api/designs/pending").json()
+    assert pending["blockers"] == ["locked"] and pending["locked_at"]
+    resp = web.client.post("/api/designs/unlock", json={})
+    assert resp.status_code == 400 and resp.json()["error"]["code"] == "confirm_required"
+    assert web.client.post("/api/designs/unlock", json={"confirm": True}).status_code == 200
+    assert not (ws.root / ".auto-upload.lock").exists()
+    assert web.client.get("/api/designs/pending").json()["blockers"] == []
+
+
+# --- recovery ---------------------------------------------------------------------------------------
+
+
+def test_an_uncertain_attempt_can_be_retried_after_the_seller_confirms(web):
+    _fake, ws = _setup_shop(web)
+    _put(web, "retro-mountain-sunset.png", _png())
+    _put(web, "ocean-waves.png", _png())
+    (ws.root / "upload-history.json").write_text(json.dumps({SHOP: {
+        "retro-mountain-sunset.png": {"status": "pending", "listing_id": None},
+        "ocean-waves.png": {"status": "ok", "listing_id": 2000009},
+    }}), encoding="utf-8")
+    pending = web.client.get("/api/designs/pending").json()
+    assert pending["items"] == [] and pending["already_done"] == 1
+    assert pending["review"] == [{"name": "retro-mountain-sunset.png", "status": "pending",
+                                  "listing_id": None, "message": ""}]
+
+    unconfirmed = web.client.post("/api/designs/review/forget",
+                                  json={"name": "retro-mountain-sunset.png"})
+    assert unconfirmed.status_code == 400
+    drafted = web.client.post("/api/designs/review/forget",
+                              json={"name": "ocean-waves.png", "confirm": True})
+    assert drafted.status_code == 409 and drafted.json()["error"]["code"] == "already_drafted"
+    ok = web.client.post("/api/designs/review/forget",
+                         json={"name": "retro-mountain-sunset.png", "confirm": True})
+    assert ok.status_code == 200
+    names = [item["name"] for item in web.client.get("/api/designs/pending").json()["items"]]
+    assert names == ["retro-mountain-sunset.png"]
+
+
+def test_the_last_run_is_empty_before_the_first(web):
+    assert web.client.get("/api/designs/last").json() == {"run": None}
+
+
+def test_status_counts_pending_designs_after_an_upload(web):
+    _setup_shop(web)
+    _put(web, "retro-mountain-sunset.png", _png())
+    deadline = time.monotonic() + 5
+    status = web.ctx.refresh_status(force=True)
+    while status["setup"]["designs_pending"] != 1 and time.monotonic() < deadline:
+        status = web.ctx.refresh_status(force=True)
+    assert status["setup"]["designs_pending"] == 1
+
+
+def test_a_template_listing_gone_from_etsy_fails_the_run_cleanly(web, fast_images):
+    fake, ws = _setup_shop(web)
+    _put(web, "retro-mountain-sunset.png", _png())
+    fake.error("GET", f"/listings/{TEMPLATE_ID}/inventory", 404, "Listing not found")
+    job = web.client.post("/api/designs/start", json={}).json()
+    final = wait_for_job(web, job["id"], timeout=15)
+    assert final["status"] == "error"
+    assert final["error"]["code"] == "template_gone"
+    assert final["state"]["items"] == [], "nothing was planned, so nothing is shown as stopped"
+    assert not fake.created
+    notes = web.client.get("/api/notifications").json()["items"]
+    assert notes[0]["key"] == "notify.failed" and notes[0]["params"] == {"code": "template_gone"}
+
+
+def test_a_run_that_breaks_off_leaves_no_product_waiting(web, fast_images, monkeypatch):
+    from stallkit.drop import automation
+    from stallkit.errors import ValidationError
+
+    _fake, _ws = _setup_shop(web)
+    _put(web, "a-retro-sunset.png", _png())
+    _put(web, "b-ocean-waves.png", _png())
+    real = automation.save_history
+    calls = {"n": 0}
+
+    def flaky(path, state):
+        calls["n"] += 1
+        if calls["n"] > 3:
+            raise ValidationError("Cannot save upload history; stopped to avoid duplicates.")
+        return real(path, state)
+
+    monkeypatch.setattr(automation, "save_history", flaky)
+    job = web.client.post("/api/designs/start", json={}).json()
+    final = wait_for_job(web, job["id"], timeout=15)
+    assert final["status"] == "error" and final["error"]["code"] == "invalid"
+    statuses = [item["status"] for item in final["state"]["items"]]
+    assert "queued" not in statuses and "running" not in statuses and "waiting" not in statuses

@@ -341,6 +341,11 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
 
     result: dict[str, str] = {}
     expected_path = "/"
+    # Where to send the browser once Etsy has handed over a code, instead of showing
+    # the receipt page below: the web app sets its own http://localhost:<port>/oauth-done
+    # so the consent tab lands back in stallkit. None (the CLI) keeps the page. The
+    # code itself never travels further than this listener.
+    return_url: str | None = None
     # Browsers open speculative connections to localhost and send nothing. The
     # server is single-threaded, so without a per-connection timeout one such
     # socket blocks serve_forever, and shutdown() — Cancel — waits on it.
@@ -359,6 +364,14 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
                 type(self).result[key] = params[key][0]
 
         ok = "code" in params
+        if ok and self.return_url:
+            self.send_response(302)
+            self.send_header("Location", self.return_url)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.end_headers()
+            return
         # Shown to whoever just clicked "Allow" — most likely in the desktop app,
         # and as likely Turkish as English — so it says both, and nothing about a
         # terminal. Etsy's error text is echoed, so it is escaped.

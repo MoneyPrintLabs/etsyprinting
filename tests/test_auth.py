@@ -181,3 +181,47 @@ def test_token_round_trips_through_a_dict():
 def test_from_response_rejects_a_payload_missing_the_refresh_token():
     with pytest.raises(AuthError, match="refresh_token"):
         Token.from_response({"access_token": "1.a", "expires_in": 3600}, ())
+
+
+# --- the listener's answer to the browser --------------------------------------------
+
+
+def test_the_listener_can_send_the_browser_back_to_the_app():
+    import socket
+    import threading
+    import urllib.parse
+
+    import httpx
+
+    from stallkit import auth
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    config = Config(keystring="k", shared_secret="s",
+                    redirect_uri=f"http://localhost:{port}/oauth/redirect")
+    request = build_authorization_url(config)
+    state = urllib.parse.parse_qs(urllib.parse.urlparse(request.url).query)["state"][0]
+    answers = []
+
+    def browser():
+        for _ in range(100):
+            try:
+                answers.append(httpx.get(
+                    f"http://127.0.0.1:{port}/oauth/redirect",
+                    params={"code": "the-code", "state": state}, trust_env=False))
+                return
+            except httpx.ConnectError:
+                threading.Event().wait(0.05)
+
+    auth._CallbackHandler.return_url = "http://localhost:3000/oauth-done"
+    try:
+        threading.Thread(target=browser, daemon=True).start()
+        code = auth._capture_via_listener(request, config, port, timeout=10)
+    finally:
+        auth._CallbackHandler.return_url = None
+    assert code == "the-code"
+    # Sent on to the app, with nothing of Etsy's answer in the address.
+    assert answers[0].status_code == 302
+    assert answers[0].headers["location"] == "http://localhost:3000/oauth-done"
+    assert answers[0].headers["referrer-policy"] == "no-referrer"

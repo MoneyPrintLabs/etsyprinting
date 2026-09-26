@@ -14,6 +14,7 @@ because a duplicate Pin is exactly the thing that burst would have looked like.
 from __future__ import annotations
 
 import base64
+import html
 import http.server
 import json
 import os
@@ -250,15 +251,41 @@ def code_from_redirect(text: str, expected_state: str) -> str:
 
 class _Callback(http.server.BaseHTTPRequestHandler):
     result: dict[str, str] = {}
+    # Where to send the browser once Pinterest answers with a code — the web app's
+    # page that closes the tab. None keeps the plain page below (the CLI).
+    return_url: str | None = None
     timeout = 2  # see auth._CallbackHandler: an idle browser socket must not block Cancel
 
     def do_GET(self) -> None:  # noqa: N802 — name fixed by BaseHTTPRequestHandler
         query = urllib.parse.urlparse(self.path).query
-        type(self).result = {k: v[0] for k, v in urllib.parse.parse_qs(query).items()}
+        params = {k: v[0] for k, v in urllib.parse.parse_qs(query).items()}
+        if "code" not in params and "error" not in params:
+            # The browser's favicon request, or a speculative connection: not Pinterest's
+            # answer, and it must not wipe out an answer that already arrived.
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        type(self).result = params
+        if "code" in params and self.return_url:
+            self.send_response(302)
+            self.send_header("Location", self.return_url)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            # The code is in this address: the app's page must not get it as a referrer.
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.end_headers()
+            return
+        if "code" in params:
+            body = b"<p>Pinterest is connected. You can close this tab.</p>"
+        else:
+            reason = html.escape(params.get("error_description") or params["error"])
+            body = f"<p>Pinterest did not connect: {reason}</p>".encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(b"<p>Pinterest is connected. You can close this tab.</p>")
+        self.wfile.write(body)
 
     def log_message(self, *_args: Any) -> None:
         pass
