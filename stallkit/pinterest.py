@@ -30,6 +30,7 @@ from typing import Any, Callable
 
 import httpx
 
+from .auth import LoopbackServer
 from .client import RateLimiter
 from .config import home_dir, read_json, write_json_private
 from .errors import AuthError, ConfigError, StallKitError, ValidationError
@@ -249,6 +250,7 @@ def code_from_redirect(text: str, expected_state: str) -> str:
 
 class _Callback(http.server.BaseHTTPRequestHandler):
     result: dict[str, str] = {}
+    timeout = 2  # see auth._CallbackHandler: an idle browser socket must not block Cancel
 
     def do_GET(self) -> None:  # noqa: N802 — name fixed by BaseHTTPRequestHandler
         query = urllib.parse.urlparse(self.path).query
@@ -262,12 +264,14 @@ class _Callback(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def _listen_for_code(config: PinterestConfig, state: str, timeout: float) -> str:
+def _listen_for_code(
+    config: PinterestConfig, state: str, timeout: float, cancel: threading.Event | None = None
+) -> str:
     parsed = urllib.parse.urlparse(config.redirect_uri)
     port = parsed.port or 80
     _Callback.result = {}
     try:
-        server = http.server.HTTPServer(("127.0.0.1", port), _Callback)
+        server = LoopbackServer(("127.0.0.1", port), _Callback)
     except OSError as exc:
         raise AuthError(f"Cannot listen on port {port} ({exc}). Use --paste instead.") from exc
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.4}, daemon=True)
@@ -275,11 +279,15 @@ def _listen_for_code(config: PinterestConfig, state: str, timeout: float) -> str
     deadline = time.time() + timeout
     try:
         while time.time() < deadline and not _Callback.result:
+            if cancel is not None and cancel.is_set():
+                break
             time.sleep(0.25)
     finally:
         server.shutdown()
         server.server_close()
     result = dict(_Callback.result)
+    if not result and cancel is not None and cancel.is_set():
+        raise AuthError("Cancelled before Pinterest sent the browser back. Nothing was changed.")
     if not result:
         raise AuthError(f"Timed out after {int(timeout)}s waiting for Pinterest's redirect.")
     if "error" in result:
@@ -296,6 +304,7 @@ def login(
     open_browser: bool = True,
     timeout: float = 300.0,
     prompt: Callable[[str], str] = input,
+    cancel: threading.Event | None = None,
 ) -> PinToken:
     config.require_app()
     state = secrets.token_urlsafe(16)
@@ -309,7 +318,7 @@ def login(
             pass
     host = (urllib.parse.urlparse(config.redirect_uri).hostname or "").lower()
     if not paste and host in {"localhost", "127.0.0.1"}:
-        code = _listen_for_code(config, state, timeout)
+        code = _listen_for_code(config, state, timeout, cancel)
     else:
         code = code_from_redirect(prompt("Paste the full address you were sent to: "), state)
     return exchange_code(config, code)

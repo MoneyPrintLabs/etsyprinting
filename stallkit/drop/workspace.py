@@ -218,8 +218,22 @@ def _natural_key(path: Path) -> list:
     return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", path.name.casefold())]
 
 
-def default_root() -> Path:
+def desktop_dir() -> Path:
     """Desktop if there is one, home otherwise. Never guesses a localised name."""
     desktop = Path.home() / "Desktop"
-    base = desktop if desktop.is_dir() else Path.home()
-    return base / "Etsy Studio"
+    return desktop if desktop.is_dir() else Path.home()
+
+
+def default_root() -> Path:
+    """The selected shop's products folder.
+
+    "Etsy Studio" for the first shop and "Etsy Studio - <shop id>" for each further
+    one, so two shops never share products, a template or an upload history. The id
+    rather than the Etsy shop name, so the folder does not give the shop away in a
+    screenshot.
+    """
+    from ..config import base_home, home_dir
+
+    home = home_dir()
+    name = "Etsy Studio" if home == base_home() else f"Etsy Studio - {home.name}"
+    return desktop_dir() / name

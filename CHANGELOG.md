@@ -7,8 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-09-26
+
 ### Added
 
+- **A desktop app — no terminal, no Python.** Download one file from the Releases page:
+  a single `.exe` for Windows, or `stallkit.app` for Apple Silicon Macs. The everyday
+  commands have buttons, grouped into Setup, Upload products, Listings, Orders, SEO and
+  Pinterest tabs, with a log underneath showing exactly what ran and what came back. The buttons
+  run the same commands as the terminal, so validation, dry runs and error messages are
+  identical. Anything that reaches the live shop asks first in a dialog. The window is
+  in English and Turkish and follows the system language. Keys and tokens live in
+  `~/.stallkit`, shared with the command line.
+- **`stallkit desktop`** opens the same window from an installed copy, and the
+  downloaded app runs any command when given arguments (`stallkit.exe pinterest post`),
+  so it can be scheduled without Python installed.
+- **Connecting a shop, step by step.** The Setup tab walks through Etsy's *Seller App*
+  (July 2026: two fields, usually approved in minutes) with everything to paste into
+  Etsy's form behind a Copy button, checks the keys the moment they are saved, and ticks
+  each step as it is done. It tells apart keys Etsy refused, a shop not yet connected, a
+  sign-in that expired, and Etsy being unreachable. Waiting for the browser can be
+  cancelled. The page Etsy sends the browser back to now says, in English and Turkish,
+  to return to the app.
+- **Several shops on one computer.** Each shop has its own keys, sign-in, Pin queue and
+  products folder. The window has a shop picker with *Add a shop*; the command line has
+  `stallkit shops list|add|remove` and a global `--shop <id>` (or STALLKIT_SHOP, checked
+  the same way). One shop keeps everything in `~/.stallkit`, exactly as before; a further
+  shop never reads a `.env` from the working directory, so it cannot borrow another
+  shop's keys.
+
+### Changed
+
+- **`stallkit init` writes `~/.stallkit/.env`** (the selected shop's home with `--shop`)
+  instead of `./.env`, so the keys it saves are the ones the desktop app reads. `--path`
+  still writes anywhere, and a `./.env` is still read for the first shop.
+- **Etsy's trademark notice** is shown in the window and the README, as Etsy's API Terms
+  require of every application.
+- **Release builds on GitHub.** Pushing a version tag builds both apps on GitHub's
+  runners, checks that each packaged app starts and builds its window, and publishes
+  them to a GitHub Release.
 - **Pinterest, optional.** `stallkit pinterest` turns an active listing's photos into
   Pins linking back to it, on the seller's own Pinterest account through their own app.
   Pins are queued and posted a few a day across the whole queue, never twice for the
@@ -24,6 +61,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An `https://localhost` callback no longer hangs the sign-in.** The local listener
+  speaks plain HTTP, so it is now used only for `http://localhost`; an https callback
+  takes the paste flow.
+- **A token request Etsy refuses for its format is retried as JSON.** Some apps get a
+  403 "should be in the format 'keystring:shared_secret'" for a form-encoded token
+  request that Etsy accepts as JSON (etsy/open-api#1678).
+- **A refused tracking upload says why.** Etsy restricts tracking uploads for newer API
+  keys in many countries, Türkiye included; the 403 now says so instead of suggesting a
+  missing scope.
+- **Etsy's error text on the local sign-in page is escaped.**
 - **A listing takes twenty images, not ten.** Etsy's API schema allows up to 20, and a
   listing with more than ten photos was refused locally for no reason.
 - **Physical drafts are accepted by Etsy again.** Etsy now refuses a physical create
@@ -96,4 +143,6 @@ Recorded here and in the code so nobody has to re-derive them:
 - There is no idempotency key, so non-idempotent writes are never retried on a timeout
   or a 5xx — a repeat would mean a duplicate listing, or a second email to a buyer.
 
+[Unreleased]: https://github.com/MoneyPrintLabs/etsyprinting/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/MoneyPrintLabs/etsyprinting/releases/tag/v0.2.0
 [0.1.0]: https://github.com/MoneyPrintLabs/etsyprinting/releases/tag/v0.1.0

@@ -10,7 +10,8 @@ Open-source command line automation for Etsy sellers, built on the official
 analysis — running locally, on your own machine, against your own Etsy app.
 
 There is no hosted service, no account, and no middleman. You create an Etsy API
-app, paste the keystring into a `.env` file, and everything runs from your terminal.
+app, paste the keystring into a `.env` file, and everything runs from your terminal —
+or from the [desktop app](#desktop-app-no-terminal), with no terminal at all.
 Your data never leaves your computer.
 
 ```bash
@@ -22,14 +23,18 @@ stallkit seo audit                            # score every listing, worst first
 stallkit seo keywords "ceramic mug"           # what actually ranks, and why
 ```
 
+> The term 'Etsy' is a trademark of Etsy, Inc. This Application uses Etsy's API, but is not endorsed or certified by Etsy.
+
 ---
 
 ## Contents
 
 - [Why this exists](#why-this-exists)
+- [Desktop app (no terminal)](#desktop-app-no-terminal)
 - [Install](#install)
 - [Getting an Etsy API key](#getting-an-etsy-api-key)
 - [First run](#first-run)
+- [Several shops](#several-shops)
 - [Bulk listings](#bulk-listings)
 - [Orders and tracking](#orders-and-tracking)
 - [SEO](#seo)
@@ -55,7 +60,44 @@ is measured from the listings Etsy actually returns for a term.
 
 ---
 
+## Desktop app (no terminal)
+
+**[Download the latest release →](https://github.com/MoneyPrintLabs/etsyprinting/releases/latest)**
+
+| Your computer | File |
+|---|---|
+| Windows 10 / 11 | `stallkit-…-windows.exe` — one file, nothing to install |
+| Mac with Apple Silicon (M1 and newer) | `stallkit-…-macos.zip` — unzip, move `stallkit.app` to Applications |
+
+No Python needed. The window has a tab for each part of the tool — **Setup**, **Upload
+products** (`drop`), **Listings**, **Orders**, **SEO** and **Pinterest** — and a log at
+the bottom that shows exactly what ran and what came back. Every button runs the same
+command documented below, so everything in this README applies to the app too. The
+window is in English and Turkish and follows your system language.
+
+The app is not code-signed, so the first launch needs one extra click:
+
+- **Windows:** *"Windows protected your PC"* → **More info** → **Run anyway**.
+- **macOS:** System Settings → Privacy & Security → **Open Anyway**.
+
+Keys and tokens are stored in `~/.stallkit`, shared with the command line, so you can
+switch between the two freely. With Python already installed, `stallkit desktop` opens
+the same window, and `stallkit.exe <command>` runs any command from the downloaded app
+(useful for Task Scheduler, e.g. `stallkit.exe pinterest post`). The app is a windowed
+program: in a terminal its output appears after the prompt has already come back, and
+with no terminal (Task Scheduler) it goes to `~/.stallkit/logs/`. For everyday terminal
+use, [install](#install) the command line version.
+
+> **Türkçe:** [Son sürümü indir](https://github.com/MoneyPrintLabs/etsyprinting/releases/latest).
+> Windows için `.exe` dosyasını çift tıkla; kurulum ve Python gerekmez. İlk açılışta
+> "Windows kişisel bilgisayarınızı korudu" çıkarsa **Ek bilgi → Yine de çalıştır**. Sonra
+> **1 · Kurulum** sekmesini yukarıdan aşağı takip et.
+
+---
+
 ## Install
+
+For the command line. (Just want the window? [Download the desktop app](#desktop-app-no-terminal) instead.)
 
 Requires Python 3.9 or newer.
 
@@ -82,51 +124,58 @@ stallkit --version
 
 ## Getting an Etsy API key
 
-1. Go to **<https://www.etsy.com/developers/your-apps>** and click *Create a New App*.
-2. Fill in the form. For personal use on your own shop, describe what you are building
-   honestly — "personal tools for managing my own shop listings and orders" is fine.
-3. Once approved you get a **Keystring** and a **Shared secret**. You need **both**.
+Every seller uses **their own** free Etsy app — stallkit ships no key, and nobody else's
+key can connect your shop. Since July 2026 Etsy has a *Seller App* for exactly this: an
+app for your own shop, with a two-field form, usually approved within minutes.
 
-   > Every v3 request must carry them colon-joined in the `x-api-key` header, including
-   > the unauthenticated ones. With the keystring alone Etsy replies
-   > `403 {"error":"Invalid API key: should be in the format 'keystring:shared_secret'."}`
-   >
-   > This trips people up because PKCE is described as removing the client secret — and
-   > it does, from the **token exchange** (`client_id` is the bare keystring). It does
-   > not remove the shared secret from the **API key header**. stallkit joins them for you;
-   > you just set `ETSY_KEYSTRING` and `ETSY_SHARED_SECRET`.
-4. In the app settings, add a **callback URL**. Etsy's own settings screen states the
-   rules, and they are narrower than the prose docs suggest:
+1. Sign in to Etsy with the shop's account and open
+   **<https://www.etsy.com/developers/register-seller-app>** (*Create a seller app* on the
+   developer portal).
+2. **App name:** anything without the word "Etsy" — Etsy's trademark rules refuse it.
+3. **Why you want to use the API:** say plainly what you will do, for your own shop only.
+   For example:
 
-   > - Must start with `http://` or `https://`
-   > - Host must be a domain name (e.g. `example.com`)
-   > - **IP addresses are not allowed** (e.g. `127.0.0.1`)
+   > I manage my own shop with a tool that runs on my own computer: creating draft
+   > listings in bulk from my product photos, updating my listings and adding tracking
+   > numbers to my orders. It connects only to my shop, and the keys stay on my computer.
 
-   `localhost` is a domain name, so **a local callback works** — which makes this the
-   easy path. Register:
+   Then press **Read Terms and Create App**.
+4. Once approved, open the **Dashboard** (<https://www.etsy.com/developers/>), open the
+   app's **⋮** menu → **Edit callback URLs**, and add exactly:
 
    ```
    http://localhost:3003/oauth/redirect
    ```
 
-   and put the identical string in `.env` as `ETSY_REDIRECT_URI`. stallkit starts a
-   one-shot listener on that port and catches the code for you.
+   stallkit listens on that port for the one redirect after you approve, and catches the
+   code itself. The match is exact: scheme, port, path and letter case all count, and
+   `127.0.0.1` is refused — it must say `localhost`.
+5. The same page shows the **Keystring** and the **Shared secret** (eye icon). You need
+   **both**.
 
-   > Etsy's narrative documentation says the callback "must implement TLS and use an
-   > `https://` prefix". Taken literally that rules out a local listener — but the app
-   > settings screen accepts `http://localhost:PORT/...`, and that is what is actually
-   > enforced. Use `127.0.0.1` and it *will* be rejected; that is the real constraint.
+   > Every v3 request must carry them colon-joined in the `x-api-key` header, including
+   > the unauthenticated ones — enforced since 9 February 2026. PKCE removes the secret
+   > from the **token exchange** (`client_id` is the bare keystring), not from the **API
+   > key header**. stallkit joins them for you; you just set `ETSY_KEYSTRING` and
+   > `ETSY_SHARED_SECRET`.
 
-   Any other host works too: Etsy redirects your browser there, that page does not need
-   to exist, and you paste the address back in once (`--paste` forces this flow).
+Good to know:
 
-> **Approval times vary.** Personal-use apps are usually approved quickly; apps that
-> ask for broad commercial distribution take longer.
->
+- **One app per Etsy account.** If you already have an Etsy app (an older *personal*
+  key), Etsy will not give you a Seller App — use the keys you have.
+- **Two shops are two Etsy accounts**, so each has its own app and its own keys. See
+  [Several shops](#several-shops).
+- **Keep the secret private.** Etsy has no self-service way to replace a leaked shared
+  secret. Never paste either value into an issue, a screenshot or a chat.
+- **Do not switch on "Developer Mode"** in the developer settings: it hides your shop
+  from Etsy search, and turning it back off has taken sellers weeks of emails.
+- If Etsy says the callback is *not permitted*, the address in your app and the one in
+  stallkit differ. Any other callback works too — Etsy then sends the browser to it,
+  that page does not have to load, and you paste the address back in once
+  (`--paste` forces this flow; an `https://` callback always uses it).
+
 > **While you wait**, `stallkit listings push --dry-run` and `stallkit orders ship --dry-run`
-> validate your CSVs entirely offline — no key, no login. You can have 300 products
-> checked and ready before your app is approved. Once you have a keystring,
-> `stallkit seo keywords` works too, without logging in.
+> validate your CSVs entirely offline — no key, no login.
 
 ---
 
@@ -136,8 +185,10 @@ stallkit --version
 stallkit init
 ```
 
-It asks for your keystring, your shared secret and your callback URL, writes a `.env`
-with `0600` permissions, and checks the credential against Etsy before you go further.
+It asks for your keystring, your shared secret and your callback URL, writes them to
+`~/.stallkit/.env` (the selected shop's home with `--shop`) with `0600` permissions — the
+same file the desktop app reads — and checks the credential against Etsy before you go
+further.
 **The shared secret is typed hidden** — it does not appear on screen or in your shell
 history. Nothing is sent anywhere except Etsy.
 
@@ -145,11 +196,13 @@ history. Nothing is sent anywhere except Etsy.
 Keystring: abc123def456ghi789jkl012
 Shared secret:
 Redirect URI (must match a callback registered on your app) [http://localhost:3003/oauth/redirect]:
-✓ Wrote .env (keystring abc123…, shared secret 10 chars)
+✓ Wrote /home/you/.stallkit/.env (keystring abc123…, shared secret 10 chars)
 ✓ Etsy accepted the credential.
 ```
 
 Prefer to write the file yourself? `cp .env.example .env` and fill in the three values.
+A `.env` in the folder you run commands from is read too, and wins over `~/.stallkit/.env`
+for the first shop; `--shop` shops only ever read their own.
 
 Verify your setup before trusting it with anything bulk:
 
@@ -212,6 +265,26 @@ ETSY_SCOPES=shops_r listings_r transactions_r
 ```
 
 There is deliberately **no `listings_d`** — stallkit never deletes a listing.
+
+---
+
+## Several shops
+
+One computer can run several shops. Each gets its own keys, its own sign-in and its own
+products folder, so nothing crosses over — Etsy ties a sign-in to one account, and one
+account has one shop.
+
+In the desktop app, pick **＋ Add a shop** in the *Shop* list at the top and do the three
+setup steps for it; switch shops from the same list. From the command line:
+
+```bash
+stallkit shops add                    # makes shop-2
+stallkit --shop shop-2 auth login     # every command takes --shop
+stallkit shops list
+```
+
+The first shop keeps everything in `~/.stallkit` as before; further shops live in
+`~/.stallkit/shops/<id>/`.
 
 ---
 
@@ -488,6 +561,12 @@ address split into its own columns.
 
 ### Uploading tracking
 
+> **Not every shop can upload tracking through the API.** Since June 2024 Etsy has
+> withdrawn tracking uploads (and buyer addresses on receipts) from newer API keys,
+> country by country — Türkiye first, then the US, Canada and much of Europe. If Etsy
+> answers `403 Unauthorized` on a tracking upload, stallkit says so; add the tracking in
+> Shop Manager or through a shipping service Etsy has approved for your country.
+
 Add `tracking_code` and `carrier_name` columns (the exported file already has
 `receipt_id`), or start from [`examples/tracking.csv`](examples/tracking.csv):
 
@@ -620,6 +699,8 @@ Task Scheduler or cron.
 |---|---|
 | `stallkit init` | Write `.env` interactively and verify the credential |
 | `stallkit doctor` | Check config, key and connectivity |
+| `stallkit desktop` | Open the desktop window |
+| `stallkit shops list` / `add` / `remove` | Several shops on one computer; use one with `--shop <id>` |
 | `stallkit auth login` | OAuth consent flow (PKCE) |
 | `stallkit auth status` | Token, scopes, shop, remaining daily quota |
 | `stallkit auth refresh` | Force a token refresh |
