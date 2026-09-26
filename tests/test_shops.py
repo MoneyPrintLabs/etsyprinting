@@ -151,6 +151,13 @@ def test_waiting_for_the_browser_can_be_cancelled():
     assert auth.port_is_free(port)  # the listener was closed
 
 
+def test_the_listener_opens_without_a_host_name_lookup(monkeypatch):
+    # A reverse DNS lookup here stalled Cancel for ~30s on a Mac.
+    monkeypatch.setattr(socket, "getfqdn", lambda *a: pytest.fail("host name looked up"))
+    server = auth.LoopbackServer(("127.0.0.1", _free_port()), auth._CallbackHandler)
+    server.server_close()
+
+
 def test_login_passes_the_cancel_through(monkeypatch):
     seen = {}
 

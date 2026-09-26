@@ -30,6 +30,7 @@ from typing import Any, Callable
 
 import httpx
 
+from .auth import LoopbackServer
 from .client import RateLimiter
 from .config import home_dir, read_json, write_json_private
 from .errors import AuthError, ConfigError, StallKitError, ValidationError
@@ -270,7 +271,7 @@ def _listen_for_code(
     port = parsed.port or 80
     _Callback.result = {}
     try:
-        server = http.server.HTTPServer(("127.0.0.1", port), _Callback)
+        server = LoopbackServer(("127.0.0.1", port), _Callback)
     except OSError as exc:
         raise AuthError(f"Cannot listen on port {port} ({exc}). Use --paste instead.") from exc
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.4}, daemon=True)

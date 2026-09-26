@@ -40,6 +40,7 @@ import http.server
 import ipaddress
 import secrets
 import socket
+import socketserver
 import threading
 import time
 import urllib.parse
@@ -323,6 +324,18 @@ def exchange_code(config: Config, code: str, verifier: str) -> Token:
 # --- optional automatic capture, for people with an https tunnel ---------------
 
 
+class LoopbackServer(http.server.HTTPServer):
+    """An HTTPServer that binds without looking up its own host name.
+
+    HTTPServer.server_bind calls socket.getfqdn, a reverse DNS lookup that on
+    some Macs stalls ~30s before the port even opens — and Cancel with it.
+    """
+
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 class _CallbackHandler(http.server.BaseHTTPRequestHandler):
     """Serves the single request an https tunnel forwards to this machine."""
 
@@ -388,7 +401,7 @@ def _capture_via_listener(
     _CallbackHandler.result = {}
     _CallbackHandler.expected_path = parsed.path or "/"
     try:
-        server = http.server.HTTPServer(("127.0.0.1", port), _CallbackHandler)
+        server = LoopbackServer(("127.0.0.1", port), _CallbackHandler)
     except OSError as exc:
         raise AuthError(f"Cannot listen on 127.0.0.1:{port} ({exc}). Free the port or pick another.") from exc
 
