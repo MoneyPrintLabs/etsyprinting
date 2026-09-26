@@ -11,6 +11,7 @@ repository files address them by absolute path.
 """
 
 import pytest
+from web_helpers import web  # noqa: F401 — the `web` fixture for tests/test_web_*.py
 
 ETSY_VARS = (
     "ETSY_KEYSTRING",

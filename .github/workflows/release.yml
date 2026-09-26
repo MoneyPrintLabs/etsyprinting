@@ -61,7 +61,8 @@ jobs:
 
       # The packaged app is a different program from the source tree: a module or
       # data file PyInstaller missed only shows up here. --self-test imports every
-      # command and builds the whole window; the dry run exercises the CLI path.
+      # command, starts the web server and fetches every file of the web UI from it;
+      # the dry run exercises the CLI path.
       - name: Check the packaged app (Windows)
         if: runner.os == 'Windows'
         shell: pwsh

@@ -12,7 +12,8 @@ import random
 import threading
 import time
 from collections import deque
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,9 @@ from .errors import AuthError, EtsyApiError, ValidationError
 MAX_ATTEMPTS = 5
 # Etsy's search offset window is finite; walking past this returns errors, not pages.
 MAX_SEARCH_OFFSET = 12_000
+# getListingsByListingIds: "Limit 100 ids maximum per query" (Etsy OpenAPI spec). The
+# same ceiling is used for the other id-list parameters, which document none.
+MAX_BATCH_IDS = 100
 
 
 def encode_form(data: dict[str, Any]) -> dict[str, str]:
@@ -72,22 +76,38 @@ class RateLimiter:
 
 
 class EtsyClient:
+    """One Etsy app plus one sign-in. Safe to share between threads.
+
+    The web app keeps a single instance per shop and lets every request handler and
+    background job use it, so there is one RateLimiter (Etsy's per-app QPS holds
+    across all of them) and one token: a refresh happens once, under a lock, however
+    many threads notice the expiry at the same moment. httpx.Client is thread-safe.
+    """
+
     def __init__(
         self,
         config: Config,
         *,
         token: auth.Token | None = None,
         require_auth: bool = True,
+        transport: httpx.BaseTransport | None = None,
     ) -> None:
         self.config = config
         self.token = token if token is not None else auth.load_token()
         if require_auth and self.token is None:
             raise AuthError("Not authenticated. Run: stallkit auth login")
         self.limiter = RateLimiter(config.rate_per_sec)
-        self._http = httpx.Client(timeout=httpx.Timeout(60.0, connect=15.0))
+        # `transport` is for tests (httpx.MockTransport); production never passes one.
+        self._http = httpx.Client(timeout=httpx.Timeout(60.0, connect=15.0), transport=transport)
         self._shop_id: int | None = config.shop_id
         self._me: dict[str, Any] | None = None
         self.quota_remaining: int | None = None
+        # One lock for the token (the expiry refresh and the refresh after a 401), a
+        # second for the lazy identity caches, so resolving the shop once does not
+        # hold up every other thread's requests. Both re-entrant.
+        self._lock = threading.RLock()
+        self._identity_lock = threading.RLock()
+        self._local = threading.local()
 
     def __enter__(self) -> EtsyClient:
         return self
@@ -98,7 +118,42 @@ class EtsyClient:
     def close(self) -> None:
         self._http.close()
 
+    @contextmanager
+    def attempts(self, limit: int) -> Iterator[EtsyClient]:
+        """Cap the tries per request, on the calling thread only.
+
+        A GET is normally tried up to MAX_ATTEMPTS times with growing pauses, which
+        is right for a batch and far too slow for "is Etsy reachable right now?".
+        Other threads sharing this client keep the normal behaviour.
+        """
+        previous = getattr(self._local, "attempts", None)
+        self._local.attempts = max(1, int(limit))
+        try:
+            yield self
+        finally:
+            self._local.attempts = previous
+
     # --- core request machinery -------------------------------------------------
+
+    def _current_token(self) -> auth.Token:
+        """The token to send, refreshed first if it is about to expire.
+
+        Expiry is checked inside the lock, so when two threads find the token stale
+        together the second one picks up the first one's fresh token instead of
+        spending the refresh token a second time.
+        """
+        with self._lock:
+            if self.token is None:
+                raise AuthError("This command needs authentication. Run: stallkit auth login")
+            if self.token.expired:
+                self.token = auth.refresh(self.token, self.config)
+            return self.token
+
+    def _refresh_after_401(self, sent: str) -> None:
+        """Etsy refused the access token `sent`: refresh once, unless another thread has."""
+        with self._lock:
+            if self.token is not None and self.token.access_token == sent:
+                self.token = auth.refresh(self.token, self.config)
 
     def _headers(self, *, authed: bool) -> dict[str, str]:
         headers = {
@@ -108,11 +163,7 @@ class EtsyClient:
             "User-Agent": "stallkit/0.1 (+https://github.com/MoneyPrintLabs/etsyprinting)",
         }
         if authed:
-            if self.token is None:
-                raise AuthError("This command needs authentication. Run: stallkit auth login")
-            if self.token.expired:
-                self.token = auth.refresh(self.token, self.config)
-            headers["Authorization"] = f"Bearer {self.token.access_token}"
+            headers["Authorization"] = f"Bearer {self._current_token().access_token}"
         return headers
 
     def request(
@@ -139,9 +190,11 @@ class EtsyClient:
         # provably never arrived (connect failure) or was provably refused (429).
         idempotent = method.upper() in {"GET", "HEAD", "OPTIONS"}
         may_retry = idempotent if retry is None else retry
+        max_attempts = getattr(self._local, "attempts", None) or MAX_ATTEMPTS
 
-        for attempt in range(1, MAX_ATTEMPTS + 1):
+        for attempt in range(1, max_attempts + 1):
             self.limiter.acquire()
+            headers = self._headers(authed=authed)
             try:
                 resp = self._http.request(
                     method,
@@ -150,12 +203,12 @@ class EtsyClient:
                     data=body,
                     json=json_body,
                     files=files,
-                    headers=self._headers(authed=authed),
+                    headers=headers,
                 )
             except httpx.HTTPError as exc:
                 # A connection that was never established cannot have changed anything.
                 never_arrived = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
-                if attempt == MAX_ATTEMPTS or not (may_retry or never_arrived):
+                if attempt == max_attempts or not (may_retry or never_arrived):
                     message = f"network error: {exc}"
                     if not idempotent and not never_arrived:
                         message += (
@@ -181,7 +234,8 @@ class EtsyClient:
             # An expired token that we did not predict — refresh once, then retry.
             if resp.status_code == 401 and authed and not refreshed_once and self.token:
                 refreshed_once = True
-                self.token = auth.refresh(self.token, self.config)
+                sent = headers.get("Authorization", "")[len("Bearer "):]
+                self._refresh_after_401(sent)
                 continue
 
             error = EtsyApiError(
@@ -194,7 +248,7 @@ class EtsyClient:
             # 429 is always safe to retry: it means Etsy refused, not that it acted.
             # A 5xx on a write may mean the write landed, so do not repeat it.
             retryable = resp.status_code == 429 or (resp.status_code >= 500 and may_retry)
-            if not retryable or attempt == MAX_ATTEMPTS:
+            if not retryable or attempt == max_attempts:
                 raise error
 
             retry_after = resp.headers.get("Retry-After")
@@ -266,12 +320,17 @@ class EtsyClient:
     # --- identity ---------------------------------------------------------------
 
     def me(self) -> dict[str, Any]:
-        if self._me is None:
-            self._me = self.get("/users/me")
-        return self._me
+        with self._identity_lock:
+            if self._me is None:
+                self._me = self.get("/users/me")
+            return self._me
 
     def shop_id(self) -> int:
         """Resolve the shop to operate on: ETSY_SHOP_ID if set, else the token owner's shop."""
+        with self._identity_lock:
+            return self._resolve_shop_id()
+
+    def _resolve_shop_id(self) -> int:
         if self._shop_id is not None:
             return self._shop_id
         user_id = self.me().get("user_id") or (self.token.user_id if self.token else None)
@@ -322,19 +381,73 @@ class EtsyClient:
         return (payload or {}).get("results") or []
 
     def listings_by_shop(
-        self, state: str = "active", *, includes: Sequence[str] | None = None, max_items: int | None = None
+        self,
+        state: str = "active",
+        *,
+        includes: Sequence[str] | None = None,
+        max_items: int | None = None,
+        sort_on: str | None = None,
+        sort_order: str | None = None,
     ) -> Iterator[dict[str, Any]]:
-        params: dict[str, Any] = {"state": state}
+        """getListingsByShop (listings_r).
+
+        OAS enums: state active|inactive|sold_out|draft|removed|expired (default
+        active); sort_on created|price|updated|score (default created); sort_order
+        asc|ascending|desc|descending|up|down (default desc); includes Shipping,
+        Images, Shop, User, Translations, Inventory, Videos, Personalization,
+        BuyerPrice. None leaves a parameter to Etsy's default.
+        """
+        params: dict[str, Any] = {"state": state, "sort_on": sort_on, "sort_order": sort_order}
         if includes:
             params["includes"] = ",".join(includes)
         yield from self.paginate(
-            f"/shops/{self.shop_id()}/listings", params=params, max_items=max_items
+            f"/shops/{self.shop_id()}/listings",
+            params={k: v for k, v in params.items() if v is not None},
+            max_items=max_items,
         )
+
+    def count_listings(self, state: str = "active") -> int:
+        """How many listings the shop has in `state`, from one limit=1 request."""
+        payload = self.get(
+            f"/shops/{self.shop_id()}/listings", params={"state": state, "limit": 1, "offset": 0}
+        )
+        return _count(payload)
 
     def listing(self, listing_id: int, *, includes: Sequence[str] | None = None) -> dict[str, Any]:
         """One listing by id. Key-only endpoint — no OAuth scope needed."""
         params = {"includes": ",".join(includes)} if includes else None
         return self.get(f"/listings/{listing_id}", params=params, authed=False)
+
+    def listing_images(self, listing_id: int) -> list[dict[str, Any]]:
+        """getListingImages: every image of a listing, ordered by rank.
+
+        The spec lists no OAuth scope (API key only). The token is still sent when
+        there is one, so a draft or inactive listing of the seller's own shop — which
+        the public view may hide — is readable too.
+        """
+        payload = self.get(f"/listings/{listing_id}/images", authed=self.token is not None)
+        images = (payload or {}).get("results") or []
+        return sorted(images, key=lambda image: image.get("rank") or 0)
+
+    def listings_batch(
+        self, listing_ids: Iterable[int], *, includes: Sequence[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """getListingsByListingIds: many listings, at most 100 ids per request.
+
+        Chunked here, so any number of ids may be passed; duplicates are asked once.
+        OAS includes enum: Images, Shop, User, Translations, Videos, Personalization,
+        BuyerPrice (no Inventory or Shipping on this endpoint). API key only.
+        """
+        ids = list(dict.fromkeys(int(i) for i in listing_ids))
+        out: list[dict[str, Any]] = []
+        for start in range(0, len(ids), MAX_BATCH_IDS):
+            chunk = ids[start : start + MAX_BATCH_IDS]
+            params: dict[str, Any] = {"listing_ids": ",".join(str(i) for i in chunk)}
+            if includes:
+                params["includes"] = ",".join(includes)
+            payload = self.get("/listings/batch", params=params, authed=self.token is not None)
+            out.extend((payload or {}).get("results") or [])
+        return out
 
     def create_draft_listing(self, fields: dict[str, Any]) -> dict[str, Any]:
         return self.post(f"/shops/{self.shop_id()}/listings", form=fields)
@@ -375,6 +488,77 @@ class EtsyClient:
             f"/shops/{self.shop_id()}/receipts", params=filters, max_items=max_items
         )
 
+    def count_receipts(self, **filters: Any) -> int:
+        """How many receipts match getShopReceipts' filters, from one limit=1 request.
+
+        Filters (OAS): min_created, max_created, min_last_modified, max_last_modified
+        (epoch seconds), was_paid, was_shipped, was_delivered, was_canceled (bools).
+        """
+        params = {k: v for k, v in filters.items() if v is not None}
+        params.update(limit=1, offset=0)
+        payload = self.get(f"/shops/{self.shop_id()}/receipts", params=params)
+        return _count(payload)
+
+    def receipt(self, receipt_id: int) -> dict[str, Any]:
+        """getShopReceipt (transactions_r)."""
+        return self.get(f"/shops/{self.shop_id()}/receipts/{receipt_id}")
+
+    def shop_transactions(
+        self, *, max_items: int | None = None, **filters: Any
+    ) -> Iterator[dict[str, Any]]:
+        """getShopReceiptTransactionsByShop (transactions_r), newest first.
+
+        The spec gives this endpoint no date or state filters, only limit/offset (and
+        `legacy`); anything in `filters` is passed through as a query parameter.
+        """
+        yield from self.paginate(
+            f"/shops/{self.shop_id()}/transactions",
+            params={k: v for k, v in filters.items() if v is not None},
+            max_items=max_items,
+        )
+
+    def ledger_entries(
+        self, min_created: int, max_created: int, *, max_items: int | None = None
+    ) -> Iterator[dict[str, Any]]:
+        """getShopPaymentAccountLedgerEntries: the payment account's ledger.
+
+        Both bounds are required epoch seconds (OAS minimum 946684800). Scope
+        transactions_r per the spec — already in DEFAULT_SCOPES, so no reconnect.
+        Each entry: entry_id, amount (minor units), currency, description, balance,
+        created_timestamp, ledger_type, reference_type, reference_id, ...
+        """
+        yield from self.paginate(
+            f"/shops/{self.shop_id()}/payment-account/ledger-entries",
+            params={"min_created": int(min_created), "max_created": int(max_created)},
+            max_items=max_items,
+        )
+
+    def receipt_payments(self, receipt_id: int) -> list[dict[str, Any]]:
+        """getShopPaymentByReceiptId (transactions_r): amount_gross/fees/net per payment."""
+        payload = self.get(f"/shops/{self.shop_id()}/receipts/{receipt_id}/payments")
+        return (payload or {}).get("results") or []
+
+    def payments(self, payment_ids: Iterable[int]) -> list[dict[str, Any]]:
+        """getPayments (transactions_r) for the given ids, chunked 100 at a time."""
+        ids = list(dict.fromkeys(int(i) for i in payment_ids))
+        out: list[dict[str, Any]] = []
+        for start in range(0, len(ids), MAX_BATCH_IDS):
+            chunk = ids[start : start + MAX_BATCH_IDS]
+            payload = self.get(
+                f"/shops/{self.shop_id()}/payments",
+                params={"payment_ids": ",".join(str(i) for i in chunk)},
+            )
+            out.extend((payload or {}).get("results") or [])
+        return out
+
+    def readiness_state_definitions(self) -> list[dict[str, Any]]:
+        """getShopReadinessStateDefinitions (shops_r): the shop's processing profiles.
+
+        Each: readiness_state_id, readiness_state (ready_to_ship|made_to_order),
+        min_processing_days, max_processing_days, processing_days_display_label.
+        """
+        return list(self.paginate(f"/shops/{self.shop_id()}/readiness-state-definitions"))
+
     def create_receipt_shipment(self, receipt_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         # Note: unlike listings, this endpoint takes JSON, not form encoding.
         return self.post(
@@ -390,6 +574,39 @@ class EtsyClient:
         yield from self.paginate(
             "/listings/active", params=params, max_items=max_items, authed=False
         )
+
+
+def _count(payload: Any) -> int:
+    """The `count` of a collection response; 0 when Etsy sent none."""
+    count = (payload or {}).get("count") if isinstance(payload, dict) else None
+    return int(count) if isinstance(count, int) else 0
+
+
+def taxonomy_path(nodes: list[dict[str, Any]], taxonomy_id: int | str) -> str:
+    """The "Parent > Child > Leaf" name of a seller-taxonomy node, or "" if unknown.
+
+    `nodes` is what taxonomy_nodes() returns: a tree with `children` lists.
+    """
+    try:
+        wanted = int(taxonomy_id)
+    except (TypeError, ValueError):
+        return ""
+    for node_id, path in walk_taxonomy(nodes):
+        if node_id == wanted:
+            return path
+    return ""
+
+
+def walk_taxonomy(nodes: list[dict[str, Any]], trail: tuple[str, ...] = ()) -> Iterator[tuple[int, str]]:
+    """Every node of the seller taxonomy as (id, "A > B > C"), depth first."""
+    for node in nodes or []:
+        path = (*trail, str(node.get("name", "")))
+        try:
+            node_id = int(node.get("id", 0))
+        except (TypeError, ValueError):
+            node_id = 0
+        yield node_id, " > ".join(path)
+        yield from walk_taxonomy(node.get("children") or [], path)
 
 
 # What Etsy's listing-image endpoint accepts, and nothing else. WEBP is deliberately

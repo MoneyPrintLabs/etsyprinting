@@ -1,0 +1,10 @@
+{
+  "tr": {
+    "title": "Şablon İlan",
+    "subtitle": "Fiyat, kargo ve kategori bu ilandan kopyalanır"
+  },
+  "en": {
+    "title": "Template listing",
+    "subtitle": "Price, shipping and category are copied from this listing"
+  }
+}

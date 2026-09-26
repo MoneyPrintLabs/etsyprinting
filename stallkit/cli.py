@@ -21,9 +21,10 @@ from . import pinterest as pinterest_mod
 from . import seo as seo_mod
 from . import setup as setup_mod
 from . import shops as shops_mod
-from .client import EtsyClient
+from .client import EtsyClient, walk_taxonomy
 from .config import Config, home_dir, split_credential, token_path, write_env_file
 from .drop import automation, pipeline
+from .drop import catalog as catalog_mod
 from .drop import mockup as mockup_mod
 from .drop import template as template_mod
 from .drop import workspace as workspace_mod
@@ -467,15 +468,18 @@ def doctor(
 
 
 @app.command("desktop")
-def desktop() -> None:
-    """Open the desktop window: every command behind a button, no terminal needed."""
-    try:
-        from .desktop.app import launch
-    except ImportError as exc:  # Python built without Tk, common on Linux
-        _fail(f"The desktop window needs Tk, which this Python does not have ({exc}).")
-        console.print("On Debian/Ubuntu: [cyan]sudo apt install python3-tk[/]")
-        raise typer.Exit(1) from exc
-    launch()
+def desktop(
+    port: Optional[int] = typer.Option(
+        None, "--port", help="Port to serve on (default: 3000, or the next free one)."
+    ),
+    no_browser: bool = typer.Option(
+        False, "--no-browser", help="Start the app without opening the browser."
+    ),
+) -> None:
+    """Open stallkit in your browser: every command behind a button, no terminal needed."""
+    from .web import launch
+
+    raise typer.Exit(launch(port=port, open_browser=not no_browser))
 
 
 # ---------------------------------------------------------------- shop
@@ -572,15 +576,7 @@ def shop_taxonomy(
     with _client(require_auth=False) as client:
         nodes = client.taxonomy_nodes()
 
-    flat: list[tuple[int, str]] = []
-
-    def walk(items: list[dict[str, Any]], trail: list[str]) -> None:
-        for node in items:
-            path = trail + [str(node.get("name", ""))]
-            flat.append((int(node.get("id", 0)), " > ".join(path)))
-            walk(node.get("children") or [], path)
-
-    walk(nodes, [])
+    flat = list(walk_taxonomy(nodes))
     needle = query.lower()
     matches = [(nid, path) for nid, path in flat if needle in path.lower()]
     if not matches:
@@ -1431,22 +1427,23 @@ def drop_calibrate(
         changed = [target]
     elif area:
         new_area = mockup_mod.parse_area(area)
-        targets = [selected[0]]
-        if same_size:
-            size = sizes.get(targets[0].name)
-            if not size:
-                _warn(
-                    f"Cannot read the pixel size of {targets[0].name}, "
-                    "so --same-size has nothing to match."
-                )
-                raise typer.Exit(1)
-            targets = [p for p in mockups if sizes.get(p.name) == size]
+        if same_size and not catalog_mod.same_size_names(ws, selected[0].name, sizes=sizes):
+            _warn(
+                f"Cannot read the pixel size of {selected[0].name}, "
+                "so --same-size has nothing to match."
+            )
+            raise typer.Exit(1)
+        # Writes positions.json itself unless this is a dry run.
+        names = catalog_mod.save_area(
+            ws, selected[0].name, new_area, same_size=same_size, dry_run=dry_run, sizes=sizes
+        )
+        targets = [p for p in mockups if p.name in names]
         for target in targets:
             positions[target.name] = new_area
         changed = targets
         selected = targets
 
-    if changed and not dry_run:
+    if changed and not dry_run and not area:
         mockup_mod.save_positions(ws.positions_path, positions)
 
     _print_print_areas(
