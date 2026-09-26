@@ -70,3 +70,6 @@ testpaths = ["tests"]
 # fails ~3% of the time under --capture=fd, never under sys), which turns the desktop
 # window tests into coin flips. No test here reads captured output via capfd.
 addopts = "--capture=sys"
+# A test stuck for two minutes prints every thread's stack, so a hang on a CI
+# runner says where it is instead of only timing out.
+faulthandler_timeout = 120

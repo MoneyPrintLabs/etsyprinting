@@ -46,6 +46,7 @@ jobs:
           pip install -e ".[dev]" "pyinstaller>=6.10,<7"
 
       - name: Test
+        timeout-minutes: 10
         run: pytest -q
 
       - name: Tag matches the package version
@@ -79,6 +80,7 @@ jobs:
 
       - name: Check the packaged app (macOS)
         if: runner.os == 'macOS'
+        timeout-minutes: 5
         run: |
           app=dist/stallkit.app/Contents/MacOS/stallkit
           "$app" --self-test

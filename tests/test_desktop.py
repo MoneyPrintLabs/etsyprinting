@@ -274,10 +274,26 @@ def _tk_root(tk):
     raise last
 
 
-@pytest.fixture
-def window(monkeypatch, tmp_path):
+@pytest.fixture(scope="session")
+def tk_root():
+    """One Tk root for the whole run; each test's window is a Toplevel under it.
+
+    The app only ever makes one root per process. Tests that each made and
+    destroyed their own hung on the macOS runners, where Tk does not reliably
+    survive a second interpreter in one process.
+    """
     if app_mod is None:
         pytest.skip("this Python has no Tk")
+    import tkinter as tk
+
+    root = _tk_root(tk)
+    root.withdraw()
+    yield root
+    root.destroy()
+
+
+@pytest.fixture
+def window(monkeypatch, tmp_path, tk_root):
     import tkinter as tk
 
     from stallkit.drop import workspace as workspace_mod
@@ -286,7 +302,7 @@ def window(monkeypatch, tmp_path):
     monkeypatch.setattr(workspace_mod, "desktop_dir", lambda: tmp_path)
     monkeypatch.setattr(EtsyClient, "ping", _offline)
     monkeypatch.setattr(EtsyClient, "shop", _offline)
-    root = _tk_root(tk)
+    root = tk.Toplevel(tk_root)
     root.withdraw()
     window = app_mod.App(root, language="en")
     yield window
