@@ -9,7 +9,11 @@ easy to find.
 made as one and gets the buyer's files: a loose design is delivered as the design file
 itself, and a product folder delivers the files in its `dosyalar` (or `files`) subfolder
 (at most 5 files per listing, 20 MB each). A download-only template needs no shipping
-profile.
+profile. **Tasarım Yükle** shows **Ürün: Dijital** (*Product: Digital*), the **Başlat**
+(*Start*) window opens with **Dijital ürün · tasarım dosyası indirilebilir dosya olarak
+eklenir** (*Digital product · the design file is attached as the download*), and
+**Şablon İlan** says **Dijital ürün: her taslağa tasarım dosyası indirilebilir dosya olarak
+eklenir** under the chosen listing.
 
 **Choosing `2-PRODUCTS` as the products folder** (or `1-MOCKUPS`, `3-DRAFTS`, or a folder
 inside them) no longer makes a second products folder inside the first: the main one is
@@ -84,7 +88,10 @@ bulunuyor.
 açılır ve alıcının dosyaları eklenir: tek başına bir tasarımda tasarım dosyasının kendisi,
 bir ürün klasöründe ise içindeki `dosyalar` (ya da `files`) alt klasöründeki dosyalar
 (ilan başına en fazla 5 dosya, her biri en fazla 20 MB). Yalnızca dijital bir şablon için
-kargo profili gerekmez.
+kargo profili gerekmez. **Tasarım Yükle** üstte **Ürün: Dijital** gösteriyor, **Başlat**'a
+basınca açılan pencere **Dijital ürün · tasarım dosyası indirilebilir dosya olarak
+eklenir** satırıyla başlıyor, **Şablon İlan** da seçili ilanın altında **Dijital ürün: her
+taslağa tasarım dosyası indirilebilir dosya olarak eklenir** yazıyor.
 
 **Ürün klasörü olarak `2-PRODUCTS`'ı** (ya da `1-MOCKUPS`, `3-DRAFTS` veya içlerindeki bir
 klasörü) seçmek artık ilkinin içine ikinci bir ürün klasörü açmıyor: ana klasör kullanılıyor

@@ -35,23 +35,28 @@ from ..listings import (
 from ..seo import MarketReport, research
 from . import cache, catalog, generate, mockup, seeds
 from .template import Template
-from .workspace import Workspace
+from .workspace import FILES_DIRS, Workspace
 
 REVIEW_FILE = "review.csv"
 
 # Columns the review file carries beyond what `listings push` reads. push() ignores
 # extras, so the same file serves both the seller's eye and the writer.
 REVIEW_EXTRA_COLUMNS = ["source_file", "concept", "evidence", "warnings"]
-# review.csv: every push column, the digital downloads (push reads them when a row has
-# them; empty for a physical template), then the extras.
-REVIEW_COLUMNS = [*LISTING_COLUMNS, FILES_COLUMN, *REVIEW_EXTRA_COLUMNS]
+# review.csv: every push column (the digital downloads, FILES_COLUMN, among them: empty
+# for a physical template), then the extras.
+REVIEW_COLUMNS = [*LISTING_COLUMNS, *REVIEW_EXTRA_COLUMNS]
 
 # A folder product of a digital template keeps the files a buyer downloads in a
-# subfolder of this name (either spelling, any case); its photos stay in the folder
-# itself. A loose design is its own download: the original file, not a render.
-FILES_DIRS = ("dosyalar", "files")
+# `dosyalar` / `files` subfolder (FILES_DIRS, from workspace); its photos stay in the
+# folder itself. A loose design is its own download: the original file, not a render.
+# Its listing photos are then always the mockups and a small preview
+# (mockup.DIGITAL_PREVIEW_EDGE), never the design itself: an opaque printable is not a
+# "finished photo" when it is the thing being sold.
+
 # Written by Windows and macOS into folders a person opens; never a deliverable.
 _SYSTEM_FILES = {"thumbs.db", "desktop.ini", "icon\r"}
+# Folders an archiver or a synced folder leaves inside `dosyalar`; never the seller's.
+_SYSTEM_DIRS = {"__macosx"}
 
 # Etsy's title rule (createDraftListing in the Open API spec: letters, numbers,
 # punctuation, math symbols, spaces, ™ © ®; %, :, & and + once each) lives in `listings`,
@@ -151,12 +156,23 @@ def _natural(path: Path) -> list:
             for part in re.split(r"(\d+)", path.name.casefold())]
 
 
+def _seller_file(name: str) -> bool:
+    """Not a hidden, Office lock or system file."""
+    return not name.startswith((".", "~$")) and name.casefold() not in _SYSTEM_FILES
+
+
+def _seller_dir(name: str) -> bool:
+    return not name.startswith(".") and name.casefold() not in _SYSTEM_DIRS
+
+
 def deliverable_files(source: Path) -> list[Path]:
     """What a buyer downloads for this product, in upload order.
 
     A loose design: the design file itself, byte for byte (never the flat render or a
     mockup). A folder product: every file in its `dosyalar` / `files` subfolder, in
-    natural name order (01, 02, ... 10), without hidden and system files.
+    natural name order (01, 02, ... 10), without hidden and system files. Files in a
+    subfolder of it are not among them (Etsy takes files, not folders); see
+    nested_folders, which deliverable_issue reports.
     """
     if source.is_file():
         return [source]
@@ -167,12 +183,38 @@ def deliverable_files(source: Path) -> list[Path]:
         entries = list(folder.iterdir())
     except OSError:
         return []
-    files = [
-        p for p in entries
-        if p.is_file() and not p.name.startswith((".", "~$"))
-        and p.name.casefold() not in _SYSTEM_FILES
-    ]
+    files = [p for p in entries if p.is_file() and _seller_file(p.name)]
     return sorted(files, key=_natural)
+
+
+def _holds_a_file(folder: Path) -> bool:
+    """Whether a seller's file sits in `folder` or anywhere below it."""
+    for _root, dirs, names in os.walk(folder):
+        dirs[:] = [d for d in dirs if _seller_dir(d)]
+        if any(_seller_file(name) for name in names):
+            return True
+    return False
+
+
+def nested_folders(source: Path) -> list[str]:
+    """The subfolders of a folder product's `dosyalar` that hold files, by name.
+
+    An SVG bundle is often `dosyalar/license.pdf` + `dosyalar/SVG/*.svg` +
+    `dosyalar/PNG/*.png`. An Etsy download is a file, never a folder, so what is in
+    `SVG/` and `PNG/` would silently not reach the buyer: deliverable_issue refuses it.
+    """
+    folder = files_folder(source) if source.is_dir() else None
+    if folder is None:
+        return []
+    try:
+        entries = sorted(folder.iterdir(), key=lambda p: p.name.casefold())
+    except OSError:
+        return []
+    return [
+        entry.name for entry in entries
+        if entry.is_dir() and not entry.is_symlink() and _seller_dir(entry.name)
+        and _holds_a_file(entry)
+    ]
 
 
 def deliverable_issue(
@@ -180,10 +222,23 @@ def deliverable_issue(
 ) -> tuple[str, str, dict[str, Any]] | None:
     """Why this product's downloads cannot go up: (code, message, params), or None.
 
-    Codes: no_deliverable (no files subfolder, or an empty one), too_many_files (Etsy
-    takes client.MAX_LISTING_FILES), and each file's own client.file_issue code
-    (file_type, file_too_large, file_empty, file_missing, file_unreadable).
+    Codes: nested_files (its `dosyalar` holds subfolders with files: Etsy takes files,
+    so they would not be sent), no_deliverable (no files subfolder, `missing` True, or
+    one with nothing in it, `missing` False), too_many_files (Etsy takes
+    client.MAX_LISTING_FILES), and each file's own client.file_issue code (file_type,
+    file_too_large, file_empty, file_missing, file_unreadable).
     """
+    nested = nested_folders(source)
+    if nested:
+        folder = files_folder(source)
+        where = folder.name if folder is not None else FILES_DIRS[0]
+        names = ", ".join(nested[:3]) + (", ..." if len(nested) > 3 else "")
+        return (
+            "nested_files",
+            f"{source.name}/{where} has subfolders ({names}); Etsy downloads cannot hold "
+            "folders, so zip each subfolder (or the whole set) into one file",
+            {"name": source.name, "folder": where, "folders": names, "n": len(nested)},
+        )
     if not files:
         folder = files_folder(source)
         where = (
@@ -194,7 +249,7 @@ def deliverable_issue(
             "no_deliverable",
             f"the template is a digital product, but {where}; put the files buyers "
             f"download in {source.name}/{FILES_DIRS[0]}/",
-            {"name": source.name, "folder": FILES_DIRS[0]},
+            {"name": source.name, "folder": FILES_DIRS[0], "missing": folder is None},
         )
     if len(files) > MAX_LISTING_FILES:
         return (
@@ -210,10 +265,64 @@ def deliverable_issue(
     return None
 
 
-def deliverables(source: Path) -> tuple[list[Path], tuple[str, str, dict[str, Any]] | None]:
-    """(the product's downloads, why they cannot go up or None)."""
+def deliverables(
+    source: Path, *, made_to_order: bool = False
+) -> tuple[list[Path], tuple[str, str, dict[str, Any]] | None]:
+    """(the product's downloads, why they cannot go up or None).
+
+    `made_to_order` (the template's when_made): Etsy activates a made-to-order digital
+    listing without a file (updateListing in the Open API spec), because the seller sends
+    what was made after the order. A folder's `dosyalar` files still go up when there
+    are some; a folder without them is fine; and a loose design is NOT attached: for a
+    made-to-order product it is a sample, not what the buyer ordered.
+    """
+    if made_to_order and source.is_file():
+        return [], None
     files = deliverable_files(source)
-    return files, deliverable_issue(source, files)
+    issue = deliverable_issue(source, files)
+    if made_to_order and issue is not None and issue[0] == "no_deliverable":
+        issue = None
+    return files, issue
+
+
+def made_to_order(template: Template) -> bool:
+    """The template's when_made is made_to_order (its downloads are optional)."""
+    return str(template.fields.get("when_made") or "") == "made_to_order"
+
+
+MADE_TO_ORDER_NOTE = (
+    "the template is made to order, so no download file is attached; add the buyer's "
+    "file in Etsy once it is made"
+)
+
+
+def photo_is_download(
+    images: Sequence[Path], files: Sequence[Path]
+) -> tuple[str, str, dict[str, Any]] | None:
+    """A listing photo that is one of the files being sold: (code, message, params).
+
+    Etsy shows a listing photo to anyone at up to 3000 px a side, so a download that is
+    also a photo is free for the taking. The pipeline never makes one; this is the guard.
+    """
+    downloads = {os.path.normcase(os.path.abspath(str(p))) for p in files}
+    for image in images:
+        if os.path.normcase(os.path.abspath(str(image))) in downloads:
+            return (
+                "download_is_photo",
+                f"{image.name} is both a listing photo and the file buyers download; "
+                "anyone could save it from the listing page",
+                {"name": image.name},
+            )
+    return None
+
+
+def no_photos_message(source: Path) -> str:
+    """Why a product folder with downloads but no photos cannot become a listing."""
+    return (
+        f"the product folder {source.name!r} has no photos, only its "
+        f"{FILES_DIRS[0]!r} files; every listing needs at least one photo: put the "
+        f"product's images (01, 02, ...) in {source.name}/ itself"
+    )
 
 
 # --- what Etsy accepts ---------------------------------------------------------------
@@ -341,7 +450,13 @@ def _output_name(source: Path, template_image: Path | None, taken: set[str]) -> 
 def _research_concept(
     client: EtsyClient | None, concept: str, *, sample: int, use_cache: bool
 ) -> tuple[MarketReport | None, bool]:
-    """Returns (report, came_from_cache)."""
+    """Returns (report, came_from_cache).
+
+    `concept` is the search as Etsy gets it (generate.research_keyword: the concept, plus
+    the template's product when the concept does not name it). The cache key is that
+    search and the sample size, `"<search>|<sample>"`, the same key the SEO page uses.
+    """
+    concept = " ".join(str(concept).split()).lower()
     key = f"{concept}|{sample}"
     if use_cache:
         cached = cache.load(key)
@@ -377,6 +492,7 @@ def run(
     workspace.require()
     # download / both: every row also carries the files a buyer downloads.
     digital = (template.fields.get("type") or "physical") in DIGITAL_TYPES
+    to_order = made_to_order(template)
 
     def say(message: str) -> None:
         if on_progress:
@@ -447,15 +563,20 @@ def run(
         DropRow(
             source=path,
             seed=seeds.derive(
-                path / "IMG_0001.jpg" if images else path,
-                folder_fallback=bool(images) or path.parent != workspace.products,
+                path / "IMG_0001.jpg" if path.is_dir() else path,
+                folder_fallback=path.is_dir() or path.parent != workspace.products,
             ),
             images=images,
         )
         for path, images in groups
     ]
-    grouped = seeds.group([r.seed for r in rows])
+    # A product folder with only its downloads (a `dosyalar` folder, no photos) is
+    # reported below and needs no research.
+    grouped = seeds.group([r.seed for r in rows if r.images or not r.source.is_dir()])
     report.concepts = len(grouped)
+    # What the template says the product is (generate.hint_from): the market search
+    # names it too, so "dog dad paw print" on a shirt template searches shirts.
+    hint = generate.hint_from(template.source_title, template.tags, template.description)
 
     # Output names are handed out from one set per batch, so a collision between two
     # products is resolved rather than discovered later as a missing image.
@@ -464,16 +585,22 @@ def run(
     # One lookup per distinct concept, not per file. Eighteen concepts across a
     # hundred products is eighteen searches.
     reports: dict[str, MarketReport | None] = {}
-    for concept in grouped:
-        market, from_cache = _research_concept(client, concept, sample=sample, use_cache=use_cache)
+    for concept, found in grouped.items():
+        keyword = generate.research_keyword(found[0], hint)
+        market, from_cache = _research_concept(client, keyword, sample=sample, use_cache=use_cache)
         reports[concept] = market
         if from_cache:
             report.cached += 1
         elif market is not None:
             report.researched += 1
-        say(f"researched {concept!r}" + (" (cached)" if from_cache else ""))
+        say(f"researched {keyword!r}" + (" (cached)" if from_cache else ""))
 
     for row in rows:
+        if row.source.is_dir() and not row.images:
+            row.skipped = True
+            row.warnings.append(no_photos_message(row.source))
+            say(f"skipped {row.source.name}")
+            continue
         if len(row.images) > MAX_LISTING_IMAGES:
             row.skipped = True
             row.warnings.append(
@@ -500,7 +627,7 @@ def run(
         if digital:
             # What the buyer downloads: the original design, or the folder's `dosyalar`.
             # A product without a download it can send is skipped here, before any work.
-            files, issue = deliverables(row.source)
+            files, issue = deliverables(row.source, made_to_order=to_order)
             if issue is not None:
                 row.skipped = True
                 row.warnings.append(issue[1])
@@ -518,6 +645,8 @@ def run(
         row.title, row.tags = clean_title(copy.title), copy.tags
         row.description = copy.description
         row.evidence, row.warnings = copy.sources, list(copy.warnings)
+        if digital and to_order and not row.files:
+            row.warnings.append(MADE_TO_ORDER_NOTE)
         if row.title != copy.title:
             row.warnings.append("characters Etsy does not accept were taken out of the title")
         if not row.title:
@@ -541,8 +670,10 @@ def run(
                     f"are, not composited onto a mockup ({', '.join(bare[:3])}). Move them "
                     f"to 2-PRODUCTS as loose designs if they are artwork."
                 )
-        elif not mockup.looks_like_artwork(row.source):
-            # A finished product photo needs no compositing; use it as it is.
+        elif not digital and not mockup.looks_like_artwork(row.source):
+            # A finished product photo needs no compositing; use it as it is. Never for a
+            # digital template: there the loose file is the download being sold (an
+            # opaque printable too), so it goes onto the mockups and never up as it is.
             row.images = [row.source]
         else:
             if unused:
@@ -562,8 +693,10 @@ def run(
                     row.warnings.append(f"mockup {template_image.name} failed: {exc}")
             if include_flat:
                 flat = report.out_dir / _output_name(row.source, None, taken)
+                # A digital design's flat render is a preview, not a copy of the download.
+                edge = mockup.DIGITAL_PREVIEW_EDGE if digital else mockup.OUTPUT_MIN_EDGE
                 try:
-                    row.images.append(mockup.flatten_design(row.source, flat))
+                    row.images.append(mockup.flatten_design(row.source, flat, edge=edge))
                 except Exception as exc:  # noqa: BLE001
                     row.warnings.append(f"flat render failed: {exc}")
 
@@ -599,6 +732,12 @@ def run(
             uploadable.append(fitted)
         row.images = uploadable
 
+        clash = photo_is_download(row.images, row.files) if row.files else None
+        if clash is not None:
+            row.skipped = True
+            row.warnings.append(clash[1])
+            say(f"skipped {row.source.name}")
+            continue
         if not row.images:
             row.skipped = True
             row.warnings.append(

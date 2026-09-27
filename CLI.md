@@ -178,8 +178,8 @@ stallkit listings template -o listings.csv
 One row per listing. Two rules:
 
 - **`listing_id` empty → create.** **`listing_id` filled → update.**
-- Multi-value cells (`tags`, `materials`, `images`) are separated by `|`, not commas,
-  so a tag containing a comma survives a trip through Excel.
+- Multi-value cells (`tags`, `materials`, `images`, `files`) are separated by `|`, not
+  commas, so a tag containing a comma survives a trip through Excel.
 
 | Column | Required to create | Notes |
 |---|---|---|
@@ -196,6 +196,7 @@ One row per listing. Two rules:
 | `tags` | — | Max 13, each max 20 chars |
 | `materials` | — | Max 13 |
 | `images` | — | Paths **relative to the CSV file**, in display order |
+| `files` | — | What the buyer downloads, relative to the CSV like `images`: at most 5, each up to 20 MB. New `download` / `both` drafts only; empty for `physical` |
 | `state` | — | Update only: `active` or `inactive` |
 
 Get the IDs you need:
@@ -205,6 +206,11 @@ stallkit shop profiles                 # shipping_profile_id, return_policy_id, 
 stallkit shop taxonomy "mug"           # taxonomy_id, ranked with leaf categories first
 ```
 
+A `download` row needs no `shipping_profile_id` (nothing is shipped); shipping and parcel
+columns on it are left out and the row says so. Without `files` a digital draft is still
+created, with a warning: Etsy will not let you publish it until its file is attached. A
+CSV written before the `files` column existed pushes exactly as before.
+
 > [`examples/listings.csv`](examples/listings.csv) ships with a **placeholder**
 > `shipping_profile_id` of `123456789` so that it passes `--dry-run` out of the box.
 > Replace it with a real id from `stallkit shop profiles` before pushing for real, or
@@ -213,8 +219,8 @@ stallkit shop taxonomy "mug"           # taxonomy_id, ranked with leaf categorie
 ### Validate, then push
 
 Always dry-run first. It validates every row locally — title lengths, tag charset and
-count, enum values, more than twenty images on a row, missing image files — and sends
-nothing.
+count, enum values, more than twenty images on a row, missing image files, download
+files that are missing, too many, too large or a program — and sends nothing.
 
 ```bash
 stallkit listings push listings.csv --dry-run
@@ -244,9 +250,14 @@ with nothing written — because discovering that row 40 is invalid *after* rows
 real drafts leaves your shop half-populated from a file you would never have pushed.
 Fix the reported rows and run again, or pass `--partial` to push the valid ones anyway.
 
-If a listing is created but one of its images fails to upload, the row is reported as
-**`partial`**, not as an error: the draft exists in your shop and you need to know about
-it. stallkit holds no delete scope, so it cannot undo the create — it tells you instead.
+Images go up after the draft is created, then a digital draft's `files`, in order; the
+row line counts both (`2 image(s), 1 download file(s)`), and `--out` has an
+`images_uploaded` and a `files_uploaded` column.
+
+If a listing is created but one of its images or files fails to upload, the row is
+reported as **`partial`**, not as an error: the draft exists in your shop and you need to
+know about it. stallkit holds no delete scope, so it cannot undo the create — it tells you
+instead.
 
 ### Round-tripping existing listings
 
@@ -299,15 +310,23 @@ stallkit drop auto --dry-run   # offline preparation and validation
 stallkit drop auto            # prepare and upload new products as Etsy drafts
 ```
 
-Use `--path "C:\path\to\Etsy Studio"` to select another workspace. Each command
-processes the current batch once; it does not watch the folder in the background.
+Use `--path "C:\path\to\Etsy Studio"` to select another workspace. A folder *inside*
+a workspace — `2-PRODUCTS`, a product folder in it, `1-MOCKUPS`, `3-DRAFTS` — means that
+workspace: the command says `... is a folder of the workspace ...; using ...` and never
+builds a second workspace inside the first. `stallkit doctor --path` follows the same rule.
+Each command processes the current batch once; it does not watch the folder in the
+background.
 `auto` uploads immediately without another confirmation prompt. It never publishes.
 Run it again after adding more product folders. `drop run` still offers the existing
 CSV-only review workflow and now also understands ready-photo folders.
 
 - One immediate child folder = one listing, with up to 20 images in natural filename
   order (`1`, `2`, `10`). Extra images cause an error, not silent truncation. Keep
-  finished listing images directly inside each product folder, without nested folders.
+  finished listing images directly inside each product folder. The one subfolder that is
+  read is `dosyalar` (or `files`, any case): a digital product's downloads, below. A
+  product folder with only a `dosyalar` folder and no photos is reported, not skipped
+  silently: every listing needs at least one photo, so `drop run` skips it with that
+  reason and `drop auto` stops before uploading anything.
 - Loose images retain the original one-design-per-listing mockup workflow below.
 - Titles and tags use the product name and available Etsy research. Descriptions
   inherit your template; this does not analyze images with AI. Name folders
@@ -320,10 +339,47 @@ CSV-only review workflow and now also understands ready-photo folders.
   saved listing ID in the history and complete that draft in Etsy; only reset its
   history entry after confirming no draft was created. A stale `.auto-upload.lock`
   may be removed only after confirming the previous process is stopped.
-- Automatic upload supports physical-product templates. The template listing's
-  variations (options, prices, quantities, processing profile) are copied onto every
-  draft. Digital delivery file uploads are not implemented. Source files remain in
-  place; there is no automatic archive move.
+- The template listing's type is kept: `physical`, `download` or `both`. Its variations
+  (options, prices, quantities, processing profile) are copied onto every draft. Source
+  files remain in place; there is no automatic archive move.
+
+### Digital products
+
+When the template listing is a digital download (`download`, or `both` for a physical
+item that also comes as a file), every draft gets what the buyer downloads, after its
+images:
+
+```text
+Etsy Studio/
+  2-PRODUCTS/
+    sunset-poster.png        one listing; the buyer downloads this very file
+    Planner 2027/            one listing
+      01.jpg  02.jpg         its photos, in this order
+      dosyalar/              (or files/)
+        planner-a4.pdf       what the buyer downloads, in name order
+        planner-letter.pdf
+```
+
+- **A loose design** is delivered as the original file, byte for byte — never a mockup
+  or the flat render. Its mockups and a 1200 px flat preview are the listing's photos,
+  even for an opaque JPG: the file being sold never goes up as a photo.
+- **A product folder** delivers every file in its `dosyalar` (or `files`) subfolder:
+  PDF, ZIP, PNG, JPG, SVG and the like. Hidden and system files are left out. A
+  subfolder of `dosyalar` holding files stops the product (Etsy takes files, not
+  folders): zip it into one file.
+- **Made to order** (`when_made` of the template): Etsy activates such a digital listing
+  without a file, so none is required. `dosyalar` files still go when there are some; a
+  loose design is not attached (it is a sample); add the buyer's file in Etsy once made.
+- Etsy takes **at most 5 files per listing, each up to 20 MB**. Programs and scripts
+  (`.exe`, `.bat`, ...) cannot be sold as downloads. A product with no download, too
+  many, an empty or an oversized file is stopped with its own reason before its draft
+  exists; nothing is dropped or cut to fit.
+- A `download` template needs no shipping profile. `review.csv` has the files in its
+  `files` column, and `upload-history.json` records `files_uploaded` next to
+  `images_uploaded`. A file that fails after the draft exists leaves the product
+  `partial`: finish it in Etsy. When an image fails, the download files are still sent
+  and the message says whether they went up.
+- `drop run` counts the download files in its request estimate.
 
 ### Compositing loose designs
 
@@ -350,11 +406,21 @@ The workspace is three folders:
 | `2-PRODUCTS` | The designs you want listed. This is the one you use every time. |
 | `3-DRAFTS` | What comes out: composited images and `review.csv`. |
 
-`drop run` composites each design onto every mockup, appends the flat artwork, works out
-the product concept, researches it against listings that actually rank, and writes titles
-and 13 tags inside Etsy's limits. A listing holds twenty images, so `--mockups 20` and the
-flat render together are one too many: the run says so and stops before compositing
-anything, instead of building a batch Etsy would only half-accept. **Nothing is sent to
+`drop run` composites each design onto the mockups switched on in the app's
+**Mockuplar** page, in that order — the first is the listing's main image — appends the
+flat artwork, works out the product concept, researches it against listings that
+actually rank, and writes titles and 13 tags inside Etsy's limits. `drop auto` uses the
+same selection. `--mockups N` keeps the first N of it; a mockup switched off there is
+not used, and the run says how many were left out. A listing holds twenty images, so at
+most 19 mockups are used and the flat render is the twentieth; any more switched on are
+left out, and the run says so rather than building a batch Etsy would only half-accept.
+
+The research searches the concept together with the template's product when the file
+name does not say it: `dog-dad-paw-print.png` on a shirt template is searched as
+`dog dad paw print shirt`, not as a poster ("print"). Free tag slots take the template
+listing's own tags only when they suit any design of that product (`graphic tee`,
+`gift for her`); its tags about its own design (`retro mountain sunset`, `hiking gift`)
+stay on it. **Nothing is sent to
 Etsy.** Check `review.csv`, then:
 
 ```bash
@@ -578,7 +644,7 @@ Task Scheduler or cron.
 | Command | What it does |
 |---|---|
 | `stallkit init` | Write `.env` interactively and verify the credential |
-| `stallkit doctor` | Check config, key and connectivity |
+| `stallkit doctor` | Check config, key and connectivity (`--path`: which workspace) |
 | `stallkit desktop` | Start the app and open it in the browser (`--port N`, `--no-browser`) |
 | `stallkit shops list` / `add` / `remove` | Several shops on one computer; use one with `--shop <id>` |
 | `stallkit auth login` | OAuth consent flow (PKCE) |
@@ -590,9 +656,9 @@ Task Scheduler or cron.
 | `stallkit shop taxonomy <word>` | Find a `taxonomy_id` |
 | `stallkit drop init` | Create the designs-in workspace folder |
 | `stallkit drop template` | Copy settings from a listing you built by hand |
-| `stallkit drop run` | Designs → mockups, titles, tags → `review.csv` |
+| `stallkit drop run` | Designs → mockups (the Mockuplar selection), titles, tags → `review.csv` |
 | `stallkit drop calibrate` | Move a mockup's print area, with a preview image to check it |
-| `stallkit drop auto` | Product folders → prepared copy and images → Etsy drafts, with upload history |
+| `stallkit drop auto` | Designs and product folders → Etsy drafts (with their download files for a digital template), with upload history |
 | `stallkit listings template` | Write a starter CSV |
 | `stallkit listings pull` | Export listings to CSV |
 | `stallkit listings push` | Bulk create/update from CSV |

@@ -163,8 +163,21 @@ draft is created as that type and gets the files the buyer downloads, after its 
 Etsy takes at most 5 files per listing, each up to 20 MB; programs and scripts (`.exe`,
 `.bat` and the like) cannot be sold as downloads. A download-only template needs no
 shipping profile. A product with nothing to deliver, too many files or a file that is too
-large stops with its own message before anything of it is sent to Etsy. **Tasarım Yükle**
-and **Şablon İlan** say which kind of product the template makes and what the buyer gets.
+large stops with its own message before anything of it is sent to Etsy. A product folder
+still needs its photos: one with only a `dosyalar` folder shows *Fotoğraf yok* (No photos)
+and stops at the **Kontrol** (Check) step.
+
+What the screens say (the English wording in italics):
+
+- **Tasarım Yükle** shows **Ürün: Dijital** (*Product: Digital*) at the top, or
+  **Ürün: Fiziksel + dijital** for a *both* template. Hover it for what that means.
+- The **Başlat** (*Start*) window opens with **Dijital ürün · tasarım dosyası indirilebilir
+  dosya olarak eklenir** (*Digital product · the design file is attached as the
+  download*). With product folders it adds that the files in their `dosyalar` subfolder
+  are attached (up to 5, 20 MB each) and the photos come from the folder itself.
+- **Şablon İlan** marks a digital listing **Dijital** in the list, and under the chosen one
+  says **Dijital ürün: her taslağa tasarım dosyası indirilebilir dosya olarak eklenir**
+  (*Digital product: each draft gets its design file as the download*).
 
 ---
 
@@ -343,8 +356,12 @@ New in 0.3.0:
 - `stallkit drop run` and `stallkit drop auto` use the mockups switched on in
   **Mockuplar**, in that order (the first is the main image). `--mockups N` takes the first
   N of that selection. Digital templates work here too.
-- `--path` of the `drop` commands may point at the products folder or at a folder inside
-  it, such as `2-PRODUCTS`: the products folder around it is used.
+- `--path` of the `drop` commands and of `stallkit doctor` may point at the products
+  folder or at a folder inside it, such as `2-PRODUCTS`: the products folder around it is
+  used.
+- Listing CSVs have a `files` column after `images`: what a new digital draft attaches for
+  the buyer to download (at most 5 files, 20 MB each). Empty for a physical item; older
+  CSVs without it work as before.
 - `stallkit listings pull` no longer writes an always-empty `views` column (Etsy's API has
   no view count), and `stallkit seo suggest` shows titles and tags as plain text
   (`Mom's Mug & Gift`, not `Mom&#39;s Mug &amp; Gift`).
@@ -370,6 +387,7 @@ the app).
 | *"Cannot reach stallkit"* | The app has stopped, for example after its tab was closed. Double-click it again and reload the page. |
 | There is a `2-PRODUCTS` inside `2-PRODUCTS`, and your mockups or designs are not found | An older version made a second products folder when `2-PRODUCTS` was chosen as the products folder. **Ayarlar** points it out: press **Use the main folder**, then move the mockups and the designs not uploaded yet into the main folder's `1-MOCKUPS` and `2-PRODUCTS`. |
 | A digital product stops because it has nothing to deliver | A product folder needs a `dosyalar` (or `files`) subfolder with the buyer's files: at most 5, each up to 20 MB. A loose design is delivered as itself. |
+| A product folder shows *Fotoğraf yok* (No photos) and stops at **Kontrol** (Check) | It holds only its `dosyalar` folder. Put the product's photos (01, 02, ...) in the product folder itself, next to `dosyalar`. |
 
 More detail is in [SETUP.md → Troubleshooting](SETUP.md#troubleshooting).
 
@@ -471,9 +489,20 @@ aynı türde açılır ve görsellerinden sonra alıcının indireceği dosyalar
 Etsy bir ilana en fazla 5 dosya alır, her biri en fazla 20 MB; programlar ve betikler
 (`.exe`, `.bat` gibi) indirilebilir ürün olarak satılamaz. Yalnızca dijital olan bir
 şablon için kargo profili gerekmez. İndirilecek dosyası olmayan, fazla dosyası olan ya da
-dosyası çok büyük bir ürün, Etsy'ye ondan hiçbir şey gitmeden kendi mesajıyla durur.
-**Tasarım Yükle** ve **Şablon İlan**, şablonun hangi tür ürün açtığını ve alıcının ne
-alacağını gösterir.
+dosyası çok büyük bir ürün, Etsy'ye ondan hiçbir şey gitmeden kendi mesajıyla durur. Ürün
+klasörünün fotoğrafları yine gerekir: içinde yalnızca `dosyalar` klasörü olan bir ürün
+*Fotoğraf yok* olarak görünür ve **Kontrol** adımında durur.
+
+Ekranlarda gördükleriniz:
+
+- **Tasarım Yükle** üstte **Ürün: Dijital** gösterir (*both* şablonda **Ürün: Fiziksel +
+  dijital**). Üzerine gelince ne anlama geldiği yazar.
+- **Başlat**'a basınca açılan pencerenin ilk satırı **Dijital ürün · tasarım dosyası
+  indirilebilir dosya olarak eklenir** olur. Klasör ürünler varsa altında, 'dosyalar' alt
+  klasöründeki dosyaların eklendiği (en fazla 5, her biri en fazla 20 MB) ve fotoğrafların
+  klasörün kendisinden geldiği yazar.
+- **Şablon İlan** listede dijital ilanı **Dijital** diye işaretler, seçili ilanın altında
+  **Dijital ürün: her taslağa tasarım dosyası indirilebilir dosya olarak eklenir** yazar.
 
 ## İndirme ve ilk açılış
 
@@ -637,8 +666,11 @@ listeyi çalıştırır.
 - `stallkit drop run` ve `stallkit drop auto`, **Mockuplar**'da açık olan mockup'ları o
   sırayla kullanır (ilki ana görsel). `--mockups N` bu seçimin ilk N tanesini alır. Dijital
   şablonlar burada da çalışır.
-- `drop` komutlarının `--path`'i ürün klasörünü ya da içindeki bir klasörü (örneğin
-  `2-PRODUCTS`) gösterebilir; çevresindeki ürün klasörü kullanılır.
+- `drop` komutlarının ve `stallkit doctor`'ın `--path`'i ürün klasörünü ya da içindeki bir
+  klasörü (örneğin `2-PRODUCTS`) gösterebilir; çevresindeki ürün klasörü kullanılır.
+- İlan CSV'lerinde `images`'tan sonra bir `files` sütunu var: yeni bir dijital taslağa
+  alıcının indirmesi için eklenecek dosyalar (en fazla 5 dosya, her biri en fazla 20 MB).
+  Fiziksel üründe boş kalır; bu sütunu olmayan eski CSV'ler eskisi gibi çalışır.
 - `stallkit listings pull` artık hep boş kalan `views` sütununu yazmaz (Etsy API'sinde
   görüntülenme sayısı yok); `stallkit seo suggest` başlık ve etiketleri düz metin olarak
   gösterir (`Mom&#39;s Mug &amp; Gift` değil, `Mom's Mug & Gift`).
@@ -657,6 +689,7 @@ listeyi çalıştırır.
 | *"stallkit'e ulaşılamıyor"* | Uygulama kapanmış, örneğin sekmesi kapatıldıktan sonra. Yeniden çift tıklayıp sayfayı yenileyin. |
 | `2-PRODUCTS`'ın içinde bir `2-PRODUCTS` daha var, mockup'larınız ya da tasarımlarınız bulunmuyor | Eski bir sürüm, ürün klasörü olarak `2-PRODUCTS` seçilince içine ikinci bir ürün klasörü açıyordu. **Ayarlar** bunu gösterir: **Ana klasörü kullan**'a basın, sonra mockup'ları ve henüz yüklenmemiş tasarımları ana klasördeki `1-MOCKUPS` ve `2-PRODUCTS`'a taşıyın. |
 | Dijital bir ürün, indirilecek dosyası olmadığı için duruyor | Ürün klasörünün içinde alıcının dosyalarını tutan bir `dosyalar` (ya da `files`) klasörü olmalı: en fazla 5 dosya, her biri en fazla 20 MB. Tek başına bir tasarım kendisi olarak teslim edilir. |
+| Bir ürün klasörü *Fotoğraf yok* diye görünüyor ve **Kontrol** adımında duruyor | Klasörde yalnızca `dosyalar` klasörü var. Ürünün fotoğraflarını (01, 02, ...) `dosyalar`'ın yanına, ürün klasörünün kendisine koyun. |
 
 Ayrıntılar: [SETUP.md → Sık karşılaşılan hatalar](SETUP.md#sık-karşılaşılan-hatalar).
 

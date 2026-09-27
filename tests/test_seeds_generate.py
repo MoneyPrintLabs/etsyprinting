@@ -468,3 +468,136 @@ def test_near_duplicate_tags_are_caught(candidate, existing):
 def test_different_searches_are_not_near_duplicates():
     assert not generate._too_similar("iphone 15 case", ["iphone 14 case"])
     assert not generate._too_similar("hiking shirt", ["camping shirt"])
+
+
+# --- Turkish casing -----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "turkish", "expected"),
+    [
+        ("kedi pati izi", True, "Kedi Pati İzi"),
+        ("kedi pati izi", None, "Kedi Pati Izi"),  # nothing in it says Turkish
+        ("çiçek izi", None, "Çiçek İzi"),  # a Turkish letter does
+        ("ice cream shirt", None, "Ice Cream Shirt"),
+        ("ice cream shirt", False, "Ice Cream Shirt"),
+        ("iphone case", True, "iPhone Case"),  # a word's own spelling still wins
+        ("ılık süt", None, "Ilık Süt"),
+    ],
+)
+def test_titlecase_turkish(text, turkish, expected):
+    assert generate.titlecase(text, turkish=turkish) == expected
+
+
+def test_a_turkish_template_cases_the_concept_in_turkish():
+    seed = seeds.derive(Path("kedi-pati-izi.png"))
+    turkish = generate.build_title(seed, None, product_hint="Pamuklu Tişört, Kedi Sever Hediyesi")
+    assert turkish.startswith("Kedi Pati İzi")
+    english = generate.build_title(seed, None, product_hint="Retro Sunset Shirt")
+    assert english.startswith("Kedi Pati Izi Shirt")
+    ice = generate.build_title(seeds.derive(Path("ice-cream-lover.png")), None,
+                               product_hint="Retro Sunset Shirt")
+    assert ice.startswith("Ice Cream Lover")
+
+
+# --- the market search: the concept and the template's product ---------------------------
+
+
+@pytest.mark.parametrize(
+    ("filename", "hint", "expected"),
+    [
+        # "print" is a poster's noun: alone, the search returns posters for a shirt.
+        ("dog-dad-paw-print.png", "Retro Mountain Sunset Shirt, Hiking Tee", "dog dad paw print shirt"),
+        ("dog-dad-paw-print.png", "Dog Poster, Wall Art Print", "dog dad paw print"),
+        ("retro-sunset-mug.png", "Retro Sunset Mug, Coffee Cup", "retro sunset mug"),
+        ("teacher-appreciation.png", "Canvas Tote Bag", "teacher appreciation tote bag"),
+        ("dog-dad-gift.png", "Retro Sunset Shirt", "dog dad gift"),
+        ("dog-dad-paw-print.png", None, "dog dad paw print"),
+        ("kedi-pati-izi.png", "Monstera Phone Case", "kedi pati izi phone case"),
+    ],
+)
+def test_research_keyword(filename, hint, expected):
+    assert generate.research_keyword(seeds.derive(Path(filename)), hint) == expected
+
+
+def test_the_shirt_draft_of_a_paw_print_gets_a_shirt_title():
+    # The round-3 demo: "dog dad paw print" on a shirt template was searched alone, found
+    # posters, and the draft's title stopped at "Dog Dad Paw Print Shirt" (23 characters).
+    seed = seeds.derive(Path("dog-dad-paw-print.png"))
+    hint = generate.hint_from("Retro Mountain Sunset Shirt, Vintage Hiking Tee", ["graphic tee"])
+    keyword = generate.research_keyword(seed, hint)
+    shirts = _market(keyword, [
+        (1.0, ["Dog Dad Paw Print Shirt", "Dog Dad T-Shirt"],
+         [("Fathers Day Gift", 8), ("Dog Lover Gift", 7), ("Graphic Tee", 5)],
+         [("dog dad shirt", 9), ("dog lover gift", 7), ("gift for dad", 6), *_SHIRT_TAGS]),
+    ])
+    title = generate.build_title(seed, shirts, product_hint=hint)
+    assert title.startswith("Dog Dad Paw Print Shirt, ") and len(title) > 60
+    assert _etsy_title_problems(title) == []
+    result = generate.generate(seed, shirts, template_title=hint[0], fallback_tags=["graphic tee"])
+    assert result.sources[0] == f"200 listings ranking for {keyword!r}"
+
+
+# --- the template's own tags as filler ------------------------------------------------------
+
+
+_TEMPLATE_TITLE = "Retro Mountain Sunset Shirt, Vintage Mountain Tee, Hiking Gift, Graphic Top"
+_TEMPLATE_TAGS = ["retro mountain sun", "mountain gift", "hiking gift", "graphic tee",
+                  "vintage shirt", "gift for her", "unisex tshirt", "comfort colors",
+                  "oversized tee", "Birthday Gift"]
+
+
+def test_only_the_template_tags_generic_for_the_product_are_reused():
+    paw = seeds.derive(Path("dog-dad-paw-print.png"))
+    assert generate.product_tags(_TEMPLATE_TAGS, _TEMPLATE_TITLE, paw) == [
+        "graphic tee", "vintage shirt", "gift for her", "unisex tshirt", "comfort colors",
+        "oversized tee", "birthday gift",
+    ]
+    # A word the new design shares with the template is its own word too; the cut-off
+    # "sun" still belongs to the template's "sunset".
+    goat = seeds.derive(Path("mountain-goat-trail.png"))
+    kept = generate.product_tags(_TEMPLATE_TAGS, _TEMPLATE_TITLE, goat)
+    assert "mountain gift" in kept and "retro mountain sun" not in kept
+    assert "hiking gift" not in kept
+    # Without the template's title nothing is known to be its own design.
+    assert generate.product_tags(["hiking gift", "Graphic Tee"], "", paw) == [
+        "hiking gift", "graphic tee"]
+
+
+def test_a_draft_without_market_data_gets_no_tags_of_the_template_design():
+    seed = seeds.derive(Path("dog-dad-paw-print.png"))
+    result = generate.generate(seed, None, template_title=_TEMPLATE_TITLE,
+                               fallback_tags=_TEMPLATE_TAGS)
+    assert not {"retro mountain sun", "mountain gift", "hiking gift"} & set(result.tags)
+    assert "graphic tee" in result.tags and "comfort colors" in result.tags
+    assert "your template listing's tags" in result.sources
+    assert validate_tags(result.tags) == []
+
+
+# --- a phrase too long for a tag still gives one ------------------------------------------------
+
+
+def test_a_four_word_phrase_too_long_for_a_tag_leaves_a_shorter_one():
+    # Research keeps "monstera leaf phone case" whole (24 characters, one too many words
+    # for a tag) and drops the "leaf phone case" inside it, which the tags then lost.
+    cases = _market("monstera leaf phone case", [
+        (1.0, ["Monstera Leaf Phone Case", "Monstera Leaf iPhone Case"],
+         [("Cute Phone Case", 8), ("Aesthetic Case", 5), ("Boho Case", 4), ("Plant Lover Gift", 4)],
+         [("phone case", 9), ("cute phone case", 7), ("gift for her", 6), ("plant lover gift", 5)]),
+    ])
+    assert "leaf phone case" not in dict(cases.phrases)
+    seed = seeds.derive(Path("monstera-leaf.png"))
+    tags = generate.build_tags(seed, cases, product_hint="Floral Phone Case")
+    assert "leaf phone case" in tags
+    assert len(tags) <= MAX_TAGS and validate_tags(tags) == []
+    assert generate.build_tags(seed, cases, product_hint="Floral Phone Case") == tags
+
+
+def test_a_piece_never_splits_a_product_noun_or_leaves_half_a_phrase():
+    def pieces(text):
+        return generate._tag_pieces(generate._Phrase(tuple(generate._tokens(text)), 10))
+
+    assert pieces("monstera leaf phone case") == ["leaf phone case"]  # not "case" alone
+    assert pieces("retro mountain sunset shirt") == ["sunset shirt"]
+    assert pieces("cute nature lover gift") == ["nature lover gift"]  # never "lover gift"
+    assert pieces("iphone case holder stand") == ["holder stand"]  # never "case holder stand"

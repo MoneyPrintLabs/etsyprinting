@@ -267,6 +267,10 @@
 .pf-net-card .stat-delta .badge.tone-danger {
   border-color: rgba(240, 107, 107, 0.25);
 }
+.pf-net-card .stat-delta .badge.tone-neutral,
+.pf-chart-delta .badge.tone-neutral {
+  border-color: var(--border-2);
+}
 
 /* The circular operators between the cards: − − − = */
 .pf-op {

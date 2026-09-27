@@ -352,6 +352,9 @@ def test_fix_validates_before_sending(web):
         {"tags": [f"tag {n}" for n in range(14)]},
         {"tags": ["mug"], "title": "Mug & Cup & Saucer"},
         {"tags": ["mug"], "title": "x" * 141},
+        # The character rule too, the same one the listing editor and a CSV push use.
+        {"tags": ["mug"], "title": "Sunset ★ Mug"},
+        {"tags": ["mug"], "title": "Coffee Mug 😀"},
         {"tags": ["mug"], "materials": ["clay, glaze!"]},
     ]
     for body in cases:
@@ -359,6 +362,10 @@ def test_fix_validates_before_sending(web):
         assert resp.status_code == 422, body
         assert resp.json()["error"]["code"] == "invalid", body
     assert not [c for c in fake.calls if c[0] == "PATCH"]
+    resp = web.client.post("/api/seo/fix/1000001",
+                           json={"tags": ["mug"], "title": "Sunset ★ Mug", "confirm": True})
+    error = resp.json()["error"]
+    assert error["params"]["field"] == "title" and "does not accept" in error["message"]
 
 
 def test_fix_updates_the_live_listing_and_rescores_it(web):

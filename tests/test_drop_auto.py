@@ -219,6 +219,7 @@ class DigitalClient(Client):
 
 def _download_template(ws, template, listing_type="download"):
     template.fields["type"] = listing_type
+    template.fields["when_made"] = "2020_2026"  # made to order would need no download
     ws.write_template(template.to_dict())
     return template
 
@@ -405,7 +406,7 @@ def test_review_csv_paths_stay_relative_for_ready_photos(studio):
 def test_the_workspace_readme_is_refreshed_when_it_is_out_of_date(tmp_path):
     ws = Workspace(tmp_path / "studio").create()
     readme = ws.root / "README.txt"
-    readme.write_text("an older description", encoding="utf-8")
+    readme.write_text("ETSY STUDIO\n===========\nan older description", encoding="utf-8")
     ws.create()
     assert "drop auto` uploads the drafts straight away" in readme.read_text(encoding="utf-8")
 
@@ -801,3 +802,100 @@ def test_the_estimate_counts_variations_and_real_image_counts():
     assert pipeline.estimate_requests(0, 0, images=0, template_inventory=True) == 0
     # A digital run uploads every product's download files too, one request each.
     assert pipeline.estimate_requests(8, 8, images=56, files=11) == 16 + 8 + 56 + 11
+
+
+# --- `drop run` for a digital template: the estimate counts the download files ------------------
+
+
+def test_drop_run_estimate_counts_a_digital_templates_download_files(studio, monkeypatch):
+    ws, template = studio
+    _download_template(ws, template)
+    _downloads(ws, a_pdf=b"%PDF", b_pdf=b"%PDF")
+    Image.new("RGBA", (20, 20)).save(ws.products / "retro-sunset.png")
+    _capture(monkeypatch, pipeline, _drop_report)
+    result = CliRunner().invoke(app, ["drop", "run", "--path", str(ws.root)])
+    flat = " ".join(result.output.split())
+    # Two products, 1 image each (no mockup + the flat render), 3 downloads: the loose
+    # design's own file and the folder's two.
+    expected = pipeline.estimate_requests(2, 2, 1, files=3)
+    assert "3 download file(s)" in flat, result.output
+    assert f"roughly {expected} requests" in flat
+    assert expected == pipeline.estimate_requests(2, 2, 1) + 3
+
+
+def test_drop_run_estimate_of_a_physical_template_names_no_files(studio, monkeypatch):
+    ws, _ = studio
+    _capture(monkeypatch, pipeline, _drop_report)
+    result = CliRunner().invoke(app, ["drop", "run", "--path", str(ws.root)])
+    assert "download file" not in result.output
+    assert f"roughly {pipeline.estimate_requests(1, 1, 1)} requests" in " ".join(
+        result.output.split())
+
+
+def test_a_row_result_names_its_download_files(capsys):
+    from stallkit import cli
+    from stallkit.listings import RowResult
+
+    cli._print_row_result(RowResult(row=2, action="create", listing_id=900, title="Planner",
+                                    images_uploaded=2, files_uploaded=3))
+    cli._print_row_result(RowResult(row=3, action="create", listing_id=901, title="Mug",
+                                    images_uploaded=1))
+    out = " ".join(capsys.readouterr().out.split())
+    assert "2 image(s), 3 download file(s)" in out
+    assert out.count("download file") == 1
+
+
+# --- a product folder with only its downloads, in `drop run` / `drop auto` -----------------------
+
+
+def test_a_folder_without_photos_is_skipped_with_its_reason_and_not_researched(studio):
+    ws, template = studio
+    (ws.products / "boho planner" / "dosyalar").mkdir(parents=True)
+    (ws.products / "boho planner" / "dosyalar" / "planner.pdf").write_bytes(b"%PDF")
+
+    class Recorder(Client):
+        def __init__(self, ws):
+            super().__init__(ws)
+            self.searches = []
+
+        def search_active_listings(self, **kwargs):
+            self.searches.append(kwargs["keywords"])
+            return iter([])
+
+    client = Recorder(ws)
+    report = pipeline.run(ws, template, client=client, use_cache=False)
+    skipped = {row.source.name: row for row in report.skipped}
+    assert list(skipped) == ["boho planner"]
+    assert "has no photos" in skipped["boho planner"].warnings[0]
+    assert [row.source.name for row in report.ready] == ["mountain sunset shirt"]
+    assert client.searches == ["mountain sunset shirt"]  # already names the shirt
+    with pytest.raises(ValidationError, match="has no photos"):
+        automation.run(ws, template, dry_run=True)
+
+
+def test_the_search_names_the_templates_product(studio):
+    ws, template = studio
+    Image.new("RGBA", (20, 20)).save(ws.products / "retro-sunset.png")
+    searched = []
+
+    class Recorder(Client):
+        def search_active_listings(self, **kwargs):
+            searched.append(kwargs["keywords"])
+            return iter([])
+
+    pipeline.run(ws, template, client=Recorder(ws), use_cache=False)
+    # "Cotton shirt." is the template: the loose design is searched as a shirt.
+    assert sorted(searched) == ["mountain sunset shirt", "retro sunset shirt"]
+
+
+def test_research_cache_keys_are_the_search_as_the_seo_page_writes_them():
+    from stallkit.drop import cache
+    from stallkit.seo import MarketReport
+
+    report = MarketReport(keyword="dog dad paw print shirt", sampled=3, tags=[], phrases=[],
+                          price_min=None, price_median=None, price_max=None, currency="",
+                          median_favorers=None, top_listings=[])
+    cache.store("dog dad paw print shirt|200", report.__dict__)
+    found, cached = pipeline._research_concept(None, "Dog  Dad Paw Print Shirt", sample=200,
+                                               use_cache=True)
+    assert cached and found.keyword == "dog dad paw print shirt"

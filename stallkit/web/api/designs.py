@@ -25,6 +25,7 @@ import collections
 import io
 import json
 import logging
+import os
 import re
 import shutil
 import threading
@@ -176,7 +177,15 @@ def _claim_folder(products: Path, folder: str, batch: str, name: str, data: byte
     - otherwise it is a new product with the same folder name, and it gets a new name
       (`-2`), so it is never merged into an old one the history would skip.
     A download file (`sub` is its `dosyalar` folder) is compared with that subfolder.
+    A folder named like one of the workspace's own (1-MOCKUPS, 2-PRODUCTS, 3-DRAFTS) is
+    refused: it would be saved and then never listed (Workspace.product_groups skips it).
     """
+    from ...drop.workspace import SUBFOLDER_NAMES
+
+    if folder.casefold() in {name.casefold() for name in SUBFOLDER_NAMES}:
+        raise ApiError(422, "reserved_folder",
+                       f"A product folder cannot be named {folder}; rename it, or upload "
+                       "its images as separate designs.", name=folder)
     key = (str(products), batch, folder.casefold())
     with _claims_lock:
         if batch and key in _claims:
@@ -275,7 +284,12 @@ def _save_deliverable(ctx: AppContext, parts: list[str], data: bytes,
     Any type a buyer can open is kept (PDF, ZIP, SVG, ...); programs and scripts are
     refused (client.BLOCKED_FILE_SUFFIXES). A file over Etsy's 20 MB limit is kept and
     named by the pending view and the run's check step, so the seller sees which one.
-    It lands in the same product folder as the photos of its upload batch.
+    It lands in the same product folder as the photos of its upload batch; sent without
+    a batch (only download files were dropped for that folder), in the folder of that
+    name, which is how a seller adds the missing `dosyalar` to a product already there.
+    A file of the same name but other bytes in a product not drafted yet is a corrected
+    version: it replaces the old one, which is moved to archive/ (never two versions sent).
+    A physical template sells no downloads: refused (not_digital).
     """
     from ...client import BLOCKED_FILE_SUFFIXES
 
@@ -285,6 +299,10 @@ def _save_deliverable(ctx: AppContext, parts: list[str], data: bytes,
         raise ApiError(422, "not_deliverable", f"{name} cannot be sold as a download.",
                        name=name)
     ws = ctx.workspace()
+    if _template_digital(ws) is False:
+        raise ApiError(422, "not_digital", "The template listing is a physical product, so "
+                       "no download files are taken; files in a 'dosyalar' folder are only "
+                       "for a digital template.", name=name)
     history, _problem = _history(ctx, ws)
     known_names = {n.casefold() for n in history}
     batch = re.sub(r"[^A-Za-z0-9_-]", "", batch)[:64]
@@ -300,10 +318,52 @@ def _save_deliverable(ctx: AppContext, parts: list[str], data: bytes,
         return {"name": folder, "file": same or name, "folder": folder,
                 "path": _rel(ws, target / same) if same else "", "duplicate": same is not None,
                 "known": True, "ignored": None, "size": len(data), "deliverable": True}
+    older = _entry_ci(target, name) if target.is_dir() else None
+    if (older is not None and older.is_file() and not older.name.startswith(".")
+            and _same_file(target, name, data) is None):
+        _replace_download(ws, folder, older, data)
+        return {"name": folder, "file": older.name, "folder": folder,
+                "path": _rel(ws, older), "duplicate": False, "known": False,
+                "ignored": None, "size": len(data), "deliverable": True, "replaced": True}
     saved, duplicate = _save_unique(target, name, data)
     return {"name": folder, "file": saved, "folder": folder, "path": _rel(ws, target / saved),
             "duplicate": duplicate, "known": False, "ignored": None, "size": len(data),
             "deliverable": True}
+
+
+def _replace_download(ws: Any, folder: str, older: Path, data: bytes) -> None:
+    """Put `data` in place of `older`; the old file goes to archive/<folder>/<dosyalar>/."""
+    archive = ws.archive / folder / older.parent.name
+    archive.mkdir(parents=True, exist_ok=True)
+    stem, suffix = older.stem, older.suffix
+    destination, number = archive / older.name, 1
+    while destination.exists():
+        number += 1
+        destination = archive / f"{stem}-{number}{suffix}"
+    temporary = older.with_name(f".{older.name}.upload")
+    try:
+        temporary.write_bytes(data)
+        shutil.move(str(older), str(destination))
+        os.replace(temporary, older)
+    except OSError as exc:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        raise ApiError(500, "internal", f"Could not replace {older.name}: {exc}") from exc
+
+
+def _template_digital(ws: Any) -> bool | None:
+    """Whether the saved template is digital; None when there is none or it is unreadable."""
+    from ...drop.template import Template
+    from ...errors import ValidationError
+
+    if not ws.template_path.is_file():
+        return None
+    try:
+        return Template.from_dict(ws.read_template()).digital
+    except ValidationError:
+        return None
 
 
 def upload_file(req: Request) -> dict[str, Any]:
@@ -430,7 +490,7 @@ def delete_file(req: Request) -> dict[str, Any]:
 
 def _template_info(ctx: AppContext, ws: Any) -> tuple[dict[str, Any] | None, str | None]:
     """(template facts for the page, a blocker code)."""
-    from ...drop import stream
+    from ...drop import pipeline, stream
     from ...drop.template import Template
     from ...errors import ValidationError
 
@@ -452,6 +512,9 @@ def _template_info(ctx: AppContext, ws: Any) -> tuple[dict[str, Any] | None, str
         # physical | download | both; digital drafts get each product's download files.
         "listing_type": template.listing_type,
         "digital": template.digital,
+        # when_made made_to_order: a digital draft may go without a download file (the
+        # seller sends it after the order), and a loose design is not attached.
+        "made_to_order": pipeline.made_to_order(template),
         # A download is not shipped: no profile is needed (both still ships).
         "needs_shipping": template.listing_type != "download",
         "shipping_profile": bool(fields.get("shipping_profile_id")),
@@ -500,14 +563,19 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
     concepts: set[str] = set()
     template, template_problem = _template_info(ctx, ws)
     digital = bool(template and template.get("digital"))
+    to_order = bool(template and template.get("made_to_order"))
     for path, photos in groups:
         if path.name.casefold() in known:
             continue
+        folder = path.is_dir()
         seed = seeds.derive(
-            path / "IMG_0001.jpg" if photos else path,
-            folder_fallback=bool(photos) or path.parent != ws.products,
+            path / "IMG_0001.jpg" if folder else path,
+            folder_fallback=folder or path.parent != ws.products,
         )
-        if seed:
+        # A product folder with only its `dosyalar` and no photos: listed, so the seller
+        # sees it, and failed by the run's check step (stream: no_photos).
+        no_photos = folder and not photos
+        if seed and not no_photos:
             concepts.add(seed.text)
         shown = photos[0] if photos else path
         try:
@@ -520,15 +588,15 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
         downloads: list[dict[str, Any]] = []
         deliverable_problem = None
         if digital:
-            found, issue = pipeline.deliverables(path)
+            found, issue = pipeline.deliverables(path, made_to_order=to_order)
             downloads = [{"name": f.name, "path": _rel(ws, f), "size": _size(f)} for f in found]
             if issue is not None:
                 deliverable_problem = {"code": issue[0], "params": issue[2]}
         items.append({
             "name": path.name,
-            "kind": "folder" if photos else "design",
-            "files": len(photos) if photos else 1,
-            "thumb_path": _rel(ws, shown),
+            "kind": "folder" if folder else "design",
+            "files": len(photos) if folder else 1,
+            "thumb_path": "" if no_photos else _rel(ws, shown),
             "mtime": mtime,
             "size": size,
             "concept": seed.text if seed else "",
@@ -536,6 +604,7 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
             "too_many": len(photos) > MAX_LISTING_IMAGES,
             "deliverables": downloads,
             "deliverable_problem": deliverable_problem,
+            "no_photos": no_photos,
         })
     names = {path.name.casefold() for path, _ in groups}
     already_done, _ = automation.known_products(history, names)
@@ -570,19 +639,24 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
     if not items:
         blockers.append("empty")
     elif not runnable:
-        # Nothing could become a draft: the names say nothing, or (a digital template)
-        # no product has a download it can send.
+        # Nothing could become a draft: the names say nothing, the product folders have
+        # no photos, or (a digital template) no product has a download it can send.
         files_only = any(item["deliverable_problem"] and not item["junk_reason"]
-                         and not item["too_many"] for item in items)
-        blockers.append("deliverables_only" if files_only else "junk_only")
+                         and not item["too_many"] and not item["no_photos"] for item in items)
+        if all(item["no_photos"] for item in items):
+            blockers.append("photos_only")
+        else:
+            blockers.append("deliverables_only" if files_only else "junk_only")
 
     warnings: list[str] = []
     junk = sum(1 for item in items if item["junk_reason"] or item["too_many"])
     if junk:
         warnings.append("junk")
     if any(item["deliverable_problem"] and not item["junk_reason"] and not item["too_many"]
-           for item in items):
+           and not item["no_photos"] for item in items):
         warnings.append("deliverables")
+    if any(item["no_photos"] for item in items):
+        warnings.append("no_photos")
     if not enabled and any(item["kind"] == "design" for item in items):
         warnings.append("no_mockups")
     if template and template.get("needs_shipping") and not template.get("shipping_profile"):
@@ -591,10 +665,11 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
     # Only what will run, with each product's own image count: a folder's photos, one
     # upload for a JPEG (a finished photo, never composited), mockups + the flat design
     # for anything that may be transparent artwork (an upper bound; opaque ones take 1).
+    # A digital template composites every loose design, a JPEG too: it is the download.
     run_items = [item for item in items if _runnable(item)]
     images_total = sum(
         item["files"] if item["kind"] == "folder"
-        else 1 if Path(item["name"]).suffix.lower() in (".jpg", ".jpeg")
+        else 1 if not digital and Path(item["name"]).suffix.lower() in (".jpg", ".jpeg")
         else images_each
         for item in run_items
     )
@@ -652,8 +727,9 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
 
 
 def _runnable(item: dict[str, Any]) -> bool:
-    """A product the run would try: a readable name, not too many photos, its downloads."""
-    return not item["junk_reason"] and not item["too_many"] and not item["deliverable_problem"]
+    """A product the run would try: a readable name, photos (not too many), its downloads."""
+    return (not item["junk_reason"] and not item["too_many"] and not item["no_photos"]
+            and not item["deliverable_problem"])
 
 
 def _size(path: Path) -> int:

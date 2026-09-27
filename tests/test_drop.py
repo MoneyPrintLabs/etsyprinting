@@ -1040,6 +1040,7 @@ DIGITAL_LISTING = {
     **LISTING,
     "title": "Boho Planner Printable",
     "listing_type": "download",
+    "when_made": "2020_2026",  # made to order would need no download file
     "shipping_profile_id": None,
     "readiness_state_id": None,
     "processing_min": 1,  # legacy day counts Etsy may still report for a download
@@ -1100,7 +1101,7 @@ def test_what_stops_a_folders_downloads(tmp_path, monkeypatch):
     folder.mkdir()
     code, message, params = pipeline.deliverables(folder)[1]
     assert code == "no_deliverable" and "no 'dosyalar'" in message
-    assert params == {"name": "boho planner", "folder": "dosyalar"}
+    assert params == {"name": "boho planner", "folder": "dosyalar", "missing": True}
     (folder / "dosyalar").mkdir()
     assert "'dosyalar' folder is empty" in pipeline.deliverables(folder)[1][1]
     for n in range(6):

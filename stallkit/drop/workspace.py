@@ -31,8 +31,24 @@ SUBFOLDER_NAMES = (MOCKUPS_DIR, PRODUCTS_DIR, DRAFTS_DIR)
 # preview written there would come back as a template to composite designs onto.
 CALIBRATION_DIR = "calibration"
 
+# A folder product of a digital template keeps the files a buyer downloads in a
+# subfolder of this name (either spelling, any case); its photos stay in the folder
+# itself (drop.pipeline.files_folder).
+FILES_DIRS = ("dosyalar", "files")
+
 TEMPLATE_FILE = "product.json"
 POSITIONS_FILE = "positions.json"
+README_FILE = "README.txt"
+# The first line of the generated README: a README.txt that starts otherwise is not ours.
+README_MARK = "ETSY STUDIO"
+# What a workspace keeps beside its folders (automation's history and lock included).
+HISTORY_FILE = "upload-history.json"
+_WORKSPACE_ENTRIES = frozenset(
+    name.casefold() for name in (
+        MOCKUPS_DIR, PRODUCTS_DIR, DRAFTS_DIR, ARCHIVE_DIR, README_FILE, TEMPLATE_FILE,
+        HISTORY_FILE, ".auto-upload.lock", "desktop.ini", "thumbs.db", ".ds_store",
+    )
+)
 
 # Stems ending in one of these are a generator's own preview of the artwork beside it,
 # not a product. English and Turkish spellings are both covered.
@@ -61,6 +77,14 @@ ETSY STUDIO
             folder per product and put its numbered images inside (01, 02, ...).
             Name the folder after the product. Run: stallkit drop auto
 
+            Digital products (a template listing of type download or both):
+            a loose design is delivered as the file itself. A product folder
+            delivers the files in its dosyalar (or files) subfolder, at most 5,
+            each up to 20 MB; its photos stay in the product folder itself.
+            Folders inside dosyalar are not sent: zip each into one file.
+            A product folder with only a dosyalar folder and no photos stops
+            at the check: every listing needs at least one photo.
+
 3-DRAFTS    What comes out: composited images and review.csv.
             `stallkit drop run` stops here so you can check review.csv first.
             `stallkit drop auto` uploads the drafts straight away, in one step.
@@ -86,6 +110,15 @@ ETSY STUDIO (TR)
             kullanacagin klasor bu. Hazir mockuplar icin her urune ayri bir klasor
             ac; 01, 02 diye siraladigin resimleri icine koy. Klasore urunun adini
             ver. Komut: stallkit drop auto. Bir urun klasoru = bir listing.
+
+            Dijital urunler (turu download ya da both olan sablon ilan): tek
+            basina bir tasarimda alici dosyanin kendisini indirir. Urun
+            klasorunde alici, klasorun icindeki dosyalar (ya da files) alt
+            klasorundeki dosyalari indirir: en fazla 5 dosya, her biri en fazla
+            20 MB. Fotograflar yine urun klasorunun kendisinde durur. dosyalar
+            icindeki klasorler gonderilmez: her birini zip'leyip tek dosya yap. Icinde
+            yalnizca dosyalar klasoru olan, fotografi olmayan bir urun klasoru
+            kontrolde durur: her ilanin en az bir fotografi olmali.
 
 3-DRAFTS    Cikan sonuc: giydirilmis gorseller ve review.csv.
             `stallkit drop run` burada durur; once review.csv'ye bakarsin.
@@ -136,14 +169,17 @@ class Workspace:
     def create(self) -> Workspace:
         for path in (self.mockups, self.products, self.drafts, self.archive):
             path.mkdir(parents=True, exist_ok=True)
-        readme = self.root / "README.txt"
+        readme = self.root / README_FILE
         # The file is generated, so it is refreshed whenever the text changes; an
-        # older copy would keep describing behaviour the tool no longer has.
+        # older copy would keep describing behaviour the tool no longer has. A README the
+        # seller (or another program) wrote in that folder is theirs: never replaced.
         try:
-            current = readme.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+            current: str | None = readme.read_text(encoding="utf-8")
+        except FileNotFoundError:
             current = None
-        if current != README_TEXT:
+        except (OSError, UnicodeDecodeError):
+            current = "" if readme.exists() else None
+        if current is None or (current != README_TEXT and current.startswith(README_MARK)):
             readme.write_text(README_TEXT, encoding="utf-8")
         return self
 
@@ -182,10 +218,17 @@ class Workspace:
 
         Folder images are already finished mockups, including transparent PNGs.
         Number them 01, 02, ... to choose their listing order.
+
+        A folder that holds a `dosyalar` / `files` subfolder but no photos is listed too,
+        with no images, so it is reported (it has nothing to show buyers) instead of
+        vanishing. Tell a folder from a loose design by `path.is_dir()`, not by its images.
         """
         groups = [(path, []) for path in self.product_files()]
+        # 2-PRODUCTS was itself used as a workspace by an older version: its archive/
+        # holds the designs the seller took out of a run there, never a product.
+        nested = is_workspace(self.products)
         for folder in sorted(self.products.iterdir(), key=lambda p: p.name.casefold()):
-            if _workspace_folder(folder):
+            if _workspace_folder(folder) or (nested and _named(folder, (ARCHIVE_DIR,))):
                 # What a workspace chosen as 2-PRODUCTS left behind (2-PRODUCTS\1-MOCKUPS,
                 # 2-PRODUCTS\3-DRAFTS, ...): blank mockups and old renders, never a product.
                 continue
@@ -193,6 +236,8 @@ class Workspace:
                 images = _images(folder)
                 if images:
                     groups.append((folder, sorted(images, key=_natural_key)))
+                elif has_files_folder(folder):
+                    groups.append((folder, []))
         return groups
 
     def read_template(self) -> dict[str, Any]:
@@ -221,6 +266,17 @@ def _images(folder: Path) -> list[Path]:
         (p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_SUFFIXES),
         key=lambda p: p.name.lower(),
     )
+
+
+def has_files_folder(folder: Path) -> bool:
+    """Whether a product folder has a `dosyalar` / `files` subfolder (any case)."""
+    try:
+        return any(
+            entry.name.casefold() in FILES_DIRS and entry.is_dir() and not entry.is_symlink()
+            for entry in folder.iterdir()
+        )
+    except OSError:
+        return False
 
 
 def _natural_key(path: Path) -> list:
@@ -262,8 +318,28 @@ def root_for(path: Path) -> Path:
       Studio\\Shop 2") or under a folder that happens to be one (a home folder someone
       ran `drop init` in) is a workspace of its own.
 
+    The name alone only decides when the parent is new or holds nothing but what a
+    workspace keeps (its folders, README.txt, product.json, upload-history.json): a fresh
+    "Desktop\\2-PRODUCTS" never turns the whole Desktop into the workspace.
+
     `path` should be absolute. Only the folders on the way up are looked at; nothing is
     created or moved.
+    """
+    path = Path(os.path.normpath(str(path)))
+    outer = enclosing_root(path)
+    if outer is not None:
+        return outer
+    parent = path.parent
+    if (_named(path, SUBFOLDER_NAMES) and parent != path and parent != Path(parent.anchor)
+            and _only_workspace_entries(parent)):
+        return parent
+    return path
+
+
+def enclosing_root(path: Path) -> Path | None:
+    """The outermost existing workspace `path` is a folder of (root_for's first rule).
+
+    None when there is none: a folder merely NAMED 2-PRODUCTS is not inside a workspace.
     """
     path = Path(os.path.normpath(str(path)))
     outer: Path | None = None
@@ -272,12 +348,84 @@ def root_for(path: Path) -> Path:
         if _named(child, SUBFOLDER_NAMES + (ARCHIVE_DIR,)) and is_workspace(parent):
             outer = parent  # keep going: the outermost one wins
         child = parent
-    if outer is not None:
-        return outer
-    parent = path.parent
-    if _named(path, SUBFOLDER_NAMES) and parent != path and parent != Path(parent.anchor):
-        return parent
-    return path
+    return outer
+
+
+def _only_workspace_entries(folder: Path) -> bool:
+    """The folder does not exist yet, or holds only what a workspace keeps."""
+    try:
+        return all(
+            entry.name.casefold() in _WORKSPACE_ENTRIES or entry.name.startswith(".")
+            for entry in folder.iterdir()
+        )
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+
+def adopt_nested(inner: Path, outer: Path) -> list[str]:
+    """Carry what a nested workspace holds for the seller over to the one around it.
+
+    v0.2.0 made "Etsy Studio\\2-PRODUCTS" a workspace of its own when it was chosen, and
+    sellers then worked in it: its product.json is the template they use, and its
+    upload-history.json is the only thing that stops a design already drafted from being
+    drafted again. Switching to the outer workspace must not lose either:
+    - history: every shop's entries of `inner` are added to `outer`'s, never over an entry
+      `outer` already has (keys are names inside 2-PRODUCTS, so they still match once the
+      designs are moved);
+    - template: `inner`'s product.json is moved to `outer`; an older, different one there
+      is kept as product.json.bak.
+    Returns what was carried over ("history", "template"); [] when nothing was. Raises
+    ValidationError (UploadLocked while a run holds `outer`'s lock) when the history
+    cannot be read or saved; nothing is lost then, and `inner` keeps its files.
+    """
+    from . import automation  # automation imports this module
+
+    moved: list[str] = []
+    if _same_folder(inner, outer) or not inner.is_dir() or not outer.is_dir():
+        return moved
+    inner_history = automation.history_path(inner)
+    if inner_history.is_file():
+        # The file stays in `inner` as it is: a history is never deleted.
+        theirs = automation.load_history(inner_history)
+        with automation.upload_lock(outer):
+            path = automation.history_path(outer)
+            ours = automation.load_history(path)
+            added = False
+            for shop, entries in theirs.items():
+                section = ours.setdefault(shop, {})
+                known = {name.casefold() for name in section}
+                for name, entry in entries.items():
+                    if name.casefold() not in known:
+                        section[name] = entry
+                        known.add(name.casefold())
+                        added = True
+            if added:
+                automation.save_history(path, ours)
+                moved.append("history")
+    template = inner / TEMPLATE_FILE
+    target = outer / TEMPLATE_FILE
+    try:
+        if template.is_file() and not (
+            target.is_file() and target.read_bytes() == template.read_bytes()
+        ):
+            if target.is_file():
+                backup = outer / f"{TEMPLATE_FILE}.bak"
+                number = 1
+                while backup.exists():
+                    number += 1
+                    backup = outer / f"{TEMPLATE_FILE}.bak{number}"
+                os.replace(target, backup)
+            os.replace(template, target)
+            moved.append("template")
+    except OSError as exc:
+        raise ValidationError(f"Could not move {template} to {outer}: {exc}") from exc
+    return moved
+
+
+def _same_folder(a: Path, b: Path) -> bool:
+    return os.path.normcase(os.path.normpath(str(a))) == os.path.normcase(os.path.normpath(str(b)))
 
 
 def desktop_dir() -> Path:

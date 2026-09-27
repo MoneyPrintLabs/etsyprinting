@@ -7,8 +7,11 @@
 A folder of a workspace (1-MOCKUPS, 2-PRODUCTS, 3-DRAFTS, anything inside them) chosen
 as the workspace means that workspace: its root is saved, never a second workspace
 nested inside the first (`drop.workspace.root_for`). The answer then carries
-`adjusted: {"chosen", "root"}` so the page can say so. A folder saved that way by an
-older version is reported as `workspace.nested_in` (the root it belongs to).
+`adjusted: {"chosen", "root", "inside"}` so the page can say so (`inside` false: the
+folder is only named like one, e.g. a new "...\\2-PRODUCTS", and its parent was used).
+A folder saved that way by an older version is reported as `workspace.nested_in` (the
+root it belongs to); switching to that root carries the nested workspace's template and
+upload history over (`drop.workspace.adopt_nested`), listed in `migrated`.
 
 Language, hiding shop names, the shop list and quitting use the core endpoints
 (/api/prefs, /api/shops/*, /api/quit); the Etsy connection uses /api/connect/*.
@@ -61,13 +64,15 @@ def _folders(ctx: AppContext) -> dict[str, Any]:
     ws = workspace_mod.Workspace(root)
     paths = {"workspace": ws.root, "mockups": ws.mockups, "products": ws.products,
              "drafts": ws.drafts}
-    belongs_to = workspace_mod.root_for(root) if root.is_absolute() else root
+    # Saved before the guard: a folder of another, existing workspace (see the module
+    # doc). A workspace merely named 2-PRODUCTS, with none around it, is its own.
+    belongs_to = workspace_mod.enclosing_root(root) if root.is_absolute() else None
     return {
         "root": str(root),
         "default": str(workspace_mod.default_root()),
         "custom": bool(str(ctx.shop_prefs().get("workspace") or "").strip()),
-        # Saved before the guard: a folder of another workspace (see the module doc).
-        "nested_in": None if _same_path(belongs_to, root) else str(belongs_to),
+        "nested_in": (None if belongs_to is None or _same_path(belongs_to, root)
+                      else str(belongs_to)),
         "folders": [
             {"which": which, "name": path.name, "path": str(path), "exists": path.is_dir()}
             for which, path in paths.items()
@@ -92,7 +97,9 @@ def set_workspace(req: Request) -> dict[str, Any]:
     A folder of a workspace means that workspace (module doc); the default folder,
     however it is reached, is saved as "the default" rather than as a custom path.
     """
+    from ...drop import automation
     from ...drop import workspace as workspace_mod
+    from ...errors import ValidationError
 
     ctx = _ctx(req)
     body = req.json_object()
@@ -102,9 +109,13 @@ def set_workspace(req: Request) -> dict[str, Any]:
     raw = raw.strip().strip('"').strip("'").strip()
     if ctx.jobs.busy():
         raise ApiError(409, "busy", "Wait for the running task to finish first.")
-    adjusted: dict[str, str] | None = None
+    adjusted: dict[str, Any] | None = None
+    migrated: list[str] = []
+    # The folder in use now: a workspace nested by an older version hands its template
+    # and upload history over to the workspace around it (workspace_mod.adopt_nested).
+    current = ctx.workspace_root()
     if not raw:
-        ctx.update_shop_prefs(workspace=None)
+        path = workspace_mod.default_root()
     else:
         chosen = Path(raw).expanduser()
         if not chosen.is_absolute():
@@ -115,13 +126,28 @@ def set_workspace(req: Request) -> dict[str, Any]:
                            field="path")
         path = workspace_mod.root_for(chosen)
         if not _same_path(path, chosen):
-            adjusted = {"chosen": str(chosen), "root": str(path)}
+            # inside: `chosen` is a folder of an existing workspace; otherwise it is only
+            # named like one (a new "...\2-PRODUCTS"), and its parent was made the workspace.
+            inside = workspace_mod.enclosing_root(chosen) is not None
+            adjusted = {"chosen": str(chosen), "root": str(path), "inside": inside}
         try:
             workspace_mod.Workspace(path).create()
         except OSError as exc:
             raise ApiError(422, "workspace_unwritable",
                            f"Cannot create the folders there: {exc.strerror or exc}",
                            field="path") from exc
+    outer = workspace_mod.enclosing_root(current) if current.is_absolute() else None
+    if (outer is not None and _same_path(outer, path) and not _same_path(current, path)
+            and workspace_mod.is_workspace(current)):
+        try:
+            migrated = workspace_mod.adopt_nested(current, path)
+        except automation.UploadLocked as exc:
+            raise ApiError(409, "workspace_locked", str(exc)) from exc
+        except ValidationError as exc:
+            raise ApiError(422, "workspace_history", str(exc)) from exc
+    if not raw:
+        ctx.update_shop_prefs(workspace=None)
+    else:
         default = _same_path(path, workspace_mod.default_root())
         ctx.update_shop_prefs(workspace=None if default else str(path))
     try:
@@ -131,7 +157,7 @@ def set_workspace(req: Request) -> dict[str, Any]:
                        f"Cannot create the folders there: {exc.strerror or exc}",
                        field="path") from exc
     ctx.set_status_soon(0.0)
-    return {"workspace": _folders(ctx), "adjusted": adjusted}
+    return {"workspace": _folders(ctx), "adjusted": adjusted, "migrated": migrated}
 
 
 def _check_api(ctx: AppContext) -> Any:

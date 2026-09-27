@@ -141,6 +141,14 @@ export default {
     }
     const shownCur = () => (display() === "secondary" ? secCur() : shopCur());
     const pct = (ratio, digits = 1) => (ratio === null || ratio === undefined || !Number.isFinite(ratio) ? "–" : minus(percent(ratio, digits)));
+    // Month-over-month change: up green, down red; one that rounds to %0,0 is flat and
+    // grey (a red "↓ %0,0" reads like a loss that is not there).
+    const trend = (ratio) =>
+      Math.abs(ratio) < 0.0005
+        ? { tone: "neutral", icon: "minus" }
+        : ratio > 0
+          ? { tone: "success", icon: "arrow-up" }
+          : { tone: "danger", icon: "arrow-down" };
     const monthLong = (ym) => {
       const p = parseMonth(ym);
       if (!p) return ym || "";
@@ -499,7 +507,7 @@ export default {
       let delta = null;
       if (s.net !== null && prev && prev.net !== null && prev.net !== 0) {
         const ratio = (s.net - prev.net) / Math.abs(prev.net);
-        delta = { text: pct(Math.abs(ratio)), tone: ratio >= 0 ? "success" : "danger", icon: ratio >= 0 ? "arrow-up" : "arrow-down" };
+        delta = { text: pct(Math.abs(ratio)), ...trend(ratio) };
       }
       const netCard = statCard({
         icon: "chart",
@@ -780,8 +788,7 @@ export default {
         const p = parseMonth(prev.month);
         chartDelta.appendChild(
           badge({
-            icon: ratio >= 0 ? "arrow-up" : "arrow-down",
-            tone: ratio >= 0 ? "success" : "danger",
+            ...trend(ratio),
             text: t("chart.delta", { pct: pct(Math.abs(ratio)), month: t(`month_dat.${p.month}`) }),
           }),
         );

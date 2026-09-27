@@ -487,7 +487,8 @@ button.dz-chip:hover {
   transition: width 0.2s var(--ease);
 }
 .page-designs .dz-up-row.is-done .dz-up-fill,
-.page-designs .dz-up-row.is-duplicate .dz-up-fill {
+.page-designs .dz-up-row.is-duplicate .dz-up-fill,
+.page-designs .dz-up-row.is-replaced .dz-up-fill {
   background: var(--success);
 }
 .page-designs .dz-up-row.is-known .dz-up-fill,

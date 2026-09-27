@@ -28,6 +28,7 @@ from .config import (
 )
 from .csvio import as_bool, as_float, as_int, resolve_paths, split_multi
 from .errors import EtsyApiError, ValidationError
+from .seo import tag_key  # seo imports only client and config: no cycle
 
 # The CSV contract. `listing_id` empty means "create"; filled means "update".
 LISTING_COLUMNS = [
@@ -59,13 +60,13 @@ LISTING_COLUMNS = [
     "item_height",
     "item_dimensions_unit",
     "images",
+    "files",
     "state",
 ]
 
-# An optional column after `images`: the files a buyer downloads from a `download` or
-# `both` listing, separated like images. It is not in LISTING_COLUMNS (yet) so a CSV
-# written from that list, and the example file, keep their documented header; push()
-# reads it whenever a row has it, and the drop pipeline's review.csv always writes it.
+# The column after `images`: the files a buyer downloads from a new `download` or `both`
+# draft, separated like images, relative to the CSV. Empty for a physical listing. It is
+# optional to read: a CSV written before it existed pushes exactly as before.
 FILES_COLUMN = "files"
 
 # Listing types that are delivered as files, and the ones that are shipped.
@@ -214,7 +215,8 @@ def validate_tags(tags: Sequence[str]) -> list[str]:
         bad = bad_tag_chars(tag)
         if bad:
             problems.append(f"tag {tag!r} contains disallowed character(s): {''.join(sorted(bad))}")
-    lowered = [t.lower() for t in tags]
+    # "İstanbul poster" and "istanbul poster" are one tag to a buyer (seo.tag_key).
+    lowered = [tag_key(t) for t in tags]
     dupes = {t for t in lowered if lowered.count(t) > 1}
     if dupes:
         problems.append(f"duplicate tags: {', '.join(sorted(dupes))}")
@@ -473,7 +475,10 @@ def _file_paths(
     values = split_multi(row.get(FILES_COLUMN, "") or "")
     listing_type = payload.get("type", "physical" if not is_update else None)
     if not values:
-        if not is_update and listing_type in DIGITAL_TYPES:
+        # A made-to-order digital listing is activated without a file (updateListing
+        # in the Open API spec): the seller sends what was made after the order.
+        if (not is_update and listing_type in DIGITAL_TYPES
+                and payload.get("when_made") != "made_to_order"):
             result.warnings.append(
                 f"type is {listing_type} but no files are given — the draft is created, "
                 "but Etsy needs its download file before it can be published"
@@ -821,6 +826,7 @@ def _write_row(
                 f"be set: {exc}. The listing IS in your shop — add the options in Etsy."
             )
 
+    image_failed = False
     if upload_images and item.image_paths and result.listing_id:
         for rank, image in enumerate(item.image_paths, start=1):
             try:
@@ -836,28 +842,44 @@ def _write_row(
                     f"{len(item.image_paths)} failed: {exc}. The listing IS in your shop — "
                     "add the remaining images in Etsy, or fix and re-run just this row."
                 )
-                return
+                image_failed = True
+                break
 
     # A digital draft's downloads go on last, after its photos: only ever onto the draft
-    # this row just created (prepare() refuses files anywhere else).
+    # this row just created (prepare() refuses files anywhere else). They still go when a
+    # photo failed: a draft with its download and a photo missing is closer to done, and
+    # the message then says what happened to the download as well.
     if item.is_update or not item.file_paths or not result.listing_id:
         return
+    total = len(item.file_paths)
     for rank, path in enumerate(item.file_paths, start=1):
         try:
             client.upload_listing_file(result.listing_id, path, rank=rank)
             result.files_uploaded += 1
         except (EtsyApiError, ValidationError, OSError, ValueError) as exc:
-            result.status = "partial"
-            result.message = (
-                f"{result.message} (id {result.listing_id}), but file {rank} of "
-                f"{len(item.file_paths)} ({path.name}) failed: {exc}. The listing IS in "
-                "your shop — add the download file in Etsy before publishing it."
-            )
+            if image_failed:
+                result.message = (
+                    f"{result.message} Download file {rank} of {total} ({path.name}) "
+                    f"failed too: {exc}. Add the download file in Etsy before publishing it."
+                )
+            else:
+                result.status = "partial"
+                result.message = (
+                    f"{result.message} (id {result.listing_id}), but file {rank} of "
+                    f"{total} ({path.name}) failed: {exc}. The listing IS in "
+                    "your shop — add the download file in Etsy before publishing it."
+                )
             return
+    one = result.files_uploaded == 1
     if result.status == "ok":
         result.message = (
-            f"{result.message}; {result.files_uploaded} download file"
-            f"{'' if result.files_uploaded == 1 else 's'} attached"
+            f"{result.message}; {result.files_uploaded} download file{'' if one else 's'} "
+            "attached"
+        )
+    elif image_failed:
+        result.message = (
+            f"{result.message} Its {result.files_uploaded} download file{'' if one else 's'} "
+            f"{'was' if one else 'were'} attached."
         )
 
 

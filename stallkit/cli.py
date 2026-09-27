@@ -464,7 +464,9 @@ def doctor(
     ),
 ) -> None:
     """The same checklist, without asking anything. Good for scripts."""
-    raise typer.Exit(_run_checklist(interactive=False, workspace=path))
+    # A folder of a workspace (2-PRODUCTS, ...) means that workspace, as for `drop`.
+    workspace = _workspace(path).root if path else None
+    raise typer.Exit(_run_checklist(interactive=False, workspace=workspace))
 
 
 @app.command("desktop")
@@ -630,6 +632,7 @@ def listings_template(
         "item_height": "",
         "item_dimensions_unit": "",
         "images": "photos/mug-1.jpg|photos/mug-2.jpg",
+        "files": "",
         "state": "",
     }
     csvio.write_rows(out, [example], columns=listings_mod.LISTING_COLUMNS)
@@ -637,7 +640,9 @@ def listings_template(
     console.print(
         "  Fill [cyan]shipping_profile_id[/] from `stallkit shop profiles` and "
         "[cyan]taxonomy_id[/] from `stallkit shop taxonomy <word>`.\n"
-        "  Multi-value cells use [cyan]|[/] as the separator. Image paths are relative to the CSV."
+        "  Multi-value cells use [cyan]|[/] as the separator. Image paths are relative to the CSV.\n"
+        "  [cyan]files[/]: what a buyer downloads (type download or both), relative to the CSV "
+        "like images; leave it empty for a physical item."
     )
 
 
@@ -741,9 +746,10 @@ def listings_push(
     elif report.aborted:
         _fail(report.aborted_reason)
     else:
+        files = f", {report.files} download file(s)" if report.files else ""
         _ok(
             f"Created {report.created}, updated {report.updated}, "
-            f"uploaded {report.images} image(s), {report.errors} error(s)."
+            f"uploaded {report.images} image(s){files}, {report.errors} error(s)."
         )
         if report.partial:
             _warn(
@@ -765,11 +771,13 @@ def listings_push(
                     "status": r.status,
                     "title": r.title,
                     "images_uploaded": r.images_uploaded,
+                    "files_uploaded": r.files_uploaded,
                     "message": r.message,
                 }
                 for r in report.results
             ],
-            columns=["row", "listing_id", "action", "status", "title", "images_uploaded", "message"],
+            columns=["row", "listing_id", "action", "status", "title", "images_uploaded",
+                     "files_uploaded", "message"],
         )
         _ok(f"Results written to {out}")
 
@@ -793,6 +801,8 @@ def _print_row_result(result: listings_mod.RowResult) -> None:
         )
     else:
         extra = f", {result.images_uploaded} image(s)" if result.images_uploaded else ""
+        if result.files_uploaded:
+            extra += f", {result.files_uploaded} download file(s)"
         console.print(
             f"[green]{TICK} row {result.row}[/] {result.action} "
             f"{_hide(result.listing_id, 'id')} — {_hide(result.title)}{extra}"
@@ -1211,11 +1221,30 @@ def _workspace(path: Optional[Path]) -> workspace_mod.Workspace:
     if not path:
         return workspace_mod.Workspace(workspace_mod.default_root())
     chosen = Path(path).expanduser()
-    root = workspace_mod.root_for(chosen.absolute())
-    if root != Path(os.path.normpath(str(chosen.absolute()))):
-        _warn(f"{chosen} is a folder of the workspace {root}; using {root}.")
+    absolute = Path(os.path.normpath(str(chosen.absolute())))
+    root = workspace_mod.root_for(absolute)
+    if root == absolute:
+        return workspace_mod.Workspace(chosen)
+    if workspace_mod.enclosing_root(absolute) is None:
+        # Only the name: a new "...\2-PRODUCTS" whose parent holds nothing else.
+        _warn(f"{chosen} is named like a workspace folder; its parent {root} is the "
+              "workspace.")
         return workspace_mod.Workspace(root)
-    return workspace_mod.Workspace(chosen)
+    _warn(f"{chosen} is a folder of the workspace {root}; using {root}.")
+    if workspace_mod.is_workspace(absolute):
+        # A workspace an older version made inside this one, and worked in: its
+        # template and upload history come along, or its drafts would be made again.
+        try:
+            moved = workspace_mod.adopt_nested(absolute, root)
+        except StallKitError as exc:
+            _warn(f"Its template and upload history could not be carried over: {exc}")
+            raise typer.Exit(1) from exc
+        if moved:
+            what = " and ".join(
+                {"template": "template (product.json)",
+                 "history": "upload history (upload-history.json)"}[m] for m in moved)
+            _ok(f"Carried its {what} over to {root}.")
+    return workspace_mod.Workspace(root)
 
 
 @drop_app.command("init")
@@ -1331,10 +1360,18 @@ def drop_run(
 
     chosen = _drop_mockups(ws, mockups)
     images_each = len(chosen) + (0 if no_flat else 1)
+    # A digital template's drafts also upload what the buyer downloads, one request each.
+    to_order = pipeline.made_to_order(tmpl)  # a made-to-order draft may go without one
+    files = (
+        sum(len(pipeline.deliverables(source, made_to_order=to_order)[0])
+            for source, _ in designs)
+        if tmpl.digital else 0
+    )
+    downloads = f" and {files} download file(s)" if files else ""
+    estimate = pipeline.estimate_requests(len(designs), len(designs), images_each, files=files)
     console.print(
-        f"[dim]{len(designs)} design(s), about {images_each} image(s) each. "
-        f"Creating the drafts later will cost roughly "
-        f"{pipeline.estimate_requests(len(designs), len(designs), images_each)} requests "
+        f"[dim]{len(designs)} design(s), about {images_each} image(s) each{downloads}. "
+        f"Creating the drafts later will cost roughly {estimate} requests "
         f"of your 5,000 daily allowance.[/]\n"
     )
 

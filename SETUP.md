@@ -169,6 +169,13 @@ images. A loose design is delivered as the design file itself. A product folder 
 the files in its `dosyalar` (or `files`) subfolder, such as PDF, ZIP, PNG or SVG; the photos
 in the folder itself become the images. Etsy takes at most 5 files per listing, each up to
 20 MB. A download-only template needs no shipping profile; a *both* template does.
+**Tasarım Yükle** then shows **Ürün: Dijital** (*Product: Digital*), the **Başlat**
+(*Start*) window opens with **Dijital ürün · tasarım dosyası indirilebilir dosya olarak
+eklenir** (*Digital product · the design file is attached as the download*), and
+**Şablon İlan** says **Dijital ürün: her taslağa tasarım dosyası indirilebilir dosya olarak
+eklenir** under the chosen listing. A product folder still needs its photos: one with only
+a `dosyalar` folder shows *Fotoğraf yok* (*No photos*) and stops at the **Kontrol**
+(*Check*) step.
 
 **The products folder** is `Etsy Studio` on your Desktop. To use another one, open
 **Ayarlar → Klasörler → Değiştir** (Settings → Folders → Change), or pass `--path` to the
@@ -257,6 +264,11 @@ into the main folder's `1-MOCKUPS` and `2-PRODUCTS`.
 too much: a product folder needs a `dosyalar` (or `files`) subfolder with at most 5 files,
 each up to 20 MB. Programs and scripts (`.exe`, `.bat` and the like) cannot be sold as
 downloads; zip several files together if there are more than 5.
+
+**A product folder shows *Fotoğraf yok* (No photos) and stops at Kontrol (Check).** It holds
+only its `dosyalar` folder. Every listing needs at least one photo: put the product's photos
+(01, 02, ...) in the product folder itself, next to `dosyalar`. `drop run` skips such a
+folder with the same reason, and `drop auto` stops before uploading anything.
 
 ### Error messages
 
@@ -405,7 +417,12 @@ başına bir tasarımda alıcı tasarım dosyasının kendisini indirir. Bir ür
 içindeki `dosyalar` (ya da `files`) alt klasöründeki PDF, ZIP, PNG, SVG gibi dosyalar
 eklenir; klasörün kendisindeki fotoğraflar ilanın görselleri olur. Etsy bir ilana en fazla 5
 dosya alır, her biri en fazla 20 MB. Yalnızca dijital bir şablon için kargo profili
-gerekmez; *both* için gerekir.
+gerekmez; *both* için gerekir. Bu durumda **Tasarım Yükle** üstte **Ürün: Dijital**
+gösterir, **Başlat**'a basınca açılan pencere **Dijital ürün · tasarım dosyası
+indirilebilir dosya olarak eklenir** satırıyla başlar, **Şablon İlan** da seçili ilanın
+altında **Dijital ürün: her taslağa tasarım dosyası indirilebilir dosya olarak eklenir**
+yazar. Ürün klasörünün fotoğrafları yine gerekir: içinde yalnızca `dosyalar` klasörü olan
+bir ürün *Fotoğraf yok* olarak görünür ve **Kontrol** adımında durur.
 
 **Ürün klasörü** masaüstünüzdeki `Etsy Studio`'dur. Başka bir klasör için **Ayarlar →
 Klasörler → Değiştir**'i kullanın ya da `drop` komutlarına `--path` verin. `1-MOCKUPS` ve
@@ -482,6 +499,11 @@ klasördeki `1-MOCKUPS` ve `2-PRODUCTS`'a taşıyın.
 da fazlası var: bir ürün klasörünün içinde en fazla 5 dosyalık, her biri en fazla 20 MB
 olan bir `dosyalar` (ya da `files`) klasörü olmalı. Programlar ve betikler (`.exe`, `.bat`
 gibi) indirilebilir ürün olarak satılamaz; 5'ten fazla dosyayı tek bir ZIP'te toplayın.
+
+**Bir ürün klasörü *Fotoğraf yok* diye görünüyor ve Kontrol adımında duruyor.** Klasörde
+yalnızca `dosyalar` klasörü var. Her ilanın en az bir fotoğrafı olmalı: ürünün
+fotoğraflarını (01, 02, ...) `dosyalar`'ın yanına, ürün klasörünün kendisine koyun.
+`drop run` böyle bir klasörü aynı sebeple atlar, `drop auto` hiçbir şey yüklemeden durur.
 
 Komut satırı hata mesajlarının tablosu yukarıdaki İngilizce
 [Error messages](#error-messages) bölümünde.

@@ -188,6 +188,25 @@
   background: var(--panel-2);
   border: 1px solid var(--border);
 }
+/* A path inside a sentence (the nested-folder note): it wraps only after a \ or /
+   (pathNode puts each folder name, with its separator, in a .st-path-part). A name is
+   one unit on the line and moves down whole; only a name wider than the whole line
+   breaks inside, rather than stick out of the card. */
+.page-settings .st-path-part {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.page-settings .st-nested-note {
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+.page-settings .st-nested-note .note-text {
+  flex: 1 1 calc(100% - 38px);
+}
+.page-settings .st-nested-note .note-action {
+  margin-left: 38px;
+}
 .page-settings .st-subfolders {
   display: flex;
   flex-direction: column;

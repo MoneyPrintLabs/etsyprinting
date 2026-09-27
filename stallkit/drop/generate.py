@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Union
 
 from ..config import MAX_TAG_LEN, MAX_TAGS, MAX_TITLE_LEN
-from ..listings import bad_tag_chars
+from ..listings import TITLE_ONCE, bad_tag_chars, title_char_ok
 from ..seo import STOPWORDS
 from ..seo import words as _seo_words
 from .seeds import Seed, fold
@@ -187,6 +187,10 @@ _CASING = {
     "usa": "USA", "uk": "UK", "lgbt": "LGBT", "lgbtq": "LGBTQ", "bff": "BFF", "3d": "3D",
     "xl": "XL", "xxl": "XXL", "nyc": "NYC",
 }
+# Words that never make a title about one design: joining words, generic and weak ones,
+# who it is for, "lover", "gift", claims about the product (material, size, brand).
+_PLAIN = (_GENERIC | _WEAK | _AUDIENCE | _DEPENDENT_START | _HEADS | _MINOR | _CLAIMS
+          | _DIGITAL_WORDS | {"graphic", "top", "tee", "gift", "unisex"})
 # How a product noun is spelled in a tag: Etsy tags take letters, digits, spaces, - and '.
 _TAG_NOUNS = {"T-Shirt": "tshirt", "iPhone Case": "iphone case"}
 # Product names that are a search of their own, not a synonym: "iphone case" is not
@@ -196,8 +200,9 @@ _OWN_SEARCH = {"iPhone Case"}
 _UNITS = {"oz", "ml", "l", "cm", "mm", "inch", "in", "ft", "s", "th", "st", "nd", "rd", "d",
           "x", "k", "pcs", "pc"}
 _MEASURE = re.compile(r"^\d+(oz|ml|l|cl|cm|mm|in|inch|inches|ft|pcs|pc|pk|x\d+[a-z]*)$")
-_TITLE_SYMBOLS = set("™©®")
-_TITLE_ONCE = {"&": "and", "+": "plus", "%": "percent", ":": "-"}
+# Letters only Turkish (among the languages sellers here write in) spells with: a text
+# holding one is Turkish, and its "i" capitalises to "İ" ("Kedi Pati İzi").
+_TURKISH_LETTERS = set("çğıöşüÇĞİÖŞÜ")
 
 
 @dataclass
@@ -209,13 +214,29 @@ class Generated:
     warnings: list[str] = field(default_factory=list)
 
 
-def titlecase(text: str) -> str:
+def is_turkish(*texts: object) -> bool:
+    """Whether any of these texts is written in Turkish (holds a Turkish-only letter)."""
+    return any(_TURKISH_LETTERS & set(str(text or "")) for text in texts)
+
+
+def _upper_first(part: str, turkish: bool) -> str:
+    first = part[:1]
+    if turkish and first == "i":
+        return "İ" + part[1:]
+    return first.upper() + part[1:]
+
+
+def titlecase(text: str, *, turkish: bool | None = None) -> str:
     """Capitalise each word the way a listing title does.
 
     Without str.title()'s habit of mangling apostrophes ("Mom'S"); small joining words
     stay small after the first ("Shirt for Men and Women"); a few words keep their own
-    spelling ("T-Shirt", "iPhone", "DIY"); "11oz" and "70s" stay as they are.
+    spelling ("T-Shirt", "iPhone", "DIY"); "11oz" and "70s" stay as they are. Turkish
+    text capitalises "i" to "İ" ("kedi pati izi" -> "Kedi Pati İzi"); `turkish=None`
+    decides from the text itself (is_turkish), so English "ice" stays "Ice".
     """
+    if turkish is None:
+        turkish = is_turkish(text)
     out = []
     for index, word in enumerate(text.split()):
         low = word.lower()
@@ -226,7 +247,7 @@ def titlecase(text: str) -> str:
         elif word[:1].isdigit():
             out.append(word)
         else:
-            out.append("-".join(part[:1].upper() + part[1:] for part in word.split("-")))
+            out.append("-".join(_upper_first(part, turkish) for part in word.split("-")))
     return " ".join(out)
 
 
@@ -249,6 +270,62 @@ def hint_from(title: str = "", tags: Sequence[str] | None = None,
     `build_title(..., product_hint=)` and `build_tags(..., product_hint=)` expect.
     """
     return [str(text) for text in (title, *(tags or []), description) if text]
+
+
+def research_keyword(seed: Seed, hint: Hint = None) -> str:
+    """What to search Etsy for: the concept, plus the product when it does not say it.
+
+    The template listing decides what the product is (as for the title): "dog dad paw
+    print" on a shirt template searches "dog dad paw print shirt", where the concept
+    alone returns posters ("print") and leaves the shirt's title nothing to borrow. A
+    concept that already names the product ("retro sunset mug"), or ends in "gift", is
+    searched as it is, and so is any concept when the template names no product.
+    """
+    text = " ".join(seed.text.split())
+    product = _product(seed, None, hint, [])
+    tokens = _tokens(text)
+    if not product.family or product.in_concept or not tokens or tokens[-1] in _HEADS:
+        return text
+    return f"{text} {product.display.lower()}"
+
+
+def _distinctive(text: str) -> set[str]:
+    """The words that make a title about one design: not the product, not generic."""
+    tokens = _tokens(text)
+    nouns = {i for start, end, *_ in _nouns(tokens) for i in range(start, end)}
+    return {
+        _key(token) for index, token in enumerate(tokens)
+        if index not in nouns and token not in STOPWORDS and token not in _PLAIN
+        and _key(token) not in _PLAIN and not token[:1].isdigit() and len(_key(token)) > 1
+    }
+
+
+def product_tags(tags: Sequence[str] | None, template_title: str = "",
+                 seed: Seed | None = None) -> list[str]:
+    """The template listing's tags that suit any design of its product, cleaned.
+
+    Its tags about its own design are left out: a tag holding a distinctive word of the
+    template's title ("retro mountain sun", "hiking gift" on a "Retro Mountain Sunset
+    Shirt, ... Hiking Gift") would put another design's words on this one. A word the
+    new design shares ("mountain" for "mountain goat trail") is fine. Without a title
+    nothing is known to be the template's own, so every tag is kept.
+    """
+    own = _distinctive(template_title) - (_distinctive(seed.text) if seed else set())
+
+    def about_the_template(tag: str) -> bool:
+        # A word of it, or the start of one: Etsy's 20 characters cut "retro mountain
+        # sunset" to "retro mountain sun".
+        return any(
+            word in own or (len(word) >= 3 and any(d.startswith(word) for d in own))
+            for word in _distinctive(tag)
+        )
+
+    out: list[str] = []
+    for raw in tags or []:
+        tag = clean_tag(raw)
+        if tag and tag not in out and not (own and about_the_template(tag)):
+            out.append(tag)
+    return out
 
 
 # --- words and phrases --------------------------------------------------------------
@@ -374,6 +451,10 @@ class _Phrase:
 # counted as "mother 39 s". A research cache written before titles were decoded (up to
 # seven days old) can still hold these.
 _ENTITY_BITS = {"39", "34", "amp", "quot", "apos", "nbsp", "x27"}
+# A number joined to the next by a point, a comma or a slash: "8.5x11", "3/4", "1,000",
+# "12.5oz". seo.research keeps such a size whole, but _tokens splits it again ("8 5x11",
+# "3 4 sleeve"), and Etsy tags cannot hold ".", "," or "/" at all; the row is left out.
+_JOINED_NUMBER = re.compile(r"\d[.,/]\d")
 
 
 def _rows(rows: object) -> list[tuple[str, int]]:
@@ -383,7 +464,7 @@ def _rows(rows: object) -> list[tuple[str, int]]:
             text, count = html.unescape(str(row[0])), int(row[1])
         except (TypeError, ValueError, IndexError, KeyError):
             continue
-        if _ENTITY_BITS & set(_seo_words(text)):
+        if _ENTITY_BITS & set(_seo_words(text)) or _JOINED_NUMBER.search(text):
             continue
         out.append((text, count))
     return out
@@ -573,17 +654,16 @@ def _phrase_display(tokens: Sequence[str]) -> str:
 
 
 def _title_safe(text: str) -> str:
-    """Only what Etsy accepts in a title: letters, digits, punctuation, maths, spaces."""
+    """Only what Etsy accepts in a title (listings.title_char_ok, TITLE_ONCE)."""
     text = unicodedata.normalize("NFC", text)
     kept = []
     for ch in text:
-        category = unicodedata.category(ch)
-        if ch in _TITLE_SYMBOLS or category[0] in "LP" or category in ("Nd", "Sm", "Zs"):
+        if title_char_ok(ch):
             kept.append(ch)
         elif ch.isspace():
             kept.append(" ")
     text = "".join(kept)
-    for ch, word in _TITLE_ONCE.items():
+    for ch, word in TITLE_ONCE.items():
         first = text.find(ch)
         if first >= 0 and text.count(ch) > 1:
             text = text[: first + 1] + text[first + 1:].replace(ch, f" {word} ")
@@ -693,7 +773,10 @@ def _plan(seed: Seed, report: MarketReport | None = None, hint: Hint = None) -> 
     concept_keys = {_key(t) for t in concept_tokens if t not in STOPWORDS}
     concept_last = _key(concept_tokens[-1]) if concept_tokens else ""
 
-    head = _title_safe(titlecase(seed.text))
+    # The seller's own name for the design, cased in its own language: Turkish when it,
+    # or the template listing's text, is (a Turkish seller's "kedi pati izi").
+    turkish = is_turkish(seed.text, *_hint_texts(hint))
+    head = _title_safe(titlecase(seed.text, turkish=turkish))
     ends_in_gift = bool(concept_tokens) and concept_tokens[-1] in _HEADS
     if product.family and not product.in_concept and not ends_in_gift:
         head = f"{head} {product.display}"
@@ -886,6 +969,25 @@ def _too_similar(candidate: str, existing: list[str]) -> bool:
     return False
 
 
+def _tag_pieces(phrase: _Phrase) -> list[str]:
+    """Shorter tags inside a phrase too long for one: its last three or two words.
+
+    The end keeps the product ("leaf phone case", "paw print shirt"); a cut never splits
+    a product noun ("phone | case") and never leaves half a phrase ("lover gift").
+    """
+    tokens = phrase.tokens
+    inside = {i for start, end, *_ in phrase.nouns for i in range(start + 1, end)}
+    pieces = []
+    for size in (3, 2):
+        start = len(tokens) - size
+        if start <= 0 or start in inside:
+            continue
+        piece = _Phrase(tokens[start:], phrase.count)
+        if not piece.broken and piece.meaningful() and len(piece.text) <= MAX_TAG_LEN:
+            pieces.append(piece.text)
+    return pieces
+
+
 def build_tags(seed: Seed, report: MarketReport | None = None, *,
                product_hint: Hint = None) -> list[str]:
     """Thirteen tags at most, each within Etsy's length and character rules.
@@ -937,6 +1039,15 @@ def build_tags(seed: Seed, report: MarketReport | None = None, *,
     for phrase in untagged:
         if not generic(phrase):
             add(phrase.text)
+    # A phrase too long for a tag still holds a shorter search, and research keeps only
+    # the long one: "monstera leaf phone case" (24 characters) gives "leaf phone case".
+    for phrase in untagged:
+        if len(phrase.text) > MAX_TAG_LEN and not generic(phrase):
+            for piece in _tag_pieces(phrase):
+                before = len(tags)
+                add(piece)
+                if len(tags) > before:
+                    break
     for phrase in tagged:
         if generic(phrase):
             add(phrase.text)
@@ -948,6 +1059,19 @@ def build_tags(seed: Seed, report: MarketReport | None = None, *,
     if noun:
         add(noun)
     return tags[:MAX_TAGS]
+
+
+def fill_tags(tags: list[str], extra: Sequence[str]) -> int:
+    """Add `extra` tags to the free slots, skipping near-duplicates; how many were added."""
+    added = 0
+    for raw in extra:
+        if len(tags) >= MAX_TAGS:
+            break
+        tag = clean_tag(raw)
+        if tag and not _too_similar(tag, tags):
+            tags.append(tag)
+            added += 1
+    return added
 
 
 def build_description(seed: Seed, template_description: str, title: str) -> str:
@@ -991,30 +1115,28 @@ def generate(
             warnings=[seed.reason or "no product concept could be derived from the filename"],
         )
 
+    hint = hint_from(template_title, fallback_tags, template_description)
+    # What was searched: the concept, with the product when it does not say it.
+    searched = str(getattr(report, "keyword", "") or "") or research_keyword(seed, hint)
     if report and not report.empty:
-        sources.append(f"{report.sampled} listings ranking for {seed.text!r}")
+        sources.append(f"{report.sampled} listings ranking for {searched!r}")
         if report.sampled < 20:
             warnings.append(
-                f"only {report.sampled} listing(s) rank for {seed.text!r} — too thin a "
+                f"only {report.sampled} listing(s) rank for {searched!r} — too thin a "
                 "sample to draw tags from, so this is mostly your own words"
             )
     else:
         warnings.append(
-            f"no market data for {seed.text!r}; tags come from the filename and your "
+            f"no market data for {searched!r}; tags come from the filename and your "
             "template only"
         )
 
-    hint = hint_from(template_title, fallback_tags, template_description)
     title = build_title(seed, report, product_hint=hint)
     tags = build_tags(seed, report, product_hint=hint)
 
-    if len(tags) < MAX_TAGS and fallback_tags:
-        for tag in fallback_tags:
-            if len(tags) >= MAX_TAGS:
-                break
-            cleaned = clean_tag(tag)
-            if cleaned and not _too_similar(cleaned, tags):
-                tags.append(cleaned)
+    # Free slots take the template's tags that suit any design of its product, never
+    # the ones about its own design (product_tags).
+    if fill_tags(tags, product_tags(fallback_tags, template_title, seed)):
         sources.append("your template listing's tags")
 
     if len(tags) < MAX_TAGS:

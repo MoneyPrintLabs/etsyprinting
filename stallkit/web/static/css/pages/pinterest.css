@@ -457,7 +457,9 @@
   gap: 10px;
 }
 .pin-pick-toolbar .search {
-  flex: 1 1 220px;
+  /* wide enough for the whole placeholder ("Search title or listing number"); the
+     "select shown" box wraps to the next line before the field gets narrower */
+  flex: 1 1 260px;
   max-width: 340px;
 }
 .pin-pick-list {

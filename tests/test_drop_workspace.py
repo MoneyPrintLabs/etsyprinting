@@ -154,3 +154,51 @@ def test_drop_calibrate_run_from_inside_1_mockups_saves_in_the_workspace(tmp_pat
     assert mockup.load_positions(ws.positions_path)["shirt.jpg"] == mockup.PrintArea(
         0.2, 0.1, 0.5, 0.4)
     assert not (ws.mockups / "1-MOCKUPS").exists()
+
+
+def test_doctor_path_on_2_products_checks_the_workspace(tmp_path, monkeypatch):
+    # The same guard as the drop commands: 2-PRODUCTS means the workspace around it.
+    from stallkit import setup as setup_mod
+
+    ws = _studio(tmp_path)
+    seen = []
+
+    def check(root=None):
+        seen.append(root)
+        return setup_mod.StepResult(setup_mod.OK, f"workspace at {root}")
+
+    monkeypatch.setattr(setup_mod, "check_workspace", check)
+    result = CliRunner().invoke(app, ["doctor", "--path", str(ws.products)])
+    assert seen == [ws.root], result.output
+    assert "using" in result.output
+    seen.clear()
+    result = CliRunner().invoke(app, ["doctor", "--path", str(ws.root)])
+    assert seen == [ws.root] and "using" not in result.output
+    seen.clear()
+    CliRunner().invoke(app, ["doctor"])
+    assert seen == [None]
+
+
+# --- a product folder with only its downloads ---------------------------------------------------
+
+
+@pytest.mark.parametrize("sub", ["dosyalar", "files", "Dosyalar", "FILES"])
+def test_a_folder_with_only_a_dosyalar_folder_is_listed_without_images(tmp_path, sub):
+    ws = _studio(tmp_path)
+    planner = ws.products / "boho planner"
+    (planner / sub).mkdir(parents=True)
+    (planner / sub / "planner.pdf").write_bytes(b"%PDF-1")
+    empty = ws.products / "empty folder"
+    empty.mkdir()
+    other = ws.products / "notes"
+    (other / "misc").mkdir(parents=True)
+    assert [(path.name, images) for path, images in ws.product_groups()] == [
+        ("boho planner", [])]
+
+
+def test_the_workspace_readme_explains_the_dosyalar_folder(tmp_path):
+    ws = _studio(tmp_path)
+    text = (ws.root / "README.txt").read_text(encoding="utf-8")
+    english, turkish = text.split("ETSY STUDIO (TR)")
+    assert "dosyalar (or files)" in english and "at most 5" in english
+    assert "dosyalar (ya da files)" in turkish and "en fazla 5" in turkish

@@ -244,8 +244,9 @@ def test_research_runs_once_per_concept_and_products_prepare_in_parallel(studio)
     report = _run(ws, template, client, concurrency=3, use_cache=False)
 
     assert report.created == 7
+    # The template is a tee ("Soft cotton tee."), so each concept is searched as one.
     assert sorted(client.searches) == sorted(
-        ["wildflower botanical", "cat mom club", "ocean waves", "desert cactus"]
+        ["wildflower botanical tee", "cat mom club tee", "ocean waves tee", "desert cactus tee"]
     )
     assert client.max_active_searches >= 2, "different concepts are researched side by side"
     assert report.researched == 4
@@ -640,7 +641,8 @@ def test_a_canva_or_camera_default_name_never_becomes_a_draft(studio, junk):
 
 def _digital(ws, template, listing_type="download"):
     """The studio's template turned into a digital one, as Şablon İlan would save it."""
-    fields = dict(template.fields, type=listing_type)
+    # Made to order would need no download file (pipeline.deliverables).
+    fields = dict(template.fields, type=listing_type, when_made="2020_2026")
     if listing_type == "download":
         fields.pop("shipping_profile_id", None)
     digital = Template(template.source_listing_id, source_title="Printable Wall Art",
@@ -870,3 +872,61 @@ def test_a_sign_in_lost_between_two_files_keeps_what_went_up_on_record(studio):
     assert entry["status"] == "partial" and entry["files_uploaded"] == 1
     assert report.stopped is not None and report.stopped.code == "reconnect"
 
+
+
+# --- a product folder with only its downloads ------------------------------------------------
+
+
+@pytest.mark.parametrize("listing_type", ["download", "physical"])
+def test_a_folder_with_only_its_dosyalar_fails_the_check_step(studio, listing_type):
+    ws, template = studio
+    if listing_type == "download":
+        template = _digital(ws, template)
+    _folder(ws, "boho planner", photos=(), files={"planner.pdf": b"%PDF-1"}, sub="Dosyalar")
+    _artwork(ws.products / "retro-mountain-sunset.png")
+    events = Events()
+    client = Client(ws)
+    report = _run(ws, template, client, on_event=events)
+
+    by_name = {item.name: item for item in report.items}
+    assert set(by_name) == {"boho planner", "retro-mountain-sunset.png"}, "listed, not lost"
+    item = by_name["boho planner"]
+    assert item.status == stream.FAILED and item.kind == "folder"
+    assert item.error.code == "no_photos" and item.error.step == "check"
+    assert item.error.params == {"name": "boho planner", "folder": "dosyalar"}
+    assert "no photos" in item.error.message
+    assert item.steps["check"] == "error" and item.steps["draft"] == "todo"
+    assert item.steps["mockup"] == "todo" and item.steps["research"] == "todo"
+    # Nothing is spent on it: no research for its name, no draft, no history entry.
+    assert not any("boho planner" in s for s in client.searches)
+    assert "boho planner" not in _history(ws)[SHOP]
+    assert by_name["retro-mountain-sunset.png"].status == stream.OK
+    batch = next(data for name, step, _s, data in events.items if step == "batch")
+    shown = next(i for i in batch["items"] if i["name"] == "boho planner")
+    assert shown["kind"] == "folder" and shown["files"] == 0 and shown["source"] == ""
+
+
+# --- the template's own tags fill free slots only when they suit any design ----------------------
+
+
+def test_free_tag_slots_skip_the_template_designs_own_tags(studio):
+    ws, template = studio
+    template = Template(
+        template.source_listing_id,
+        source_title="Retro Mountain Sunset Shirt, Vintage Hiking Tee, Nature Lover Gift",
+        fields=template.fields, description=template.description,
+        tags=["retro mountain sun", "hiking gift", "nature lover gift", "graphic tee",
+              "comfort colors", "gift for her"])
+    ws.write_template(template.to_dict())
+    _artwork(ws.products / "dog-dad-paw-print.png")
+    client = Client(ws)
+    client.fail_search = EtsyApiError(503, "down")  # no market: the template fills in
+    report = _run(ws, template, client)
+
+    item = report.items[0]
+    assert item.status == stream.OK
+    assert {"graphic tee", "comfort colors", "gift for her"} <= set(item.tags)
+    assert not {"retro mountain sun", "hiking gift", "nature lover gift"} & set(item.tags)
+    assert "your template listing's tags" in item.evidence
+    # The search named the template's product: "print" alone would search posters.
+    assert client.searches and set(client.searches) == {"dog dad paw print shirt"}

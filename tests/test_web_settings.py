@@ -127,7 +127,8 @@ def test_choosing_2_products_keeps_the_products_folder_it_belongs_to(web):
     resp = web.client.post("/api/settings/workspace", json={"path": str(ws.products)})
     assert resp.status_code == 200, resp.text
     data = resp.json()
-    assert data["adjusted"] == {"chosen": str(ws.products), "root": str(ws.root)}
+    assert data["adjusted"] == {"chosen": str(ws.products), "root": str(ws.root),
+                                "inside": True}
     # The default folder, however it was reached, stays "the default".
     assert data["workspace"]["root"] == str(ws.root) and data["workspace"]["custom"] is False
     assert "workspace" not in web.ctx.shop_prefs()
@@ -141,7 +142,7 @@ def test_a_folder_deep_inside_a_custom_workspace_means_that_workspace(web, tmp_p
     web.client.post("/api/settings/workspace", json={"path": str(studio)})
     deep = studio / workspace_mod.DRAFTS_DIR / "calibration"
     data = web.client.post("/api/settings/workspace", json={"path": str(deep)}).json()
-    assert data["adjusted"] == {"chosen": str(deep), "root": str(studio)}
+    assert data["adjusted"] == {"chosen": str(deep), "root": str(studio), "inside": True}
     assert data["workspace"]["root"] == str(studio) and data["workspace"]["custom"] is True
     assert web.ctx.shop_prefs()["workspace"] == str(studio)
     assert not (deep / workspace_mod.MOCKUPS_DIR).exists()
@@ -150,7 +151,8 @@ def test_a_folder_deep_inside_a_custom_workspace_means_that_workspace(web, tmp_p
 def test_a_new_2_products_folder_makes_its_parent_the_workspace(web, tmp_path):
     chosen = tmp_path / "Etsy" / "2-PRODUCTS"
     data = web.client.post("/api/settings/workspace", json={"path": str(chosen)}).json()
-    assert data["adjusted"] == {"chosen": str(chosen), "root": str(tmp_path / "Etsy")}
+    assert data["adjusted"] == {"chosen": str(chosen), "root": str(tmp_path / "Etsy"),
+                                "inside": False}
     assert (tmp_path / "Etsy" / workspace_mod.MOCKUPS_DIR).is_dir() and chosen.is_dir()
     assert not (chosen / workspace_mod.PRODUCTS_DIR).exists()
 

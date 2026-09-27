@@ -21,11 +21,17 @@ The guarantees of `drop auto` hold here too, because they are the same code:
 The template's type decides what a draft is. `physical` as always; `download` and
 `both` drafts also get the product's download files, after its images: a loose design's
 ORIGINAL file, or every file in a folder product's `dosyalar` / `files` subfolder (the
-folder's own images stay its photos). Step 5 (check) finds and validates them before
-the product's draft is created; a missing, oversized or refused file, or more than Etsy
-takes, is that product's error (no_deliverable, too_many_files, file_type,
-file_too_large, file_empty, ...). A file that fails after the draft exists leaves the
-product `partial`, and the history records `files_uploaded` next to `images_uploaded`.
+folder's own images stay its photos). A digital loose design always goes onto the
+mockups (plus a small flat preview), never up as it is, even when it is opaque: it is
+the file being sold. Step 5 (check) finds and validates the downloads before the
+product's draft is created; a missing, oversized or refused file, a subfolder in
+`dosyalar`, more than Etsy takes, or a photo that is also the download, is that
+product's error (no_deliverable, nested_files, too_many_files, file_type,
+file_too_large, file_empty, download_is_photo, ...). A made-to-order template needs no
+download (made_to_order_no_file warns; a loose design is then not attached). A product
+folder with only its `dosyalar` and no photos fails step 5 at once (no_photos), whatever
+the template. A file that fails after the draft exists leaves the product `partial`,
+and the history records `files_uploaded` next to `images_uploaded`.
 
 `drop run` and `drop auto` are untouched; this module only reuses their pieces.
 
@@ -345,6 +351,8 @@ class _Run:
         self.template = template
         self.listing_type = template.fields.get("type") or "physical"
         self.digital = self.listing_type in DIGITAL_TYPES
+        # A made-to-order digital listing needs no file (pipeline.deliverables).
+        self.made_to_order = pipeline.made_to_order(template)
         # The seller's own words about the product: what it is (a mug, a printable) and
         # which claims are theirs to make (generate.hint_from).
         self.hint = generate.hint_from(template.source_title, template.tags,
@@ -404,9 +412,10 @@ class _Run:
                 for i, (path, photos) in enumerate(fresh)
             ]
             for item in items:
+                folder = item.kind == "folder"
                 item.seed = seeds.derive(
-                    item.source / "IMG_0001.jpg" if item.photos else item.source,
-                    folder_fallback=bool(item.photos) or item.source.parent != self.ws.products,
+                    item.source / "IMG_0001.jpg" if folder else item.source,
+                    folder_fallback=folder or item.source.parent != self.ws.products,
                 )
             self.report.items = items
             if items and not self.dry_run:
@@ -529,9 +538,12 @@ class _Run:
                 "listing_type": self.listing_type,
                 "items": [
                     {"index": item.index, "name": item.name, "kind": item.kind,
-                     "source": self._rel(item.photos[0] if item.photos else item.source),
-                     "files": len(item.photos) if item.photos else 1,
-                     "files_total": (len(pipeline.deliverable_files(item.source))
+                     # A folder without photos has no picture to show.
+                     "source": (self._rel(item.photos[0]) if item.photos
+                                else "" if item.kind == "folder" else self._rel(item.source)),
+                     "files": len(item.photos) if item.kind == "folder" else 1,
+                     "files_total": (len(pipeline.deliverables(
+                         item.source, made_to_order=self.made_to_order)[0])
                                      if self.digital else 0)}
                     for item in self.report.items
                 ],
@@ -606,6 +618,14 @@ class _Run:
             self._check_halt()
             with self._lock:
                 item.status = ACTIVE
+            if item.kind == "folder" and not item.photos:
+                # Only a `dosyalar` folder, no photos: nothing to show buyers. Found by the
+                # check, before any mockup, research or copy is spent on it.
+                self._step(item, "check", RUNNING)
+                raise _ProductFailed(Problem(
+                    "no_photos", pipeline.no_photos_message(item.source), "check",
+                    {"name": item.name, "folder": pipeline.FILES_DIRS[0]},
+                ))
             self._images(item)
             self._check_halt()
             self._research(item)
@@ -675,8 +695,10 @@ class _Run:
                     "mockup", n=len(bare), names=", ".join(bare[:3]),
                 )
             images = list(item.photos)
-        elif not mockup.looks_like_artwork(item.source):
-            # A finished product photo needs no compositing; it goes up as it is.
+        elif not self.digital and not mockup.looks_like_artwork(item.source):
+            # A finished product photo needs no compositing; it goes up as it is. Never
+            # for a digital template: the loose file is then the download being sold
+            # (an opaque printable too), so it goes onto the mockups, never up as it is.
             item.mode = "as_is"
             images = [item.source]
         else:
@@ -699,8 +721,10 @@ class _Run:
             if self.include_flat:
                 self._check_halt()
                 flat = self.out_dir / self._output_name(item.source, None)
+                # A digital design's flat render is a preview, not a copy of the download.
+                edge = mockup.DIGITAL_PREVIEW_EDGE if self.digital else mockup.OUTPUT_MIN_EDGE
                 try:
-                    flat_image = mockup.flatten_design(item.source, flat)
+                    flat_image = mockup.flatten_design(item.source, flat, edge=edge)
                     images.append(flat_image)
                 except Exception as exc:  # noqa: BLE001
                     self._warn(item, "flat_failed", f"flat render failed: {exc}", "mockup")
@@ -795,7 +819,8 @@ class _Run:
         """Step 2: what the listings that rank for this concept have in common."""
         self._step(item, "research", RUNNING)
         assert item.seed is not None
-        concept = item.seed.text
+        # The concept, plus the template's product when the concept does not name it.
+        concept = generate.research_keyword(item.seed, self.hint)
         market, problem = self._market(concept)
         item.market = market
         if problem is not None:
@@ -840,13 +865,11 @@ class _Run:
         self._check_halt()
         self._step(item, "tags", RUNNING)
         tags = generate.build_tags(item.seed, item.market, product_hint=self.hint)
-        if len(tags) < MAX_TAGS and self.template.tags:
-            for raw in self.template.tags:
-                if len(tags) >= MAX_TAGS:
-                    break
-                cleaned = generate.clean_tag(raw)
-                if cleaned and not generate._too_similar(cleaned, tags):
-                    tags.append(cleaned)
+        # Free slots take the template's tags that suit any design of its product, not
+        # the ones about the template's own design (generate.product_tags).
+        filler = generate.product_tags(self.template.tags, self.template.source_title,
+                                       item.seed)
+        if generate.fill_tags(tags, filler):
             item.evidence.append("your template listing's tags")
         item.tags = tags[:MAX_TAGS]
         item.description = generate.build_description(item.seed, self.template.description,
@@ -868,13 +891,19 @@ class _Run:
         """
         assert item.seed is not None
         self._step(item, "check", RUNNING)
+        warned = False
         if self.digital:
-            files, issue = pipeline.deliverables(item.source)
+            files, issue = pipeline.deliverables(item.source, made_to_order=self.made_to_order)
+            # A listing photo that is also the download would give the product away.
+            issue = issue or pipeline.photo_is_download(item.images, files)
             if issue is not None:
                 code, message, params = issue
                 raise _ProductFailed(Problem(code, message, "check", dict(params)))
             with self._lock:
                 item.deliverables = files
+            if not files and self.made_to_order:
+                self._warn(item, "made_to_order_no_file", pipeline.MADE_TO_ORDER_NOTE, "check")
+                warned = True
         drop_row = pipeline.DropRow(
             source=item.source, seed=item.seed, title=item.title, tags=list(item.tags),
             description=item.description, images=list(item.images),
@@ -889,7 +918,6 @@ class _Run:
         title_problems = pipeline.title_problems(item.title)
         if title_problems:
             raise _ProductFailed(Problem("invalid_title", "; ".join(title_problems), "check"))
-        warned = False
         for message in prepared.result.warnings:
             if message.startswith("no shipping_profile_id"):
                 code = "no_shipping_profile"
@@ -1013,9 +1041,10 @@ class _Run:
             self._finish(item, OK)
             return True
         if result.status == "partial":
-            if files_total and item.images_uploaded >= total and item.files_uploaded < files_total:
-                # Every photo is on the draft; a download file is not. Said as such: the
-                # draft cannot be published until the seller adds the file in Etsy.
+            if files_total and item.files_uploaded < files_total:
+                # A download file is not on the draft (a photo may be missing too; the
+                # message says which). Said as such: the draft cannot be published until
+                # the seller adds the file in Etsy.
                 missing = item.deliverables[item.files_uploaded]
                 self._warn(item, "partial_files", result.message, "draft",
                            listing_id=item.listing_id, n=item.files_uploaded,

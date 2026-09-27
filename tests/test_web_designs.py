@@ -767,8 +767,9 @@ def test_the_run_state_marks_the_flat_design(web, fast_images):
 
 
 def _digital_template(ws, listing_type="download"):
+    # Not made to order: a made-to-order digital draft needs no download file.
     fields = {"taxonomy_id": 2078, "price": 4.5, "quantity": 999, "who_made": "i_did",
-              "when_made": "made_to_order", "type": listing_type}
+              "when_made": "2020_2026", "type": listing_type}
     if listing_type == "both":
         fields["shipping_profile_id"] = 5551
     ws.write_template(Template(TEMPLATE_ID, source_title="Boho Planner Printable",
@@ -832,7 +833,8 @@ def test_the_pending_view_of_a_digital_template(web, fast_images):
     missing = by_name["sunset poster set"]
     assert missing["deliverables"] == []
     assert missing["deliverable_problem"] == {
-        "code": "no_deliverable", "params": {"name": "sunset poster set", "folder": "dosyalar"}}
+        "code": "no_deliverable",
+        "params": {"name": "sunset poster set", "folder": "dosyalar", "missing": True}}
     assert data["runnable"] == 2 and "deliverables" in data["warnings"]
     assert data["files_total"] == 2
     # 2 products, 2 concepts: 4 research pages, 2 creates, 3 + 1 images, 2 download files,
@@ -973,3 +975,33 @@ def test_a_digital_run_with_no_usable_download_is_blocked_with_its_own_reason(we
     _put(web, "retro-mountain-sunset.png", _png())
     assert web.client.get("/api/designs/pending").json()["blockers"] == []
 
+
+
+# --- a product folder with only its downloads (no photos) -----------------------------------------
+
+
+def test_a_folder_with_only_dosyalar_is_listed_and_fails_the_check(web, fast_images):
+    _fake, ws = _setup_shop(web)
+    _digital_template(ws)
+    assert _put(web, "boho planner/dosyalar/planner.pdf", b"%PDF-1.4 planner",
+                batch="b1").status_code == 200
+    pending = web.client.get("/api/designs/pending").json()
+    [item] = pending["items"]
+    assert item["name"] == "boho planner" and item["kind"] == "folder"
+    assert item["no_photos"] is True and item["files"] == 0 and item["thumb_path"] == ""
+    assert pending["runnable"] == 0 and pending["blockers"] == ["photos_only"]
+    assert "no_photos" in pending["warnings"]
+    assert web.ctx.refresh_status(force=True)["setup"]["designs_pending"] == 1
+
+    # Beside a design that can run, it goes through the run and stops at the check.
+    _put(web, "retro-mountain-sunset.png", _png())
+    pending = web.client.get("/api/designs/pending").json()
+    assert pending["runnable"] == 1 and pending["blockers"] == []
+    _file_routes(_fake)
+    final = _run_to_the_end(web)
+    items = {i["name"]: i for i in final["state"]["items"]}
+    folder = items["boho planner"]
+    assert folder["status"] == "error" and folder["steps"]["check"] == "error"
+    assert folder["error"]["code"] == "no_photos"
+    assert folder["error"]["params"] == {"name": "boho planner", "folder": "dosyalar"}
+    assert items["retro-mountain-sunset.png"]["status"] == "ok"

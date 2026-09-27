@@ -45,6 +45,23 @@ def test_every_row_of_the_example_csv_passes_validation():
         assert payload["shipping_profile_id"], f"row {index} has no shipping_profile_id"
 
 
+def test_the_files_column_sits_after_images_and_is_empty_for_physical_rows():
+    assert LISTING_COLUMNS.index("files") == LISTING_COLUMNS.index("images") + 1
+    rows = read_rows(REPO / "examples" / "listings.csv")
+    assert all(row["type"] == "physical" and row["files"] == "" for row in rows)
+    # A CSV written before the column existed still pushes exactly as before.
+    old = {k: v for k, v in rows[0].items() if k != "files"}
+    assert build_payload(old, is_update=False) == build_payload(rows[0], is_update=False)
+
+
+def test_the_listings_template_command_writes_the_files_column():
+    result = CliRunner().invoke(app, ["listings", "template", "-o", "t.csv"])
+    assert result.exit_code == 0, result.output
+    rows = read_rows(Path("t.csv"))
+    assert list(rows[0]) == LISTING_COLUMNS and rows[0]["files"] == ""
+    assert "files" in result.output
+
+
 def test_example_tracking_csv_has_the_columns_orders_ship_needs():
     rows = read_rows(REPO / "examples" / "tracking.csv")
     assert rows

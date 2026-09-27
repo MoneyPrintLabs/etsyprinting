@@ -27,7 +27,7 @@ jobs:
   build:
     name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -46,7 +46,8 @@ jobs:
           pip install -e ".[dev]" "pyinstaller>=6.10,<7"
 
       - name: Test
-        timeout-minutes: 10
+        # ~1,500 tests, about 5 minutes on a laptop; hosted runners can take twice that.
+        timeout-minutes: 25
         run: pytest -q
 
       - name: Tag matches the package version

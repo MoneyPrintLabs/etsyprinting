@@ -11,6 +11,39 @@ const DOCTOR_TONE = { ok: "success", warn: "warning", missing: "danger", unknown
 const STATE_TONE = { connected: "success", reconnect: "warning", offline: "warning", error: "warning", bad_keys: "danger" };
 const SUBFOLDERS = ["mockups", "products", "drafts"];
 
+/**
+ * A path in running text that wraps after its \ and / separators, not inside a folder
+ * name ("Etsy Studio - 12345", "my-shop-files"): each name moves to the next line whole, and
+ * only a name longer than the whole line breaks inside (settings.css .st-path-part).
+ */
+function pathNode(path) {
+  const kids = [];
+  let part = "";
+  const flush = () => {
+    if (!part) return;
+    kids.push(h("span", { class: "st-path-part" }, part));
+    part = "";
+  };
+  for (const ch of String(path || "")) {
+    part += ch;
+    if (ch === "\\" || ch === "/") {
+      flush();
+      kids.push(h("wbr"));
+    }
+  }
+  flush();
+  return h("span", { class: "st-note-path", title: path }, kids);
+}
+
+/** t(key, {[name]: path}) as text with the path as a pathNode(). */
+function withPath(t, key, name, path) {
+  const mark = "\u0000";
+  const text = t(key, { [name]: mark });
+  const at = text.indexOf(mark);
+  if (at < 0) return text;
+  return [text.slice(0, at), pathNode(path), text.slice(at + mark.length)];
+}
+
 export default {
   async mount(el, ctx) {
     const t = ctx.t;
@@ -229,14 +262,14 @@ export default {
       if (editingFolder) kids.push(folderForm(ws));
       else if (ws.nested_in) {
         // Saved by an older version: a folder of another products folder (2-PRODUCTS, ...).
-        kids.push(
-          infoNote({
-            tone: "warning",
-            icon: "alert",
-            text: t("folders.nested", { root: ws.nested_in }),
-            action: button({ label: t("folders.use_parent"), size: "sm", autoLoading: true, onClick: () => useFolder(ws.nested_in).catch(toastError) }),
-          }),
-        );
+        const note = infoNote({
+          tone: "warning",
+          icon: "alert",
+          text: withPath(t, "folders.nested", "root", ws.nested_in),
+          action: button({ label: t("folders.use_parent"), size: "sm", autoLoading: true, onClick: () => useFolder(ws.nested_in).catch(toastError) }),
+        });
+        note.classList.add("st-nested-note"); // the button below the text: room for the path
+        kids.push(note);
       }
       kids.push(
         h(
@@ -316,10 +349,18 @@ export default {
       const adj = res.adjusted;
       if (adj) {
         // A folder of a products folder was picked: the server kept the main one instead.
+        // (inside false: the folder is only named like one, so its parent was used.)
         const name = adj.chosen.split(/[\\/]/).filter(Boolean).pop() || adj.chosen;
-        ctx.toast({ tone: "info", title: t("folders.adjusted_title"), message: t("folders.adjusted_msg", { name, root: adj.root }), timeout: 9000 });
+        const msg = adj.inside === false ? "folders.adjusted_named_msg" : "folders.adjusted_msg";
+        ctx.toast({ tone: "info", title: t("folders.adjusted_title"), message: t(msg, { name, root: adj.root }), timeout: 9000 });
       } else {
         ctx.toast({ tone: "success", title: t("folders.saved"), message: res.workspace.root });
+      }
+      const moved = res.migrated || [];
+      if (moved.length) {
+        // A nested products folder's template and upload history came along.
+        const items = moved.map((k) => t(`folders.migrated_${k}`)).join(", ");
+        ctx.toast({ tone: "info", title: t("folders.migrated", { items }), timeout: 9000 });
       }
     }
 

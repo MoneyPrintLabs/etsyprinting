@@ -362,7 +362,8 @@ def test_files_on_an_update_row_are_left_out_with_a_warning(tmp_path):
 
 
 def test_a_download_without_files_is_created_with_a_warning(tmp_path):
-    item = prepare([dict(BASE_ROW, type="download")], base_dir=tmp_path)[0]
+    item = prepare([dict(BASE_ROW, type="download", when_made="2020_2026")],
+                   base_dir=tmp_path)[0]
     assert not item.result.failed and item.file_paths == []
     assert any("no files are given" in w for w in item.result.warnings)
 

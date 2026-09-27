@@ -1056,7 +1056,9 @@ export function stepDots({ states = [], labels } = {}) {
       el,
       list.map((s, i) => {
         const next = list[i + 1];
-        const lineDone = s === "done" && next && next !== "todo";
+        // A step that finished with a warning still finished: the line to the next one is
+        // green, as in the video (a warning on Kontrol, then Taslak done).
+        const lineDone = (s === "done" || s === "warn") && next && next !== "todo";
         const glyph =
           s === "done"
             ? icon("check", { size: 12, strokeWidth: 2.4 })

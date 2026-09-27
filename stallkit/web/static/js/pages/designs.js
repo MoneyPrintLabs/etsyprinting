@@ -19,6 +19,7 @@ const FINAL = new Set(["ok", "partial", "error", "cancelled", "checked"]);
 const SELF_EXPLAINED = new Set([
   "junk_name", "too_many_pixels", "too_many_images", "no_images", "invalid_image", "stopped",
   "no_deliverable", "too_many_files", "file_type", "file_too_large", "file_empty", "file_missing", "file_unreadable",
+  "no_photos", "nested_files", "download_is_photo",
 ]);
 // A digital product folder keeps what the buyer downloads in one of these subfolders.
 const FILES_DIRS = new Set(["dosyalar", "files"]);
@@ -75,10 +76,70 @@ function shortTitle(title) {
   return first.length >= 8 ? first : text;
 }
 
-/** "Planner/dosyalar/planner.pdf": a download file of the product folder "Planner". */
-function isDeliverable(path) {
+/**
+ * What a dropped path is to a digital template's product: "Planner/dosyalar/planner.pdf"
+ * is a download file of the product folder "Planner" ({product, sub, name}); a file deeper
+ * down ("Planner/dosyalar/A4/art.pdf") is {nested: true}, which Etsy cannot take (files,
+ * not folders). null for anything else, and always for a physical template: there a
+ * "dosyalar" / "files" folder is just a folder of designs.
+ */
+export function downloadOf(path, digital) {
+  if (!digital) return null;
   const parts = String(path || "").split("/").filter(Boolean);
-  return parts.length >= 3 && FILES_DIRS.has(parts[parts.length - 2].toLowerCase());
+  // The last "dosyalar" / "files" with a product folder before it and a file after it.
+  for (let i = parts.length - 2; i >= 1; i -= 1) {
+    if (!FILES_DIRS.has(parts[i].toLowerCase())) continue;
+    if (i === parts.length - 2) return { product: parts[i - 1], sub: parts[i], name: parts[i + 1], nested: false };
+    return { nested: true };
+  }
+  return null;
+}
+
+/**
+ * Server paths for a drop: "name" for a design, "folder/name" for a photo of a product
+ * folder and "folder/dosyalar/name" for a download file of one. The download rows come
+ * last, and upload() sends them only once every photo is in, so a product folder is
+ * always claimed by its first photo. A download whose product has no photo in this drop
+ * is marked `attach`: it goes without the batch and joins the folder of that name
+ * already in 2-PRODUCTS (the missing "dosyalar" of a product added afterwards).
+ * Download files only travel with "every folder is one product"; files nested deeper in
+ * "dosyalar" never go (Etsy takes files, not folders).
+ */
+export function planUploads(files, mode, digital) {
+  const byDir = new Map();
+  const downloads = [];
+  for (const x of files) {
+    const dl = downloadOf(x.path, digital);
+    if (dl) {
+      if (mode === "products" && !dl.nested) downloads.push({ x, dl });
+      continue;
+    }
+    const parts = (x.path || x.file.name).split("/").filter(Boolean);
+    const dir = parts.slice(0, -1).join("/");
+    if (!byDir.has(dir)) byDir.set(dir, []);
+    byDir.get(dir).push(x);
+  }
+  const out = [];
+  const products = new Set();
+  for (const [dir, group] of byDir) {
+    const leaf = dir ? dir.split("/").pop() : "";
+    const asProduct = mode === "products" && dir && group.length <= MAX_PHOTOS;
+    if (asProduct) products.add(leaf.toLowerCase());
+    for (const x of group) {
+      const name = x.file.name;
+      out.push({ file: x.file, path: asProduct ? `${leaf}/${name}` : name, label: x.path || name });
+    }
+  }
+  for (const { x, dl } of downloads) {
+    out.push({
+      file: x.file,
+      path: `${dl.product}/${dl.sub}/${dl.name}`,
+      label: x.path,
+      deliverable: true,
+      attach: !products.has(dl.product.toLowerCase()),
+    });
+  }
+  return out;
 }
 
 /** physical | download | both, from whatever the server sent (physical when unknown). */
@@ -212,7 +273,9 @@ class DesignsPage {
 
   /** A digital product's download problem in a few words (the pending tiles). */
   fileProblemShort(problem) {
-    const key = `pending.file.${problem && problem.code}`;
+    // no_deliverable: no "dosyalar" folder at all, or one with nothing in it.
+    const empty = problem && problem.code === "no_deliverable" && problem.params && problem.params.missing === false;
+    const key = empty ? "pending.file.no_deliverable_empty" : `pending.file.${problem && problem.code}`;
     return this.t.has(key) ? this.t(key, (problem && problem.params) || {}) : this.t("pending.file.other");
   }
 
@@ -521,22 +584,24 @@ class DesignsPage {
     const digital = !!(p.template && p.template.digital);
     const tiles = shown.map((it) => {
       const fileProblem = digital ? it.deliverable_problem : null;
-      const bad = it.junk_reason || it.too_many || fileProblem;
+      const bad = it.junk_reason || it.too_many || it.no_photos || fileProblem;
       const downloads = it.deliverables || [];
       let sub;
       if (bad) {
-        const why = it.junk_reason ? t("pending.junk") : it.too_many ? t("pending.too_many") : this.fileProblemShort(fileProblem);
+        const why = it.junk_reason ? t("pending.junk") : it.too_many ? t("pending.too_many") : it.no_photos ? t("pending.no_photos") : this.fileProblemShort(fileProblem);
         sub = h("span", { class: "dz-tile-bad" }, icon("alert", { size: 11 }), why);
       } else if (digital && it.kind === "folder") {
         sub = t("pending.folder_files", { n: it.files, m: downloads.length });
-      } else if (digital) {
+      } else if (digital && downloads.length) {
+        // (A made-to-order template attaches no loose design: then it is a plain tile.)
         sub = h("span", { class: "dz-tile-dl" }, icon("download", { size: 11 }), bytes(it.size));
       } else {
         sub = it.kind === "folder" ? t("pending.folder", { n: it.files }) : bytes(it.size);
       }
       // Hover: what a buyer would download, or why it cannot go.
       const tip = [it.name];
-      if (fileProblem) tip.push(this.problemText({ code: fileProblem.code, params: fileProblem.params }));
+      if (it.no_photos) tip.push(this.problemText({ code: "no_photos", params: { name: it.name, folder: "dosyalar" } }));
+      else if (fileProblem) tip.push(this.problemText({ code: fileProblem.code, params: fileProblem.params }));
       else if (digital && downloads.length) tip.push(`${t("pending.downloads")}: ${downloads.map((d) => d.name).join(", ")}`);
       return h(
         "div",
@@ -617,34 +682,56 @@ class DesignsPage {
 
   // ------------------------------------------------------------------ dropping files
 
+  /** Whether the template makes digital drafts: only then is "dosyalar" a download folder. */
+  isDigital() {
+    return !!(this.pending && this.pending.template && this.pending.template.digital);
+  }
+
   /**
    * Files the drop zone turned away (it takes images only). A digital product's download
    * files — a PDF or ZIP in a dropped folder's "dosyalar" / "files" subfolder — are kept
    * and go up with the same drop (onFiles follows this call at once); the rest are said.
+   * With a physical template a "dosyalar" folder means nothing special: its non-images
+   * are turned away like any other.
    */
   onRejected(list) {
     const { t } = this;
-    const downloads = list.filter((x) => x && x.file && isDeliverable(x.path));
-    const other = list.filter((x) => !(x && x.file && isDeliverable(x.path)));
+    const digital = this.isDigital();
+    // Download files, and files nested deeper in "dosyalar" (handleFiles says why those
+    // do not go, once, together with any nested images of the same drop).
+    const keep = list.filter((x) => x && x.file && downloadOf(x.path, digital));
+    const other = list.filter((x) => !(x && x.file && downloadOf(x.path, digital)));
     if (other.length) {
       this.ctx.toast({ tone: "warning", title: t("upload.rejected", { n: other.length }), message: other.slice(0, 3).map((x) => baseName(x.path)).join(", ") });
     }
-    if (!downloads.length) return;
-    this.stashed = downloads;
+    if (!keep.length) return;
+    this.stashed = keep;
     queueMicrotask(() => {
       // Only download files were dropped (no image came with them): upload them alone.
       if (this.stashed) this.handleFiles([]);
     });
   }
 
+  /** Files deeper inside "dosyalar" than its own files: Etsy takes files, not folders. */
+  toastNested(list) {
+    this.ctx.toast({ tone: "warning", title: this.t("upload.nested_downloads", { n: list.length }), message: list.slice(0, 3).map((x) => x.path).join(", ") });
+  }
+
   async handleFiles(list) {
     const { t } = this;
+    const digital = this.isDigital();
     let files = list.filter((x) => x && x.file);
     if (this.stashed) {
       files = files.concat(this.stashed);
       this.stashed = null;
     }
     if (this.uploading) return;
+    // Images nested inside a "dosyalar" subfolder are never a product of their own.
+    const nested = files.filter((x) => (downloadOf(x.path, digital) || {}).nested);
+    if (nested.length) {
+      this.toastNested(nested);
+      files = files.filter((x) => !(downloadOf(x.path, digital) || {}).nested);
+    }
     if (!files.length) return;
     if (files.length > MAX_FILES) {
       this.ctx.toast({ tone: "warning", title: t("upload.too_many", { n: MAX_FILES }) });
@@ -656,56 +743,26 @@ class DesignsPage {
       mode = await this.chooseFolderMode(files);
       if (!mode) return;
     }
-    const entries = this.planUploads(files, mode);
-    const skipped = mode === "products" ? 0 : files.filter((x) => isDeliverable(x.path)).length;
+    const entries = planUploads(files, mode, digital);
+    const skipped = mode === "products" ? 0 : files.filter((x) => downloadOf(x.path, digital)).length;
     if (skipped) this.ctx.toast({ tone: "warning", title: t("upload.downloads_skipped", { n: skipped }) });
     if (!entries.length) return;
     await this.upload(entries);
   }
 
-  /**
-   * Server paths: "name" for a design, "folder/name" for a photo of a product folder and
-   * "folder/dosyalar/name" for a download file of one (sent after all the photos, so a
-   * product folder is always claimed by its first photo). Download files only travel
-   * with "every folder is one product"; as loose designs they would mean nothing.
-   */
-  planUploads(files, mode) {
-    const byDir = new Map();
-    const downloads = [];
-    for (const x of files) {
-      if (isDeliverable(x.path)) {
-        if (mode === "products") downloads.push(x);
-        continue;
-      }
-      const parts = (x.path || x.file.name).split("/").filter(Boolean);
-      const dir = parts.slice(0, -1).join("/");
-      if (!byDir.has(dir)) byDir.set(dir, []);
-      byDir.get(dir).push(x);
-    }
-    const out = [];
-    for (const [dir, group] of byDir) {
-      const leaf = dir ? dir.split("/").pop() : "";
-      const asProduct = mode === "products" && dir && group.length <= MAX_PHOTOS;
-      for (const x of group) {
-        const name = x.file.name;
-        out.push({ file: x.file, path: asProduct ? `${leaf}/${name}` : name, label: x.path || name });
-      }
-    }
-    for (const x of downloads) {
-      const parts = x.path.split("/").filter(Boolean);
-      const [product, sub, name] = parts.slice(-3);
-      out.push({ file: x.file, path: `${product}/${sub}/${name}`, label: x.path, deliverable: true });
-    }
-    return out;
-  }
-
   chooseFolderMode(files) {
     const { t } = this;
+    const digital = this.isDigital();
     const dirs = new Map();
     let downloads = 0;
     for (const x of files) {
-      if (isDeliverable(x.path)) {
+      const dl = downloadOf(x.path, digital);
+      if (dl) {
         downloads += 1;
+        // Its product folder counts as a folder of the drop, photos or not.
+        const parts = (x.path || "").split("/").filter(Boolean);
+        const dir = parts.slice(0, -2).join("/");
+        if (!dirs.has(dir)) dirs.set(dir, 0);
         continue;
       }
       const parts = (x.path || "").split("/").filter(Boolean);
@@ -827,6 +884,7 @@ class DesignsPage {
         uploading: `${Math.round(r.fraction * 100)}%`,
         done: "",
         duplicate: t("upload.duplicate"),
+        replaced: t("upload.replaced"),
         known: t("upload.known"),
         ignored: t("upload.ignored"),
         error: r.message,
@@ -846,8 +904,8 @@ class DesignsPage {
     state.rows.forEach(paint);
 
     let next = 0;
-    const worker = async () => {
-      while (next < state.rows.length && !controller.signal.aborted && !this.destroyed) {
+    const worker = async (limit) => {
+      while (next < limit && !controller.signal.aborted && !this.destroyed) {
         const i = next;
         next += 1;
         while (appended <= i + 10 && appended < rowEls.length) {
@@ -863,7 +921,8 @@ class DesignsPage {
           paint(r);
           try {
             const res = await this.api.upload("/api/designs/files", r.file, {
-              query: { path: r.path, batch },
+              // A download for a product already in the folder goes without the batch.
+              query: r.attach ? { path: r.path } : { path: r.path, batch },
               signal: controller.signal,
               onProgress: ({ fraction }) => {
                 r.fraction = fraction;
@@ -871,7 +930,7 @@ class DesignsPage {
               },
             });
             r.result = res;
-            r.status = res.known ? "known" : res.ignored ? "ignored" : res.duplicate ? "duplicate" : "done";
+            r.status = res.known ? "known" : res.ignored ? "ignored" : res.duplicate ? "duplicate" : res.replaced ? "replaced" : "done";
           } catch (err) {
             if (this.api.isAbort(err)) {
               r.status = "skipped";
@@ -886,7 +945,13 @@ class DesignsPage {
         refreshHead();
       }
     };
-    await Promise.all(Array.from({ length: Math.min(UPLOAD_PARALLEL, state.rows.length) }, worker));
+    // Every photo is in before the first download file starts (planUploads puts them
+    // last): a product folder's batch claim is always made by a photo, never by a small
+    // PDF that overtook it and would open a "-2" copy of the product.
+    const pool = (limit) => Promise.all(Array.from({ length: Math.max(0, Math.min(UPLOAD_PARALLEL, limit - next)) }, () => worker(limit)));
+    const firstDownload = state.rows.findIndex((r) => r.deliverable);
+    if (firstDownload > 0) await pool(firstDownload);
+    await pool(state.rows.length);
     for (const r of state.rows) {
       if (r.status === "queued") {
         r.status = "skipped";
@@ -908,7 +973,7 @@ class DesignsPage {
     const failed = count("error");
     const known = count("known");
     const skipped = count("skipped");
-    const saved = count("done") + count("duplicate");
+    const saved = count("done") + count("duplicate") + count("replaced");
     const head = panel.querySelector(".dz-up-head");
     mount(
       head,
@@ -971,7 +1036,9 @@ class DesignsPage {
     }
     const junk = p.items.filter((x) => x.junk_reason || x.too_many).length;
     if (junk) notes.push(infoNote({ tone: "warning", icon: "alert", text: t("ready.junk", { n: junk }) }));
-    const noFiles = digital ? p.items.filter((x) => !x.junk_reason && !x.too_many && x.deliverable_problem).length : 0;
+    const noPhotos = p.items.filter((x) => x.no_photos && !x.junk_reason).length;
+    if (noPhotos) notes.push(infoNote({ tone: "warning", icon: "image", text: t("ready.no_photos", { n: noPhotos }) }));
+    const noFiles = digital ? p.items.filter((x) => !x.junk_reason && !x.too_many && !x.no_photos && x.deliverable_problem).length : 0;
     if (noFiles) notes.push(infoNote({ tone: "warning", icon: "download", text: t("ready.deliverables", { n: noFiles }) }));
     if (p.warnings.includes("no_mockups")) notes.push(infoNote({ tone: "warning", icon: "image", text: t("ready.no_mockups") }));
     if (p.warnings.includes("no_shipping_profile")) notes.push(infoNote({ tone: "warning", icon: "truck", text: t("ready.no_shipping") }));

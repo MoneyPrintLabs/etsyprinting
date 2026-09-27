@@ -38,6 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     count, so it was always empty.
   - `stallkit seo suggest` reads the listing as plain text, so a tag such as
     `mother's day gift` is no longer measured (and flagged) as `mother&#39;s day gift`.
+  - `stallkit doctor --path` treats a folder inside a products folder (`2-PRODUCTS`, ...)
+    the way the `drop` commands do: it checks the products folder around it and says so.
+  - `stallkit drop run` counts a digital template's download files in its request
+    estimate.
 
 ### Added
 
@@ -79,13 +83,31 @@ The screens from the video, all in Turkish and English:
 - **Digital products.** A template listing of type `download` (or `both`) makes drafts of
   that type, in the app and with `drop run` / `drop auto`. After its images each draft gets
   the files the buyer downloads (Etsy's `uploadListingFile`): a loose design is delivered
-  as the design file itself; a product folder delivers the files in its `dosyalar` (or
-  `files`) subfolder, while the photos in the folder stay the listing's images. At most 5
+  as the design file itself, and its listing photos are always the mockups plus a
+  1200 px preview, never the file being sold (an opaque JPG printable too); a product
+  folder delivers the files in its `dosyalar` (or `files`) subfolder, while the photos in
+  the folder stay the listing's images. Files in a subfolder of `dosyalar` are not sent
+  (Etsy takes files, not folders): the product stops and asks for a zip. At most 5
   files per listing and 20 MB per file (Etsy's seller limits; the API spec states none);
   programs and scripts are refused. A download-only template needs no shipping profile.
   A product with nothing to deliver, too many files or an oversized file stops with its
   own message before its draft is made; the upload history records the files sent.
-  **Tasarım Yükle** and **Şablon İlan** show the product type and what the buyer gets.
+  A **made-to-order** template (a custom portrait, an invitation) needs no download file,
+  as Etsy allows: `dosyalar` files still go when there are some, a loose design is not
+  attached (it is a sample), and the draft says to add the buyer's file in Etsy.
+  **Tasarım Yükle** shows **Ürün: Dijital** (*Product: Digital*; **Fiziksel + dijital** for
+  *both*), its **Başlat** (*Start*) window opens with **Dijital ürün · tasarım dosyası
+  indirilebilir dosya olarak eklenir** (*Digital product · the design file is attached as
+  the download*), and **Şablon İlan** marks the listing **Dijital** and says **Dijital
+  ürün: her taslağa tasarım dosyası indirilebilir dosya olarak eklenir** under it.
+  A product folder with only its `dosyalar` and no photos is listed as *Fotoğraf yok*
+  (*No photos*) and stops at the **Kontrol** (*Check*) step instead of being skipped
+  silently.
+- **CSV `files` column.** `listings template`, `listings pull`, the app's CSV download and
+  `examples/listings.csv` have a `files` column after `images`: what a new `download` or
+  `both` draft attaches, relative to the CSV. A CSV without it pushes as before.
+  `listings push` and `drop auto` print the download files each row sent, and
+  `push --out` has a `files_uploaded` column.
 
 ### Fixed
 
@@ -119,7 +141,11 @@ From reports on 0.2.0:
   `Etsy Studio\1-MOCKUPS` were no longer found. **Ayarlar** and the `--path` option of the
   `drop` commands now use the products folder those belong to and say so. A folder an
   older version nested that way is pointed out in **Ayarlar** with a button to use the
-  main folder, and the folders it left inside `2-PRODUCTS` are never taken for products.
+  main folder, which carries its template listing and upload history over (so nothing
+  already drafted is drafted again), and the folders it left inside `2-PRODUCTS`, its
+  `archive` included, are never taken for products. A new folder that is only *named*
+  `2-PRODUCTS` makes its parent the products folder only when that parent holds nothing
+  else, and a `README.txt` stallkit did not write is never replaced.
 
 From the review before this release:
 
@@ -135,6 +161,25 @@ From the review before this release:
   complete.
 - **Receipts, the payment ledger and listings are read in full.** Only Etsy's marketplace
   search stops at its first 12,000 results.
+- **Titles and tags for new drafts.** The market research searches the design's name
+  with the template's product when the name does not say it (`dog dad paw print` on a
+  shirt template searches shirts, not posters, and the title is no longer just the name
+  and "Shirt"). Free tag slots take only the template listing's tags that suit any design
+  of its product, never the ones about its own design. A phrase too long for a tag leaves
+  a shorter one (`leaf phone case` from `monstera leaf phone case`). A Turkish name is
+  capitalised the Turkish way (`Kedi Pati İzi`) when it, or the template's text, is
+  Turkish. Every screen checks a title with the same rule as a CSV push. A market phrase
+  with a size such as `8.5x11` or `3/4 sleeve` is no longer cut into `8 5x11` or `3 4`.
+  A tag written with a capital `İ` (`İstanbul poster`) is the same tag as `istanbul
+  poster` when the SEO page suggests tags and when tags are checked for duplicates.
+- **Dropping files on Tasarım Yükle.** A product folder dropped again with its new
+  `dosyalar` no longer turns into a `-2` copy (the photos go up before the download
+  files), and dropping only the missing `dosyalar` of a product adds it to that product.
+  A corrected download file replaces the old one, which is kept in `archive`. A
+  `dosyalar` folder means download files only for a digital template. A product folder
+  named `1-MOCKUPS`, `2-PRODUCTS` or `3-DRAFTS` is refused instead of vanishing.
+- **An image that fails on a digital draft** no longer leaves out its download files:
+  they are still sent, and the message says what happened to them.
 
 ### Removed
 

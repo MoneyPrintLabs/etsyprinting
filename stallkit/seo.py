@@ -407,6 +407,15 @@ def _lower(word: str) -> str:
     return word.replace("İ", "i").lower()
 
 
+def tag_key(tag: object) -> str:
+    """What makes two tags the same tag: case (a Turkish capital "İ" too) and spacing.
+
+    research() stores the market's tags this way, so "İstanbul poster" on a listing and
+    "istanbul poster" in the market are one tag everywhere they are compared.
+    """
+    return _lower(" ".join(str(tag).split()))
+
+
 def title_segments(title: str) -> list[list[str]]:
     """A listing title split into its phrases, each a list of lower-case words.
 
@@ -520,11 +529,7 @@ def research(
         # "appears in 41 of 200 listings", so a single title reading
         # "ceramic mug ceramic mug" must contribute 1 to `ceramic mug`, not 2 —
         # otherwise the share can exceed 100% and the label is simply untrue.
-        seen_tags = {
-            cleaned
-            for tag in (listing.get("tags") or [])
-            if (cleaned := _lower(" ".join(str(tag).split())))
-        }
+        seen_tags = {cleaned for tag in (listing.get("tags") or []) if (cleaned := tag_key(tag))}
         tag_counter.update(seen_tags)
         phrase_counter.update(title_phrases(listing.get("title") or ""))
 
@@ -603,7 +608,7 @@ def suggest_tags(
     tags implies you can add 13 more; Etsy's ceiling is 13 in total, so only one
     would land. The rest are a genuine option, but only as a swap — say which.
     """
-    have = {t.lower().strip() for t in existing if str(t).strip()}
+    have = {tag_key(t) for t in existing if str(t).strip()}
     free = max(0, MAX_TAGS - len(have))
 
     candidates = [

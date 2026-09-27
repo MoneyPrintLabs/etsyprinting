@@ -28,6 +28,7 @@ from ...config import MAX_MATERIAL_LEN, MAX_MATERIALS, MAX_TAG_LEN, MAX_TAGS, MA
 from ...drop import cache as research_cache
 from ...errors import EtsyApiError
 from ...listings import bad_tag_chars, build_payload, validate_tags
+from ...listings import title_problems as listings_title_problems
 from ..router import ApiError, Request, Response
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -60,9 +61,6 @@ GENERIC_WORDS = {
 # and the text between them.
 _WORD_SPLIT = re.compile(r"([^\W\d_]+(?:'[^\W\d_]+)?|\d+)", re.UNICODE)
 _SEP = r"[,;:|/&+\-–—·]"
-# Etsy's title rule (updateListing): "You can only use the %, :, & and + characters once each."
-_TITLE_ONCE = "%:&+"
-
 CSV_COLUMNS = ["listing_id", "score", "grade", "title", "url", "issue_count", "issues"]
 
 
@@ -493,7 +491,7 @@ def research(req: Request) -> dict[str, Any]:
         if listing is not None:
             existing = _tags(listing)
     report, cached = market(client, keyword, refresh=req.bool_query("refresh"))
-    have = {t.lower().strip() for t in (existing or [])}
+    have = {seo.tag_key(t) for t in (existing or [])}
     rows = []
     for tag, count in report.tags:
         tag = str(tag)
@@ -555,9 +553,10 @@ def fix(req: Request) -> dict[str, Any]:
         if not isinstance(title, str) or not title.strip():
             raise ApiError(422, "invalid", "title must be text", field="title")
         title = " ".join(title.split())
-        for ch in _TITLE_ONCE:
-            if title.count(ch) > 1:
-                raise ApiError(422, "invalid", f"the title may use {ch} only once", field="title")
+        # The same rule as every other screen and the CSV push (listings.title_problems).
+        problems = listings_title_problems(title)
+        if problems:
+            raise ApiError(422, "invalid", "; ".join(problems), field="title")
         row["title"] = title
 
     materials = _clean_list(body.get("materials"), "materials")

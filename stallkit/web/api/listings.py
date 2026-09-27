@@ -641,27 +641,14 @@ def one_listing(req: Request) -> dict[str, Any]:
 
 # --- PATCH /api/listings/{id} ------------------------------------------------------------------
 
-_TITLE_ONCE = "%:&+"
-_TITLE_SYMBOLS = set("™©®")
-
-
 def title_problems(title: str) -> list[str]:
-    """Etsy's title rules (OAS updateListing.title): length, characters, %:&+ once each."""
+    """Etsy's title rules (OAS updateListing.title): length, then the characters and
+    %:&+ once each, by the one rule every screen and the CSV push use
+    (listings.title_problems)."""
     problems = []
     if len(title) > MAX_TITLE_LEN:
         problems.append(f"title is {len(title)} chars, max {MAX_TITLE_LEN}")
-    bad = sorted({
-        ch for ch in title
-        if not (unicodedata.category(ch)[0] in "LP"
-                or unicodedata.category(ch) in ("Nd", "Sm", "Zs")
-                or ch in _TITLE_SYMBOLS)
-    })
-    if bad:
-        problems.append(f"title contains characters Etsy refuses: {''.join(bad)}")
-    for ch in _TITLE_ONCE:
-        if title.count(ch) > 1:
-            problems.append(f"title may use {ch!r} only once")
-    return problems
+    return problems + listings_mod.title_problems(title)
 
 
 def _clean_tags(raw: Any) -> list[str]:

@@ -397,8 +397,18 @@ def test_title_rules():
     assert listings_api.title_problems("Retro Sunset Shirt, Hiking Tee: 100% Cotton") == []
     assert listings_api.title_problems("Çiçekli Kupa ™ – Hediye") == []
     assert len(listings_api.title_problems("a" * 141)) == 1
-    assert listings_api.title_problems("50% off, 100% cotton")[0].endswith("'%' only once")
-    assert "refuses" in listings_api.title_problems("Sunset ★ Shirt")[0]
+    assert listings_api.title_problems("50% off, 100% cotton")[0].endswith("Etsy allows it once")
+    assert "does not accept" in listings_api.title_problems("Sunset ★ Shirt")[0]
+
+
+def test_title_rules_are_the_csv_push_rule():
+    # One rule for every screen: the listing editor, the SEO fix and a CSV push.
+    from stallkit import listings as listings_mod
+
+    for title in ("Sunset ★ Shirt", "Salt & Pepper & Co", "a: b: c", "Plain Mug, Gift",
+                  "Çiçekli Kupa ™ – Hediye", "Mug 😀"):
+        assert listings_api.title_problems(title) == listings_mod.title_problems(title)
+    assert listings_api.title_problems("a" * 141) == ["title is 141 chars, max 140"]
 
 
 # --- publishing -------------------------------------------------------------------------------------
