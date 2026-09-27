@@ -12,7 +12,9 @@
 Where the numbers come from:
 - Revenue: the month's paid, not cancelled receipts (getShopReceipts, transactions_r):
   subtotal (items after shop coupons) + shipping charged + gift wrap - refunds. Tax is
-  not revenue; it is reported separately.
+  not revenue; it is reported separately. A refund gives the buyer back tax too, so
+  only its revenue share is taken off revenue (and its tax share off the tax), and a
+  fully refunded order counts as nothing (receipt_money; the Panel uses the same).
 - Etsy fees: the payment-account ledger (getShopPaymentAccountLedgerEntries, transactions_r)
   grouped into listing / transaction / processing / ads / other. The OAS does not
   enumerate `ledger_type`, so entries are sorted by keywords (see LEDGER_RULES). When the
@@ -53,7 +55,9 @@ if TYPE_CHECKING:  # pragma: no cover
 
 log = logging.getLogger("stallkit.web")
 
-RAW_VERSION = 1
+# 2: refunds without their tax share, fully refunded orders as nothing, every receipt
+# and ledger entry read (the old reads stopped at 12,000). Older month files are re-read.
+RAW_VERSION = 2
 CHART_MONTHS = 6
 SELECT_MONTHS = 12
 OLDEST_MONTHS = 24
@@ -70,8 +74,12 @@ BUCKETS = ("listing", "transaction", "processing", "ads", "other")
 DISPLAY_MODES = ("primary", "secondary", "both")
 
 MAX_COST = 1_000_000.0
+# One month is read whole up to these (200 requests each at most). One more is asked
+# for, so a month that has more is known to be cut: its fees are then estimated, and
+# its revenue is marked partial rather than shown as if it were complete.
 MAX_LEDGER_ENTRIES = 20_000
 MAX_RECEIPTS = 20_000
+REFUND_SKIPPED = ("failed", "canceled", "cancelled")
 
 TCMB_URL = "https://www.tcmb.gov.tr/kurlar/today.xml"
 FX_TIMEOUT = 5.0
@@ -234,6 +242,71 @@ def product_key(listing_id: Any, title: str) -> str:
 # ================================================================== receipts -> revenue
 
 
+def _quantity(tx: dict[str, Any]) -> int:
+    qty = tx.get("quantity")
+    return int(qty) if isinstance(qty, (int, float)) and not isinstance(qty, bool) else 1
+
+
+def _plain_value(money: Any) -> float:
+    amount = money_value(money)
+    return 0.0 if amount is None else amount
+
+
+def receipt_money(
+    receipt: dict[str, Any], val: Callable[[Any], float] | None = None
+) -> dict[str, float]:
+    """One receipt's money the way the Panel and Kâr-Zarar both count it.
+
+    `val` turns an Etsy Money object into a number in the shop currency (default: its
+    amount as it is). ShopReceipt (OAS): subtotal = total_price minus coupon discounts,
+    without tax or shipping; total_shipping_cost; gift_wrap_price; total_tax_cost and
+    total_vat_cost; refunds[].amount "equal to the refund total".
+
+    Revenue is items + shipping + gift wrap, tax excluded. A refund pays the buyer back
+    part of what they paid, tax included (the OAS does not split it), so it is split in
+    the proportion tax had in the order: its revenue share comes off revenue
+    (`refunded`), its tax share off the tax (`refunded_tax`), neither below zero. A
+    fully refunded order is nothing, whatever its refunds list says; a cancelled one
+    is nothing at all.
+    """
+    val = val or _plain_value
+    status = str(receipt.get("status") or "").lower()
+    out = dict.fromkeys(
+        ("items", "shipping", "gift_wrap", "tax", "refunded", "refunded_tax", "revenue"), 0.0
+    )
+    if status == "canceled":
+        return out
+    if money_value(receipt.get("subtotal")) is not None:
+        items = val(receipt.get("subtotal"))
+    else:
+        items = sum(
+            val(tx.get("price")) * _quantity(tx)
+            for tx in receipt.get("transactions") or []
+            if isinstance(tx, dict)
+        )
+    shipping = val(receipt.get("total_shipping_cost"))
+    gift_wrap = val(receipt.get("gift_wrap_price"))
+    tax = val(receipt.get("total_tax_cost")) + val(receipt.get("total_vat_cost"))
+    base = items + shipping + gift_wrap
+    if status == "fully refunded":
+        refunded, refunded_tax = base, tax
+    else:
+        total = sum(
+            val(refund.get("amount"))
+            for refund in receipt.get("refunds") or []
+            if isinstance(refund, dict)
+            and str(refund.get("status") or "").lower() not in REFUND_SKIPPED
+        )
+        gross = base + tax
+        refunded_tax = min(tax, total * tax / gross) if gross > 0 and tax > 0 else 0.0
+        refunded = min(max(base, 0.0), max(total - refunded_tax, 0.0))
+    out.update(
+        items=items, shipping=shipping, gift_wrap=gift_wrap, tax=tax,
+        refunded=refunded, refunded_tax=refunded_tax, revenue=base - refunded,
+    )
+    return out
+
+
 def summarise_receipts(
     receipts: Iterable[dict[str, Any]], currency: str, convert: Converter | None = None
 ) -> dict[str, Any]:
@@ -278,26 +351,20 @@ def summarise_receipts(
         for tx in receipt.get("transactions") or []:
             if not isinstance(tx, dict):
                 continue
-            qty = tx.get("quantity")
-            qty = int(qty) if isinstance(qty, (int, float)) and not isinstance(qty, bool) else 1
+            qty = _quantity(tx)
             price = val(tx.get("price"))
             title = str(tx.get("title") or "").strip()
             key = product_key(tx.get("listing_id"), title)
             lines.append((key, qty, price * qty, tx))
         line_sum = sum(amount for _k, _q, amount, _t in lines)
-        subtotal = money_value(receipt.get("subtotal"))
-        items = val(receipt.get("subtotal")) if subtotal is not None else line_sum
+        money = receipt_money(receipt, val)
+        items = money["items"]
         factor = items / line_sum if line_sum > 0 else 0.0
         out["items_revenue"] += items
-        out["shipping_charged"] += val(receipt.get("total_shipping_cost"))
-        out["gift_wrap"] += val(receipt.get("gift_wrap_price"))
-        out["tax"] += val(receipt.get("total_tax_cost")) + val(receipt.get("total_vat_cost"))
-        for refund in receipt.get("refunds") or []:
-            if not isinstance(refund, dict):
-                continue
-            if str(refund.get("status") or "").lower() in ("failed", "canceled", "cancelled"):
-                continue
-            out["refunds"] += val(refund.get("amount"))
+        out["shipping_charged"] += money["shipping"]
+        out["gift_wrap"] += money["gift_wrap"]
+        out["tax"] += money["tax"] - money["refunded_tax"]
+        out["refunds"] += money["refunded"]
         keys = []
         for key, qty, amount, tx in lines:
             listing_id = tx.get("listing_id")
@@ -749,13 +816,14 @@ def fetch_month(
     progress("receipts", 0)
     for receipt in client.receipts(
         min_created=start, max_created=end, was_paid=True, was_canceled=False,
-        max_items=MAX_RECEIPTS,
+        max_items=MAX_RECEIPTS + 1,
     ):
         receipts.append(receipt)
         if len(receipts) % 100 == 0:
             check_cancel()
             progress("receipts", len(receipts))
-    summary = summarise_receipts(receipts, currency, convert)
+    receipts_truncated = len(receipts) > MAX_RECEIPTS
+    summary = summarise_receipts(receipts[:MAX_RECEIPTS], currency, convert)
     check_cancel()
 
     fees: dict[str, Any] = {"source": "ledger", "reason": None, "status": None,
@@ -766,7 +834,7 @@ def fetch_month(
         progress("ledger", 0)
         entries: list[dict[str, Any]] = []
         try:
-            for entry in client.ledger_entries(start, end, max_items=MAX_LEDGER_ENTRIES):
+            for entry in client.ledger_entries(start, end, max_items=MAX_LEDGER_ENTRIES + 1):
                 entries.append(entry)
                 if len(entries) % 100 == 0:
                     check_cancel()
@@ -783,7 +851,7 @@ def fetch_month(
             except CurrencyError:
                 fees.update(source="estimate", reason="currency")
             else:
-                if len(entries) >= MAX_LEDGER_ENTRIES:
+                if len(entries) > MAX_LEDGER_ENTRIES:
                     # A cut-off ledger would under-count fees: estimate instead.
                     fees.update(source="estimate", reason="too_many")
                 else:
@@ -807,6 +875,8 @@ def fetch_month(
         "fetched_at": round(time.time(), 3),
         "currency": currency,
         **summary,
+        # More paid orders than MAX_RECEIPTS: revenue covers the newest MAX_RECEIPTS only.
+        "orders_truncated": receipts_truncated,
         "fees": fees,
     }
 
@@ -951,6 +1021,8 @@ def compute_month(
         "orders": orders,
         "items_sold": int(raw.get("items_sold") or 0),
         "revenue": _r2(revenue),
+        # True when the month had more paid orders than could be read (see MAX_RECEIPTS).
+        "partial": bool(raw.get("orders_truncated")),
         "items_revenue": _r2(raw.get("items_revenue") or 0),
         "shipping_charged": _r2(raw.get("shipping_charged") or 0),
         "gift_wrap": _r2(raw.get("gift_wrap") or 0),

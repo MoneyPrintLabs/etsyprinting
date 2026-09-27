@@ -225,3 +225,105 @@ def test_the_listener_can_send_the_browser_back_to_the_app():
     assert answers[0].status_code == 302
     assert answers[0].headers["location"] == "http://localhost:3000/oauth-done"
     assert answers[0].headers["referrer-policy"] == "no-referrer"
+
+
+def test_a_forged_request_neither_ends_the_wait_nor_goes_back_to_the_app():
+    """Any web page can point a link or <img> at the listener while it waits: only the
+    answer carrying this request's state counts (review: oauth-listener-forged-first-request)."""
+    import socket
+    import threading
+    import time
+    import urllib.parse
+
+    import httpx
+
+    from stallkit import auth
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    config = Config(keystring="k", shared_secret="s",
+                    redirect_uri=f"http://localhost:{port}/oauth/redirect")
+    request = build_authorization_url(config)
+    state = urllib.parse.parse_qs(urllib.parse.urlparse(request.url).query)["state"][0]
+    base = f"http://127.0.0.1:{port}/oauth/redirect"
+    answers = {}
+
+    def browser():
+        with httpx.Client(trust_env=False) as http:
+            for _ in range(100):
+                try:
+                    answers["forged"] = http.get(base, params={"code": "FORGED", "state": "nope"})
+                    break
+                except httpx.ConnectError:
+                    time.sleep(0.05)
+            answers["no_state"] = http.get(base, params={"code": "FORGED"})
+            answers["error"] = http.get(base, params={"error": "access_denied", "state": "nope"})
+            time.sleep(0.6)  # the wait loop would have ended on any of them by now
+            answers["real"] = http.get(base, params={"code": "the-code", "state": state})
+
+    auth._CallbackHandler.return_url = "http://localhost:3000/oauth-done"
+    try:
+        threading.Thread(target=browser, daemon=True).start()
+        code = auth._capture_via_listener(request, config, port, timeout=15)
+    finally:
+        auth._CallbackHandler.return_url = None
+    assert code == "the-code"
+    for name in ("forged", "no_state", "error"):
+        resp = answers[name]
+        assert resp.status_code == 400 and "location" not in resp.headers, name
+        assert "FORGED" not in resp.text and "access_denied" not in resp.text, name
+    assert answers["real"].status_code == 302
+    assert answers["real"].headers["location"] == "http://localhost:3000/oauth-done"
+    # Nothing is left behind for the next listener or a handler used on its own.
+    assert auth._CallbackHandler.expected_state is None
+
+
+def test_an_error_with_the_right_state_still_ends_the_wait():
+    import socket
+    import threading
+    import time
+    import urllib.parse
+
+    import httpx
+
+    from stallkit import auth
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    config = Config(keystring="k", shared_secret="s",
+                    redirect_uri=f"http://localhost:{port}/oauth/redirect")
+    request = build_authorization_url(config)
+    state = urllib.parse.parse_qs(urllib.parse.urlparse(request.url).query)["state"][0]
+    pages = []
+
+    def browser():
+        for _ in range(100):
+            try:
+                pages.append(httpx.get(f"http://127.0.0.1:{port}/oauth/redirect", trust_env=False,
+                                       params={"error": "access_denied", "state": state,
+                                               "error_description": "The user denied the request"}))
+                return
+            except httpx.ConnectError:
+                time.sleep(0.05)
+
+    threading.Thread(target=browser, daemon=True).start()
+    with pytest.raises(AuthError, match="access_denied"):
+        auth._capture_via_listener(request, config, port, timeout=10)
+    assert pages[0].status_code == 400 and "The user denied the request" in pages[0].text
+
+
+@pytest.mark.parametrize("got, expected, ok", [
+    ("abc", None, True),       # a handler used on its own expects nothing
+    (None, None, True),
+    ("abc", "abc", True),
+    ("abd", "abc", False),
+    (None, "abc", False),
+    ("", "abc", False),
+    ("çğü", "abc", False),      # not ASCII: refused, not an exception
+])
+def test_state_matches(got, expected, ok):
+    from stallkit.auth import state_matches
+
+    assert state_matches(got, expected) is ok

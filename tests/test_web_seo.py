@@ -468,3 +468,58 @@ def test_export_csv_has_the_cli_columns_worst_first(web):
     assert [r["listing_id"] for r in rows] == ["1000001", "1000002", "1000003"]
     assert rows[0]["grade"] == "poor" and "title is only 3 chars" in rows[0]["issues"]
     assert rows[2]["issue_count"] == "0" and rows[2]["issues"] == "no issues found"
+
+
+# --- Etsy's escaped text ---------------------------------------------------------------------
+
+
+def _escape(text):
+    """What Etsy does to a seller's text on the way out."""
+    import html
+
+    return html.escape(text, quote=True).replace("&#x27;", "&#39;")
+
+
+def test_the_audit_and_the_fix_work_on_plain_text(web):
+    # Before the client decoded Etsy's entities, a title with two apostrophes could not be
+    # fixed ("'&' only once"), and "mother&#39;s day" failed the tag character check.
+    escaped = _listing(
+        1000004, _escape("Mom's Coffee Mug, Mother's Day Gift, \"Best Mom\" Cup"),
+        [_escape("mother's day"), _escape("mom's mug"), "coffee mug"],
+        description=_escape("Mom's favourite mug & saucer. ") + DESCRIPTION,
+    )
+    fake = _connected(web, active=(escaped,))
+    sent: list[dict] = []
+
+    def patch(request: httpx.Request):
+        form = dict(urllib.parse.parse_qsl(request.content.decode("utf-8")))
+        sent.append(form)
+        answer = {k: v for k, v in escaped.items() if k != "images"}
+        answer["tags"] = [_escape(t) for t in form["tags"].split(",")]
+        if "title" in form:
+            answer["title"] = _escape(form["title"])
+        return answer
+
+    fake.add("PATCH", f"{LISTINGS_PATH}/1000004", patch)
+    item = web.client.get("/api/seo/audit").json()["items"][0]
+    assert item["title"] == "Mom's Coffee Mug, Mother's Day Gift, \"Best Mom\" Cup"
+    assert item["tags"] == ["mother's day", "mom's mug", "coffee mug"]
+    assert not {i["code"] for i in item["issues"]} & {"tags.bad_chars", "tags.invalid"}
+    tags = ["mother's day", "mom's mug", "coffee mug", "gift for mom"]
+    resp = web.client.post("/api/seo/fix/1000004", json={
+        "tags": tags, "title": "Mom's Coffee Mug, Mother's Day Gift", "confirm": True})
+    assert resp.status_code == 200, resp.text
+    assert sent == [{"tags": ",".join(tags), "title": "Mom's Coffee Mug, Mother's Day Gift"}]
+    fixed = resp.json()["item"]
+    assert fixed["title"] == "Mom's Coffee Mug, Mother's Day Gift" and fixed["tags"] == tags
+
+
+def test_research_reads_plain_words_from_escaped_titles(web):
+    fake = _connected(web)
+    rows = [{"listing_id": 2000000 + i, "title": _escape("Mother's Day Mug, Mom's Gift"),
+             "tags": [_escape("mother's day"), _escape("mom's gift")]} for i in range(20)]
+    fake.add("GET", "/listings/active", _search_route(rows))
+    data = web.client.get("/api/seo/research", params={"keyword": "mug"}).json()
+    tags = [t["tag"] for t in data["tags"]]
+    assert "mother's day" in tags and "mom's gift" in tags
+    assert not any("39" in t or "amp" in t or "&#" in t for t in tags)

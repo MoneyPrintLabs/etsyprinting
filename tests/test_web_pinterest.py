@@ -414,7 +414,7 @@ def test_nothing_due_is_said_plainly(web, pin_api):
 def test_posting_the_due_pins(web, pin_api):
     _etsy(web)
     _queue_some(web, ids=(1000001,), per_day=2)
-    job = web.client.post("/api/pinterest/post", json={}).json()["job"]
+    job = web.client.post("/api/pinterest/post", json={"confirm": True}).json()["job"]
     assert job["title_key"] == "pinterest:job.post" and job["params"] == {"n": 2}
     final = wait_for_job(web, job["id"])
     assert final["status"] == "done", final
@@ -430,7 +430,7 @@ def test_an_ambiguous_failure_is_parked_and_can_be_retried(web, pin_api):
     _etsy(web)
     _queue_some(web, ids=(1000001,), per_day=1)
     pin_api.create_status = 500
-    final = wait_for_job(web, web.client.post("/api/pinterest/post").json()["job"]["id"])
+    final = wait_for_job(web, web.client.post("/api/pinterest/post", json={"confirm": True}).json()["job"]["id"])
     assert final["result"]["uncertain"] == 1
     assert len(pin_api.pins) == 1  # a write is never repeated on a 5xx
     queue = web.client.get("/api/pinterest/queue").json()
@@ -452,7 +452,7 @@ def test_a_definite_refusal_fails_the_pin(web, pin_api):
     _etsy(web)
     _queue_some(web, ids=(1000002,), per_day=1)
     pin_api.create_status = 400
-    final = wait_for_job(web, web.client.post("/api/pinterest/post").json()["job"]["id"])
+    final = wait_for_job(web, web.client.post("/api/pinterest/post", json={"confirm": True}).json()["job"]["id"])
     assert final["result"] == {"posted": 0, "failed": 1, "uncertain": 0, "total": 1}
 
 
@@ -466,7 +466,7 @@ def test_posting_needs_a_connected_account(web, keys):
 def test_removing_keeps_posted_pins(web, pin_api):
     _etsy(web)
     _queue_some(web, ids=(1000002,), per_day=1)
-    wait_for_job(web, web.client.post("/api/pinterest/post").json()["job"]["id"])
+    wait_for_job(web, web.client.post("/api/pinterest/post", json={"confirm": True}).json()["job"]["id"])
     keys_ = [e["key"] for e in pinterest.Queue.load().entries]
     data = web.client.post("/api/pinterest/remove", json={"ids": keys_}).json()
     assert data["removed"] == 1
@@ -474,3 +474,44 @@ def test_removing_keeps_posted_pins(web, pin_api):
     resp = web.client.post("/api/pinterest/remove", json={"ids": keys_})
     assert resp.status_code == 409
     assert web.client.post("/api/pinterest/remove", json={"ids": []}).status_code == 422
+
+
+# --- review fixes -------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("body", [None, {}, {"confirm": False}, {"confirm": "true"}])
+def test_posting_needs_confirm_true(web, pin_api, body):
+    _etsy(web)
+    _queue_some(web, ids=(1000001,), per_day=2)
+    resp = web.client.post("/api/pinterest/post", json=body)
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["error"]["code"] == "confirm_required"
+    assert pin_api.pins == []
+    assert web.client.get("/api/jobs", params={"kind": "pinterest"}).json() == []
+    assert {e["status"] for e in pinterest.Queue.load().entries} == {"pending"}
+
+
+def test_pins_carry_etsy_titles_as_plain_text(web, keys, monkeypatch):
+    # Etsy sends listing titles HTML-escaped; a Pin must never show "&#39;" or "&amp;".
+    escaped = dict(LISTINGS[1000002], title="Mom&#39;s &quot;Best&quot; Coffee Mug &amp; Gift")
+    monkeypatch.setitem(LISTINGS, 1000002, escaped)
+    _etsy(web)
+    _queue_some(web, ids=(1000002,), per_day=2)
+    entries = pinterest.Queue.load().entries
+    assert entries and all(e["payload"]["title"].startswith("Mom's \"Best\" Coffee Mug & Gift")
+                           for e in entries)
+    text = json.dumps([e["payload"] for e in entries])
+    assert "&#39;" not in text and "&quot;" not in text and "&amp;" not in text
+    items = web.client.get("/api/pinterest/listings", params={"refresh": 1}).json()["items"]
+    assert items[1]["title"] == "Mom's \"Best\" Coffee Mug & Gift"
+
+
+def test_the_consent_popup_gets_no_handle_on_the_app():
+    # Reverse tabnabbing: the tab Pinterest's page opens in must not keep window.opener.
+    from pathlib import Path
+
+    source = (Path(api.__file__).parents[1] / "static" / "js" / "pages" / "pinterest.js").read_text(
+        encoding="utf-8")
+    opened = source.index('window.open("", "_blank")')
+    assert "w.opener = null" in source[opened:opened + 600]
+    assert 'api.post("/api/pinterest/post", { confirm: true })' in source

@@ -169,6 +169,20 @@ button.dz-chip:hover {
 .page-designs .dz-chip.is-warn .dz-chip-value {
   color: var(--warning);
 }
+.page-designs .dz-chip-extra {
+  flex: none;
+  font-size: 12px;
+  color: var(--warning);
+  white-space: nowrap;
+}
+.page-designs .dz-chip-go {
+  display: inline-flex;
+  flex: none;
+  color: var(--muted);
+}
+.page-designs button.dz-chip:hover .dz-chip-go {
+  color: var(--accent-2);
+}
 .page-designs .dz-chip-ok {
   display: grid;
   place-items: center;
@@ -497,6 +511,33 @@ button.dz-chip:hover {
 .dz-modal-hint {
   font-size: 12.5px;
   color: var(--muted);
+}
+/* "n mockup kullanılacak": which mockups the drafts get, with a link to Mockuplar. */
+.dz-modal-mockups {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  line-height: 1.45;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.dz-modal-mockups > .icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--accent-2);
+}
+.dz-modal-mockups-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.dz-modal-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  font-weight: 600;
+  color: var(--accent-2);
 }
 .dz-options {
   display: flex;

@@ -6,11 +6,23 @@
 // The left card follows the setup: keys missing or refused -> how to create the app and
 // the key form; keys fine -> "Etsy mağazanızı bağlayın" (frame t160); connected -> the
 // granted permissions. The right card shows the connection as a diagram and 3 steps.
+//
+// Setup has to be foolproof (real reports: Etsy's "The requested redirect URL is not
+// permitted" because the callback was never added on Etsy), so:
+// - the callback address is shown with a copy button, the exact place on Etsy and its
+//   rules, both in the how-to and before the first "Bağlan";
+// - the first "Bağlan" of a shop waits for "I added the callback" (remembered per shop,
+//   skippable with a small link);
+// - GET /api/connect/preflight checks the keys, the callback and its port before Etsy
+//   opens, and each problem comes with its fix;
+// - while the connect job waits for longer than SLOW_AFTER, "Etsy bir hata mı gösterdi?"
+//   lists the errors Etsy's page shows and what to do about each.
 
 import { icon, logoMark } from "../icons.js";
 import {
   badge,
   button,
+  checkbox,
   copyField,
   copyText,
   cx,
@@ -27,7 +39,7 @@ import {
 } from "../ui.js";
 
 const SELLER_APP_URL = "https://www.etsy.com/developers/register-seller-app";
-const DASHBOARD_URL = "https://www.etsy.com/developers/your-apps";
+const YOUR_APPS_URL = "https://www.etsy.com/developers/your-apps";
 const DEFAULT_CALLBACK = "http://localhost:3003/oauth/redirect";
 const DEFAULT_SCOPES = ["shops_r", "listings_r", "listings_w", "transactions_r", "transactions_w"];
 
@@ -46,12 +58,71 @@ const PHASES = ["starting", "opened", "code_received", "fetching_shop", "done"];
 const PHASE_PCT = { starting: 5, opened: 16, code_received: 74, fetching_shop: 88, done: 100 };
 const CREEP_TO = 62; // while waiting for the person, the bar creeps towards this
 const TERMINAL = new Set(["done", "error", "cancelled"]);
+const SLOW_AFTER = 15; // seconds on Etsy's page before "Etsy bir hata mı gösterdi?" appears
+// A connect that ended with one of these gets the same help, open.
+const TROUBLE_AFTER = new Set(["connect_timeout", "token_refused", "state_mismatch"]);
 
 export default {
   async mount(el, ctx) {
     return mountConnect(el, ctx);
   },
 };
+
+// ------------------------------------------------------------------ pasted keys
+// The same cleaning the server does (api/connect.py clean_keys), run on paste so the
+// fields show what will be saved: invisible characters, quotes and labels go, and
+// "keystring:secret" or a labelled two-line copy fills both fields.
+
+const INVISIBLE = /[\u200b\u200c\u200d\u2060\ufeff\u00ad]/g;
+const EDGE = "\"'`\u201c\u201d\u2018\u2019\u201e\u00ab\u00bb\u2039\u203a<>[](){},;. \t";
+const LABEL = /^(?:etsy\s+)?(key\s*string|x-api-key|api\s*key|client[\s_-]*id|shared\s*secret|secret)(?![a-z0-9])\s*[:=]?\s*(.*)$/i;
+
+function cleanText(value) {
+  const v = String(value || "")
+    .replace(INVISIBLE, "")
+    .replace(/[\u00a0\u202f]/g, " ")
+    .trim();
+  let a = 0;
+  let b = v.length;
+  while (a < b && EDGE.includes(v[a])) a++;
+  while (b > a && EDGE.includes(v[b - 1])) b--;
+  return v.slice(a, b).trim();
+}
+
+function keyPairs(role, value) {
+  const i = value.indexOf(":");
+  if (i >= 0) return [["key", cleanText(value.slice(0, i))], ["secret", cleanText(value.slice(i + 1))]];
+  return [[role, value]];
+}
+
+/** [["key"|"secret", value], ...] found in one field; `role` is the field's own. */
+function keyPieces(text, role) {
+  const found = [];
+  const plain = [];
+  let waiting = "";
+  for (const raw of String(text || "").replace(INVISIBLE, "").split(/\r\n|\r|\n/)) {
+    const line = cleanText(raw);
+    if (!line) continue;
+    const m = LABEL.exec(line);
+    if (m) {
+      const labelRole = /secret/i.test(m[1]) ? "secret" : "key";
+      const rest = cleanText(m[2]);
+      if (rest) found.push(...keyPairs(labelRole, rest));
+      else waiting = labelRole;
+    } else if (waiting) {
+      found.push(...keyPairs(waiting, line));
+      waiting = "";
+    } else {
+      plain.push(line);
+    }
+  }
+  if (plain.length === 2 && !found.length && !plain.join("").includes(":")) {
+    found.push(["key", plain[0]], ["secret", plain[1]]);
+  } else if (plain.length) {
+    found.push(...keyPairs(role, plain.join(" ")));
+  }
+  return found.filter(([, v]) => v);
+}
 
 // ------------------------------------------------------------------ shared pieces
 
@@ -112,6 +183,21 @@ function head(iconName, title, tone = "accent") {
   );
 }
 
+/** What Etsy checks in a callback address, read from the one in use. */
+function callbackParts(uri) {
+  try {
+    const u = new URL(uri);
+    return {
+      http: u.protocol === "http:",
+      localhost: u.hostname.toLowerCase() === "localhost",
+      port: u.port || (u.protocol === "http:" ? "80" : ""),
+      slash: uri.endsWith("/"),
+    };
+  } catch {
+    return { http: false, localhost: false, port: "", slash: false };
+  }
+}
+
 // ------------------------------------------------------------------ /kurulum/magaza
 
 async function mountConnect(el, ctx) {
@@ -123,14 +209,19 @@ async function mountConnect(el, ctx) {
     mode: null,
     editKeys: false,
     keyResult: null, // the last POST /api/connect/keys answer, shown once
-    conn: null, // a connect in progress: {jobId, phase, pct, url, popup, blocked}
+    conn: null, // a connect in progress: {jobId, phase, pct, url, popup, blocked, since, slow}
     connError: null, // why the last connect failed (ApiError or job.error)
     extra: /^[a-z_]{3,32}$/.test(ctx.query.scope || "") ? ctx.query.scope : null,
+    gateOpen: null, // the "did you add the callback?" box: decided once info arrives
+    pre: null, // the last pre-flight: {loading, data, error}
+    troubleOpen: null, // the person opened/closed the help panel (null: not touched)
   };
   let creepTimer = null;
   let pollTimer = null;
+  let slowTimer = null;
+  let preSeq = 0;
   let form = null; // the key form's nodes, kept so typing survives re-renders
-  const live = {}; // nodes the connect progress updates in place
+  const live = {}; // nodes updated in place (progress, connect button, pre-flight, help)
 
   // ---- layout
   const steps = stepper({ steps: [] });
@@ -155,6 +246,8 @@ async function mountConnect(el, ctx) {
   const state = () => (s.status && s.status.state) || "checking";
   const setup = () => (s.status && s.status.setup) || {};
   const connecting = () => !!(s.conn && s.conn.active);
+  const callbackUri = () => (s.info && s.info.redirect_uri) || DEFAULT_CALLBACK;
+  const callbackPort = () => (s.info && s.info.callback_port) || callbackParts(callbackUri()).port || "3003";
 
   function computeMode() {
     if (connecting()) return "connect";
@@ -301,6 +394,114 @@ async function mountConnect(el, ctx) {
     );
   }
 
+  // ---- the callback address: copy it, where it goes on Etsy, Etsy's rules
+  function callbackGuide({ compact = false } = {}) {
+    const uri = callbackUri();
+    const parts = callbackParts(uri);
+    const copy = copyField({ value: uri, ariaLabel: t("cb.title") });
+    copy.classList.add("cx-cb-copy");
+    const rules = [
+      [parts.http, t("cb.rule.http")],
+      [parts.localhost, t("cb.rule.localhost")],
+      [!!parts.port, t("cb.rule.port", { port: parts.port || "?" })],
+      [true, parts.slash ? t("cb.rule.exact") : t("cb.rule.slash")],
+    ];
+    return h(
+      "div",
+      { class: cx("cx-cb", compact && "is-compact") },
+      compact ? null : h("div", { class: "cx-cb-head" }, h("b", null, t("cb.title")), h("span", null, t("cb.sub"))),
+      copy,
+      h(
+        "div",
+        { class: "cx-cb-where" },
+        h("span", { class: "cx-cb-label" }, t("cb.path_label")),
+        h(
+          "ol",
+          { class: "cx-cb-path" },
+          h("li", null, h("a", { href: YOUR_APPS_URL, target: "_blank", rel: "noopener noreferrer", class: "cx-cb-apps" }, "Your apps", icon("external", { size: 11 }))),
+          h("li", null, t("cb.path.menu_pre"), h("span", { class: "cx-kbd", "aria-label": t("cb.menu_label") }, "⋮"), t("cb.path.menu_post")),
+          h("li", null, h("b", null, "Edit callback URLs")),
+          h("li", null, t("cb.path.paste"), " ", h("b", null, "Save")),
+        ),
+      ),
+      h(
+        "ul",
+        { class: "cx-cb-rules", "aria-label": t("cb.rules_label") },
+        rules.map(([ok, text]) => h("li", { class: cx("cx-cb-rule", !ok && "is-bad") }, icon(ok ? "check" : "x", { size: 12, strokeWidth: 2.4 }), h("span", null, text))),
+      ),
+      h("p", { class: "cx-cb-note" }, icon("info", { size: 13 }), h("span", null, t("cb.approval"))),
+    );
+  }
+
+  // ---- buttons the notes and the help panel share
+  function editKeysButton(label = t("keys.edit")) {
+    return button({
+      label,
+      size: "sm",
+      icon: "key",
+      onClick: () => {
+        if (connecting()) cancelConnect();
+        s.editKeys = true;
+        s.keyResult = null;
+        s.connError = null;
+        render(true);
+      },
+    });
+  }
+
+  function changeCallbackButton(suggested) {
+    return button({
+      label: t("connect.fix_callback"),
+      size: "sm",
+      onClick: () => {
+        if (connecting()) cancelConnect();
+        s.editKeys = true;
+        s.connError = null;
+        render(true);
+        if (form) {
+          if (suggested) form.cb.value = suggested;
+          form.adv.open = true;
+          form.cb.focus();
+          form.cb.select();
+        }
+      },
+    });
+  }
+
+  function recheckButton() {
+    return button({
+      label: t("pre.recheck"),
+      icon: "refresh",
+      size: "sm",
+      autoLoading: true,
+      onClick: () => {
+        s.connError = null;
+        return runPreflight(true);
+      },
+    });
+  }
+
+  /** One problem (a pre-flight check or a refused /start) with the way to fix it. */
+  function problemNote(err) {
+    const code = err.code;
+    const text = ctx.api.errorText(err, t);
+    let tone = "danger";
+    let ic = "alert-circle";
+    let action = null;
+    if (code === "callback_not_local" || code === "bad_redirect") {
+      action = changeCallbackButton(code === "callback_not_local" ? (err.params && err.params.suggested) || DEFAULT_CALLBACK : null);
+    } else if (code === "keys_rejected" || code === "bad_keys" || code === "setup_needed") {
+      action = editKeysButton();
+    } else if (code === "port_in_use") {
+      action = [recheckButton(), changeCallbackButton()];
+    } else if (code === "offline" || code === "network") {
+      tone = "warning";
+      ic = "alert";
+      action = recheckButton();
+    }
+    return infoNote({ icon: ic, tone, text, action });
+  }
+
   // ---- the left card
   function statusNotes() {
     const st = state();
@@ -324,30 +525,6 @@ async function mountConnect(el, ctx) {
     if (r.check === "ok") out.push(infoNote({ icon: "check-circle", tone: "success", text: t("keys.result.ok") }));
     if (r.token_cleared) out.push(infoNote({ icon: "alert", tone: "warning", text: t("keys.token_cleared") }));
     return out;
-  }
-
-  function connErrorNote() {
-    const err = s.connError;
-    if (!err) return null;
-    let action = null;
-    if (err.code === "callback_not_local" || err.code === "bad_redirect") {
-      action = button({
-        label: t("connect.fix_callback"),
-        size: "sm",
-        onClick: () => {
-          s.editKeys = true;
-          s.connError = null;
-          const suggested = (err.params && err.params.suggested) || DEFAULT_CALLBACK;
-          render(true);
-          if (form) {
-            form.cb.value = suggested;
-            form.adv.open = true;
-            form.cb.focus();
-          }
-        },
-      });
-    }
-    return infoNote({ icon: "alert-circle", tone: "danger", text: ctx.api.errorText(err, t), action });
   }
 
   function loadingView() {
@@ -403,20 +580,45 @@ async function mountConnect(el, ctx) {
     return h("div", { class: "cx-why" }, h("p", { class: "cx-why-text", lang: "en", "aria-label": t("keys.why_label") }, text), copy);
   }
 
+  /** Keystring vs Shared secret: which is which, and where each one is on Etsy. */
+  function whichKey() {
+    const item = (name, iconName, text) =>
+      h(
+        "div",
+        { class: "cx-which-item" },
+        h("span", { class: "cx-which-icon", "aria-hidden": "true" }, icon(iconName, { size: 15 })),
+        h("div", null, h("b", null, name), h("p", null, text)),
+      );
+    return h("div", { class: "cx-which" }, item("Keystring", "eye", t("keys.which.key")), item("Shared secret", "eye-off", t("keys.which.secret")));
+  }
+
   function howto() {
-    const callback = (s.info && s.info.redirect_uri) || DEFAULT_CALLBACK;
     return h(
       "ol",
       { class: "cx-howto" },
       howStep(1, t("keys.step1.title"), [h("p", null, t("keys.step1.text")), extLink(SELLER_APP_URL, t("keys.step1.button"))]),
       howStep(2, t("keys.step2.title"), [h("p", null, t("keys.step2.text")), whyBlock()]),
-      howStep(3, t("keys.step3.title"), [
-        h("p", null, t("keys.step3.text")),
-        copyField({ value: callback, ariaLabel: t("keys.callback") }),
-        h("p", null, t("keys.step3.after")),
-        extLink(DASHBOARD_URL, t("keys.step3.button")),
-      ]),
+      howStep(3, t("keys.step3.title"), [h("p", null, t("keys.step3.text")), callbackGuide({ compact: true })]),
+      howStep(4, t("keys.step4.title"), [h("p", null, t("keys.step4.text")), whichKey(), extLink(YOUR_APPS_URL, t("keys.step4.button"))]),
     );
+  }
+
+  /** A paste into a key field: cleaned, and both fields filled when both were copied. */
+  function onKeyPaste(e, role) {
+    const text = e.clipboardData && e.clipboardData.getData("text");
+    if (!text || !form) return;
+    const pieces = keyPieces(text, role);
+    const own = pieces.find(([r]) => r === role);
+    const otherRole = role === "key" ? "secret" : "key";
+    const other = pieces.find(([r]) => r === otherRole);
+    if (!own && !other) return;
+    e.preventDefault();
+    const target = role === "key" ? form.key : form.secret;
+    const otherInput = role === "key" ? form.secret : form.key;
+    if (own) target.value = own[1];
+    if (other && (!otherInput.value.trim() || !own)) otherInput.value = other[1];
+    for (const f of [form.keyField, form.secretField]) f.setError("");
+    ctx.setDirty(typedKeys());
   }
 
   function buildForm() {
@@ -436,9 +638,9 @@ async function mountConnect(el, ctx) {
       },
     });
     const secretBox = h("div", { class: "input-affix cx-secret" }, secret, eye);
-    const cb = textInput({ mono: true, value: (s.info && s.info.redirect_uri) || DEFAULT_CALLBACK });
-    const keyField = field({ label: t("keys.keystring"), hint: t("keys.combined_hint"), input: key });
-    const secretField = field({ label: t("keys.secret"), input: secretBox });
+    const cb = textInput({ mono: true, value: callbackUri() });
+    const keyField = field({ label: t("keys.keystring"), hint: t("keys.keystring_hint"), input: key });
+    const secretField = field({ label: t("keys.secret"), hint: t("keys.secret_hint"), input: secretBox });
     const cbField = field({ label: t("keys.callback"), hint: t("keys.callback_hint", { url: DEFAULT_CALLBACK }), input: cb });
     const adv = h(
       "details",
@@ -449,6 +651,8 @@ async function mountConnect(el, ctx) {
     const result = h("div", { class: "cx-result", role: "status" });
     const save = button({ label: t("keys.save"), variant: "primary", size: "lg", icon: "check", type: "submit" });
     for (const input of [key, secret]) input.addEventListener("input", () => ctx.setDirty(typedKeys()));
+    key.addEventListener("paste", (e) => onKeyPaste(e, "key"));
+    secret.addEventListener("paste", (e) => onKeyPaste(e, "secret"));
     return { key, secret, cb, keyField, secretField, cbField, adv, result, save };
   }
 
@@ -475,7 +679,7 @@ async function mountConnect(el, ctx) {
       unknown: ["warning", "alert", t("keys.result.unknown", { reason: r.reason || "" })],
     };
     const [tone, ic, text] = map[r.check] || map.unknown;
-    mount(form.result, infoNote({ tone, icon: ic, text }));
+    mount(form.result, infoNote({ tone, icon: ic, text: r.check === "rejected" ? [text, " ", t("keys.bad_help")] : text }));
   }
 
   function keysView() {
@@ -531,6 +735,7 @@ async function mountConnect(el, ctx) {
           },
         },
         h("div", { class: "cx-form-grid" }, form.keyField, form.secretField),
+        h("p", { class: "cx-form-hint" }, icon("sparkles", { size: 13 }), h("span", null, t("keys.combined_hint"))),
         form.adv,
         form.result,
         h("div", { class: "cx-actions" }, form.save, h("span", { class: "cx-local" }, icon("lock", { size: 13 }), t("keys.local"))),
@@ -543,7 +748,7 @@ async function mountConnect(el, ctx) {
   async function saveKeys() {
     if (!form) return;
     for (const f of [form.keyField, form.secretField, form.cbField]) f.setError("");
-    const body = { keystring: form.key.value.trim(), shared_secret: form.secret.value.trim(), redirect_uri: form.cb.value.trim() };
+    const body = { keystring: form.key.value, shared_secret: form.secret.value, redirect_uri: form.cb.value.trim() };
     form.save.setLoading(true);
     try {
       const res = await ctx.api.post("/api/connect/keys", body, { signal: ctx.signal });
@@ -551,6 +756,7 @@ async function mountConnect(el, ctx) {
       form.secret.value = ""; // the secret never stays in the page
       ctx.setDirty(false);
       s.keyResult = res;
+      s.pre = null; // the keys changed: checked again below
       if (res.status) s.status = res.status;
       if (res.check === "ok") {
         s.editKeys = false;
@@ -572,22 +778,126 @@ async function mountConnect(el, ctx) {
     }
   }
 
-  // connect: the t160 card
+  // connect: the t160 card, plus the callback question, the pre-flight and the help
   function connectView() {
     const info = s.info || {};
     const kids = [head("link", t("connect.title")), h("p", { class: "cx-lead" }, t("connect.lead"))];
     if (state() === "reconnect" && !connecting()) kids.push(infoNote({ icon: "alert", tone: "warning", text: t("connect.reconnect_note") }));
     kids.push(...statusNotes(), ...keyResultNotes());
-    const errNote = connErrorNote();
-    if (errNote) kids.push(errNote);
+    live.problems = h("div", { class: "cx-problems" });
+    kids.push(live.problems);
     const scopes = [...(info.scopes_requested || DEFAULT_SCOPES)];
     const extra = [];
     if (s.extra && !scopes.includes(s.extra)) {
       scopes.push(s.extra);
       extra.push(s.extra);
     }
-    kids.push(sectionTitle(t("connect.perms")), permList(t, permissionRows(t, scopes, extra)), safeNote(t), connectRow());
+    kids.push(sectionTitle(t("connect.perms")), permList(t, permissionRows(t, scopes, extra)), safeNote(t));
+    if (s.gateOpen && !connecting()) kids.push(gateBox());
+    kids.push(connectRow());
+    live.trouble = h("div", { class: "cx-trouble-slot" });
+    kids.push(live.trouble);
+    renderProblems();
+    renderTrouble();
     return kids;
+  }
+
+  // -- "Callback adresini Etsy'ye eklediniz mi?": once per shop, before the first Bağlan
+  function gateBox() {
+    const info = s.info || {};
+    const box = checkbox({ checked: !!info.callback_confirmed, label: t("gate.check"), onChange: (v) => setCallbackConfirmed(v) });
+    box.classList.add("cx-gate-check");
+    live.gateCheck = box;
+    const skip = h("button", { type: "button", class: "cx-link-btn cx-gate-skip", onClick: () => skipGate() }, t("gate.skip"));
+    return h(
+      "section",
+      { class: cx("cx-gate", info.callback_confirmed && "is-done"), "aria-labelledby": "cx-gate-title" },
+      h(
+        "div",
+        { class: "cx-gate-head" },
+        h("span", { class: "cx-gate-icon", "aria-hidden": "true" }, icon("help", { size: 17 })),
+        h("div", { class: "cx-gate-text" }, h("h3", { class: "cx-gate-title", id: "cx-gate-title" }, t("gate.title")), h("p", null, t("gate.lead"))),
+      ),
+      callbackGuide({ compact: true }),
+      h("div", { class: "cx-gate-foot" }, box, h("span", { class: "spacer" }), skip),
+    );
+  }
+
+  async function setCallbackConfirmed(value, { quiet = false } = {}) {
+    if (!s.info) return;
+    const before = !!s.info.callback_confirmed;
+    s.info.callback_confirmed = value;
+    const gate = main.querySelector(".cx-gate");
+    if (gate) gate.classList.toggle("is-done", value);
+    updateConnectButton();
+    try {
+      const res = await ctx.api.post("/api/connect/callback-confirmed", { confirmed: value });
+      if (s.info) s.info.callback_confirmed = !!res.callback_confirmed;
+    } catch (err) {
+      if (s.info) s.info.callback_confirmed = before;
+      if (live.gateCheck) live.gateCheck.checked = before;
+      if (gate) gate.classList.toggle("is-done", before);
+      if (!quiet) ctx.toast({ tone: "danger", title: ctx.api.errorText(err, t) });
+    }
+    updateConnectButton();
+  }
+
+  function skipGate() {
+    s.gateOpen = false;
+    setCallbackConfirmed(true, { quiet: true });
+    render(true);
+  }
+
+  function gateBlocks() {
+    return !!(s.gateOpen && s.info && !s.info.callback_confirmed);
+  }
+
+  // -- pre-flight: what would stop "Bağlan", found before Etsy's page opens
+  function preflightProblems() {
+    const data = s.pre && s.pre.data;
+    if (!data || !data.checks) return [];
+    return Object.values(data.checks).filter((c) => c && !c.ok && c.code);
+  }
+
+  function preflightBlocks() {
+    return preflightProblems().length > 0;
+  }
+
+  function renderProblems() {
+    if (!live.problems) return;
+    const notes = [];
+    const seen = new Set();
+    if (s.connError) {
+      notes.push(problemNote(s.connError));
+      seen.add(s.connError.code);
+    }
+    if (state() === "offline") seen.add("offline"); // the status note above says it already
+    if (!connecting()) {
+      for (const c of preflightProblems()) {
+        if (seen.has(c.code)) continue;
+        seen.add(c.code);
+        notes.push(problemNote(c));
+      }
+    }
+    mount(live.problems, notes);
+  }
+
+  async function runPreflight(force = false) {
+    if (connecting() || computeMode() !== "connect") return;
+    if (!force && s.pre && s.pre.loading) return;
+    const seq = ++preSeq;
+    s.pre = { ...(s.pre || {}), loading: true };
+    updateConnectButton();
+    try {
+      const data = await ctx.api.get("/api/connect/preflight", null, { signal: ctx.signal });
+      if (seq !== preSeq) return;
+      s.pre = { data, loading: false };
+    } catch (err) {
+      if (ctx.api.isAbort(err) || seq !== preSeq) return;
+      s.pre = { error: err, loading: false }; // not a blocker: /start checks the same again
+    }
+    renderProblems();
+    updateConnectButton();
   }
 
   function phaseText() {
@@ -609,6 +919,7 @@ async function mountConnect(el, ctx) {
       class: "cx-connect-btn",
       onClick: () => startConnect(),
     });
+    live.btn = btn;
     let aside;
     if (running) {
       const prog = progressBar({ value: s.conn.pct, tone: "accent", size: "sm", label: phaseText() });
@@ -617,11 +928,13 @@ async function mountConnect(el, ctx) {
       live.prog = prog;
       live.text = text;
       live.links = links;
+      live.hint = null;
       aside = h("div", { class: "cx-progress" }, h("div", { class: "cx-progress-top" }, text, links), prog.el);
       renderLinks();
     } else {
       live.prog = null;
-      aside = h("p", { class: "cx-hint" }, t("connect.hint"));
+      live.hint = h("p", { class: "cx-hint", role: "status" });
+      aside = live.hint;
     }
     const edit = running
       ? null
@@ -636,7 +949,49 @@ async function mountConnect(el, ctx) {
             render(true);
           },
         });
-    return h("div", { class: "cx-actions cx-connect-row" }, btn, aside, h("span", { class: "spacer" }), edit);
+    const row = h("div", { class: "cx-actions cx-connect-row" }, btn, aside, h("span", { class: "spacer" }), edit);
+    const meta =
+      running || s.gateOpen
+        ? null
+        : h(
+            "p",
+            { class: "cx-meta cx-cb-meta" },
+            h("span", null, t("connect.callback_meta")),
+            " ",
+            h("span", { class: "mono" }, callbackUri()),
+            " · ",
+            h(
+              "button",
+              {
+                type: "button",
+                class: "cx-link-btn",
+                onClick: () => {
+                  s.gateOpen = true;
+                  render(true);
+                  const g = main.querySelector(".cx-gate");
+                  if (g) g.scrollIntoView({ block: "nearest", behavior: "smooth" });
+                },
+              },
+              t("connect.callback_how"),
+            ),
+          );
+    updateConnectButton();
+    return [row, meta];
+  }
+
+  /** The connect button and its hint follow the callback question and the pre-flight. */
+  function updateConnectButton() {
+    if (!live.btn || connecting()) return;
+    const gate = gateBlocks();
+    const pre = preflightBlocks();
+    live.btn.setDisabled(gate || pre);
+    if (!live.hint) return;
+    let text = t("connect.hint");
+    if (gate) text = t("gate.needed");
+    else if (pre) text = t("pre.blocked");
+    else if (s.pre && s.pre.loading && !s.pre.data) text = t("pre.checking");
+    live.hint.textContent = text;
+    live.hint.classList.toggle("is-warn", gate || pre);
   }
 
   function renderLinks() {
@@ -651,6 +1006,67 @@ async function mountConnect(el, ctx) {
     mount(live.links, kids);
   }
 
+  // -- "Etsy bir hata mı gösterdi?": after SLOW_AFTER seconds of waiting, or after a
+  // connect that timed out or was refused at the end
+  function troubleWanted() {
+    if (connecting()) return !!s.conn.slow;
+    return !!(s.connError && TROUBLE_AFTER.has(s.connError.code));
+  }
+
+  function renderTrouble() {
+    if (!live.trouble) return;
+    if (!troubleWanted()) {
+      mount(live.trouble);
+      return;
+    }
+    if (live.trouble.firstChild) return; // already shown: keep its open/closed state
+    const open = s.troubleOpen !== null ? s.troubleOpen : !connecting() && s.connError && s.connError.code === "connect_timeout";
+    mount(live.trouble, troublePanel(open));
+  }
+
+  function troublePanel(open) {
+    const port = callbackPort();
+    const retry = () => button({ label: t("trouble.retry"), icon: "refresh", size: "sm", variant: "primary", onClick: () => startConnect({ restart: true }) });
+    const item = (ic, title, fix, extra) =>
+      h(
+        "li",
+        { class: "cx-tr-item" },
+        h("span", { class: "cx-tr-icon", "aria-hidden": "true" }, icon(ic, { size: 15 })),
+        h("div", { class: "cx-tr-body" }, h("b", { class: "cx-tr-title" }, title), h("p", null, fix), extra ? h("div", { class: "cx-tr-extra" }, extra) : null),
+      );
+    const details = h(
+      "details",
+      { class: "cx-trouble", open: !!open },
+      h(
+        "summary",
+        null,
+        icon("chevron-right", { size: 14 }),
+        h("span", { class: "cx-tr-sum" }, h("b", null, t("trouble.title")), h("span", null, t("trouble.sub"))),
+      ),
+      h(
+        "ol",
+        { class: "cx-tr-list" },
+        item("link", t("trouble.redirect.title"), t("trouble.redirect.fix"), [callbackGuide({ compact: true }), h("div", { class: "cx-tr-actions" }, retry())]),
+        item("key", t("trouble.client.title"), t("trouble.client.fix"), h("div", { class: "cx-tr-actions" }, editKeysButton(), extLink(YOUR_APPS_URL, t("trouble.apps")))),
+        item("clock", t("trouble.pending.title"), t("trouble.pending.fix"), h("div", { class: "cx-tr-actions" }, extLink(YOUR_APPS_URL, t("trouble.apps")))),
+        item("globe", t("trouble.unreachable.title", { port }), t("trouble.unreachable.fix"), h("div", { class: "cx-tr-actions" }, retry())),
+        item("alert", t("trouble.port.title", { port }), t("trouble.port.fix", { port }), h("div", { class: "cx-tr-actions" }, changeCallbackButton())),
+      ),
+    );
+    details.addEventListener("toggle", () => {
+      s.troubleOpen = details.open;
+    });
+    return details;
+  }
+
+  function checkSlow() {
+    const conn = s.conn;
+    if (!conn || conn.slow || !conn.since || conn.phase !== "opened") return;
+    if (Date.now() / 1000 - conn.since < SLOW_AFTER) return;
+    conn.slow = true;
+    renderTrouble();
+  }
+
   // connected
   function connectedView() {
     const info = s.info || {};
@@ -659,8 +1075,7 @@ async function mountConnect(el, ctx) {
     if (state() === "connected") title.append(badge({ text: t("status.connected_long"), tone: "success", dot: true }));
     const kids = [title, h("p", { class: "cx-lead" }, t("connected.lead"))];
     kids.push(...statusNotes(), ...keyResultNotes());
-    const errNote = connErrorNote();
-    if (errNote) kids.push(errNote);
+    if (s.connError) kids.push(problemNote(s.connError));
     const granted = info.scopes_granted && info.scopes_granted.length ? info.scopes_granted : (s.status && s.status.scopes) || [];
     const missing = info.missing_scopes || [];
     if (missing.length) {
@@ -722,6 +1137,7 @@ async function mountConnect(el, ctx) {
       if (res.status) s.status = res.status;
       s.keyResult = null;
       s.connError = null;
+      s.pre = null;
       ctx.toast({ tone: "info", title: t("disconnect.done") });
       await loadInfo();
     } catch (err) {
@@ -768,14 +1184,19 @@ async function mountConnect(el, ctx) {
     if (ours) w.close();
   }
 
-  function startConnect() {
-    if (connecting()) return;
+  /** "Bağlan". With {restart}, a connect that is still waiting is replaced (the server
+   *  cancels it); the old Etsy tab is left to the person. */
+  function startConnect({ restart = false } = {}) {
+    if (connecting() && !restart) return;
+    if (!connecting() && computeMode() === "connect" && (gateBlocks() || preflightBlocks())) return;
     // Opened here, inside the click, or the browser blocks it; pointed at Etsy below.
     const popup = openBlank();
     const extra = s.extra && !((s.info && s.info.scopes_requested) || []).includes(s.extra) ? [s.extra] : [];
+    stopTimers();
     s.connError = null;
     s.keyResult = null;
-    s.conn = { active: true, phase: "starting", pct: PHASE_PCT.starting, jobId: null, url: null, popup, blocked: !popup, restored: false };
+    s.troubleOpen = null;
+    s.conn = { active: true, phase: "starting", pct: PHASE_PCT.starting, jobId: null, url: null, popup, blocked: !popup, restored: false, since: null, slow: false };
     render(true);
     startTimers();
     ctx.api
@@ -785,6 +1206,7 @@ async function mountConnect(el, ctx) {
         if (!conn || conn.popup !== popup) return;
         conn.jobId = res.job_id;
         conn.url = res.url;
+        conn.since = Date.now() / 1000;
         if (popup && !popup.closed) {
           try {
             popup.location.replace(res.url);
@@ -800,10 +1222,12 @@ async function mountConnect(el, ctx) {
       .catch((err) => {
         closePopup(popup);
         if (ctx.api.isAbort(err)) return;
+        if (s.conn && s.conn.popup !== popup) return;
         stopTimers();
         s.conn = null;
         s.connError = err;
         render(true);
+        runPreflight(true);
       });
   }
 
@@ -822,6 +1246,10 @@ async function mountConnect(el, ctx) {
     if (!s.conn || PHASES.indexOf(phase) <= PHASES.indexOf(s.conn.phase)) return;
     s.conn.phase = phase;
     s.conn.pct = Math.max(s.conn.pct, PHASE_PCT[phase] || 0);
+    if (phase !== "opened" && s.conn.slow) {
+      s.conn.slow = false; // Etsy answered: the help is no longer the point
+      renderTrouble();
+    }
     updateLive();
   }
 
@@ -845,6 +1273,8 @@ async function mountConnect(el, ctx) {
       s.connError = null;
       s.editKeys = false;
       if (s.extra) s.extra = null;
+      if (s.info) s.info.callback_confirmed = true;
+      s.gateOpen = false;
       const shop = job.result && job.result.shop_name;
       ctx.toast({ tone: "success", title: t("connect.done_toast"), message: shop || undefined });
       ctx.refreshStatus(false).catch(() => {});
@@ -863,6 +1293,7 @@ async function mountConnect(el, ctx) {
     }, 900);
     // Events can be missed (a reconnecting stream); ask now and then as well.
     pollTimer = setInterval(pollJob, 2500);
+    slowTimer = setInterval(checkSlow, 1000);
   }
 
   async function pollJob() {
@@ -881,13 +1312,15 @@ async function mountConnect(el, ctx) {
   function stopTimers() {
     clearInterval(creepTimer);
     clearInterval(pollTimer);
+    clearInterval(slowTimer);
     creepTimer = null;
     pollTimer = null;
+    slowTimer = null;
   }
 
   ctx.events.on("job-event", (ev) => {
     if (!ev || ev.kind !== "connect" || ev.type !== "phase" || !s.conn) return;
-    if (s.conn.jobId && ev.job_id !== s.conn.jobId) return;
+    if (!s.conn.jobId || ev.job_id !== s.conn.jobId) return;
     advance(ev.data && ev.data.phase);
   });
   ctx.events.on("job", (job) => {
@@ -915,14 +1348,30 @@ async function mountConnect(el, ctx) {
       s.infoError = err;
     }
     if (s.extra && s.info && !(s.info.known_scopes || []).includes(s.extra)) s.extra = null;
+    // Asked until answered (per shop and address); once shown it stays for this visit.
+    if (s.info && !s.info.callback_confirmed) s.gateOpen = true;
+    else if (s.gateOpen === null && s.info) s.gateOpen = false;
     const job = s.info && s.info.job;
     if (job && !s.conn && !TERMINAL.has(job.status)) {
       // A connect started earlier (another visit, another tab) is still waiting.
       const phase = (job.state && job.state.phase) || "opened";
-      s.conn = { active: true, phase, pct: Math.max(PHASE_PCT[phase] || 16, 20), jobId: job.id, url: job.state && job.state.url, popup: null, blocked: false, restored: true };
+      s.conn = {
+        active: true,
+        phase,
+        pct: Math.max(PHASE_PCT[phase] || 16, 20),
+        jobId: job.id,
+        url: job.state && job.state.url,
+        popup: null,
+        blocked: false,
+        restored: true,
+        since: job.started_at || Date.now() / 1000,
+        slow: false,
+      };
       startTimers();
+      checkSlow();
     }
     render(true);
+    if (computeMode() === "connect" && !connecting()) runPreflight(true);
   }
 
   function render(force) {
@@ -933,6 +1382,12 @@ async function mountConnect(el, ctx) {
       s.mode = mode;
       const views = { loading: loadingView, error: errorView, keys: keysView, connect: connectView, connected: connectedView };
       const modeChanged = previous !== null && previous !== "loading" && mode !== previous;
+      if (mode !== "connect") {
+        live.btn = null;
+        live.hint = null;
+        live.problems = null;
+        live.trouble = null;
+      }
       mount(main, (views[mode] || loadingView)());
       if (modeChanged) {
         const scroller = el.closest(".content");
@@ -957,4 +1412,3 @@ async function mountConnect(el, ctx) {
   await loadInfo();
   return () => stopTimers();
 }
-

@@ -194,3 +194,90 @@ def test_a_quantity_over_etsys_limit_is_caught_before_sending():
     except ValidationError as exc:
         problems.append(str(exc))
     assert problems and "limit of 999" in problems[0]
+
+
+# --- review fixes -------------------------------------------------------------------------
+
+
+_INVENTORY = {
+    "products": [{
+        "product_id": 1, "sku": "", "is_deleted": False,
+        "property_values": [{"property_id": 513, "property_name": "Size", "value_ids": [21],
+                             "values": ["Large"], "scale_id": None}],
+        # Not active, or not asked shop-scoped: getListingInventory leaves the profile out.
+        "offerings": [{"offering_id": 9, "is_deleted": False, "is_enabled": True, "quantity": 5,
+                       "price": {"amount": 1250, "divisor": 100, "currency_code": "USD"}}],
+    }],
+}
+
+
+def test_every_copied_offering_names_a_processing_profile():
+    # updateListingInventory: offerings require price, quantity, is_enabled AND
+    # readiness_state_id (nullable). The key is never left out.
+    from stallkit.listings import inventory_for_copy
+
+    body = inventory_for_copy(_INVENTORY)
+    assert body["products"][0]["offerings"] == [
+        {"price": 12.5, "quantity": 5, "is_enabled": True, "readiness_state_id": None}
+    ]
+    body = inventory_for_copy(_INVENTORY, readiness_state_id=801)
+    assert body["products"][0]["offerings"][0]["readiness_state_id"] == 801
+    own = {"products": [{**_INVENTORY["products"][0], "offerings": [
+        {**_INVENTORY["products"][0]["offerings"][0], "readiness_state_id": 7}]}]}
+    assert inventory_for_copy(own, readiness_state_id=801)["products"][0]["offerings"][0][
+        "readiness_state_id"] == 7
+
+
+def test_a_new_draft_gets_its_own_profile_on_offerings_that_have_none():
+    from pathlib import Path
+
+    from stallkit.listings import inventory_for_copy, push
+
+    class Client:
+        def __init__(self):
+            self.inventories = []
+
+        def create_draft_listing(self, fields):
+            return {"listing_id": 1000001}
+
+        def update_listing_inventory(self, listing_id, inventory):
+            self.inventories.append(inventory)
+
+    client = Client()
+    shared = inventory_for_copy(_INVENTORY)
+    row = dict(BASE_ROW, readiness_state_id="801")
+    report = push(client, [row], base_dir=Path("."), inventory=shared)
+    assert report.results[0].status == "ok", report.results[0].message
+    assert client.inventories[0]["products"][0]["offerings"][0]["readiness_state_id"] == 801
+    # The body shared by every draft of the run is not changed by one of them.
+    assert shared["products"][0]["offerings"][0]["readiness_state_id"] is None
+
+
+def test_an_image_resolver_refuses_before_anything_is_looked_at(tmp_path):
+    seen = []
+
+    def resolver(value):
+        seen.append(value)
+        if value.startswith("/"):
+            raise ValidationError(f"image {value!r}: images must be inside the folder")
+        return tmp_path / value
+
+    (tmp_path / "a.jpg").write_bytes(b"x")
+    rows = [dict(BASE_ROW, images="a.jpg"), dict(BASE_ROW, images="a.jpg|/etc/b.jpg")]
+    good, bad = prepare(rows, base_dir=tmp_path, image_resolver=resolver)
+    assert not good.result.failed and good.image_paths == [tmp_path / "a.jpg"]
+    assert bad.result.failed and "inside the folder" in bad.result.message
+    assert seen == ["a.jpg", "a.jpg", "/etc/b.jpg"]
+    # Without a resolver (the CLI) the CSV's own folder and absolute paths still work.
+    assert not prepare([rows[0]], base_dir=tmp_path)[0].result.failed
+
+
+def test_pull_has_no_views_column():
+    from stallkit.listings import pull
+
+    class Source:
+        def listings_by_shop(self, state="active", **_kw):
+            return iter([{"listing_id": 1000001, "title": "Example", "num_favorers": 3}])
+
+    row = pull(Source())[0]
+    assert "views" not in row and row["num_favorers"] == 3

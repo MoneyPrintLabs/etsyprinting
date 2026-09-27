@@ -41,7 +41,6 @@ value unresolved (ids only) instead of failing the whole answer.
 
 from __future__ import annotations
 
-import html
 import json
 import logging
 import threading
@@ -103,8 +102,9 @@ def _listing_id(value: Any) -> int:
 
 
 def _title(listing: dict[str, Any]) -> str:
-    # Etsy sends titles with HTML entities (&amp;, &#39;); the page shows plain text.
-    return html.unescape(str(listing.get("title") or "")).strip()
+    # Etsy sends titles with HTML entities (&amp;, &#39;); the client decodes them where
+    # it reads them (client.unescape_listing), so this is plain text already.
+    return str(listing.get("title") or "").strip()
 
 
 def _currency(listing: dict[str, Any]) -> str | None:
@@ -292,10 +292,8 @@ class TemplateApi:
         well because the seller's own non-active listings may need it (unverified).
         """
         with client.attempts(3):
-            listing = client.get(
-                f"/listings/{listing_id}",
-                params={"includes": "Images"},
-                authed=client.token is not None,
+            listing = client.listing(
+                listing_id, includes=["Images"], authed=client.token is not None
             )
             if not isinstance(listing, dict) or not listing.get("listing_id"):
                 raise ApiError(404, "not_found", f"Etsy has no listing {listing_id}.")
@@ -444,7 +442,7 @@ class TemplateApi:
             cache,
             captured.fields,
             listing_id=captured.source_listing_id,
-            title=html.unescape(captured.source_title).strip(),
+            title=captured.source_title.strip(),
             currency=str(data.get("currency_code") or "") or self._shop_currency(),
             tolerant=True,
             state=raw.get("state") if raw else None,
@@ -558,8 +556,7 @@ def _rows(
         digital or profile_id is not None,
         {
             "id": profile_id,
-            "title": (html.unescape(str(profile.get("title"))).strip() or None)
-            if profile.get("title") else None,
+            "title": str(profile.get("title") or "").strip() or None,
             "origin_country": profile.get("origin_country_iso") or None,
             "digital": digital,
         },

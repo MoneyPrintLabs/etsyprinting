@@ -12,7 +12,11 @@ import os
 import subprocess
 import sys
 import threading
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
+
+from .router import ApiError
 
 # Hard-coded on purpose: `mimetypes` reads the Windows registry, where .js is often
 # text/plain — and a module script served as text/plain with nosniff never runs.
@@ -81,11 +85,56 @@ def workspace_image(root: Path, rel: str) -> Path | None:
     return target
 
 
+def too_many_pixels(name: str, width: int, height: int) -> ApiError:
+    """422 too_many_pixels: the image is too large to decode safely (see catalog limits)."""
+    from ..drop import catalog
+
+    return ApiError(
+        422, "too_many_pixels",
+        f"{name} is {width}x{height} px. Images can be at most {catalog.MAX_EDGE} px on a "
+        f"side and {catalog.MAX_PIXELS // 1_000_000} million pixels.",
+        name=name, width=width, height=height, max_edge=catalog.MAX_EDGE,
+        max_mp=catalog.MAX_PIXELS // 1_000_000,
+    )
+
+
+@contextmanager
+def decoding(name: str, size: Callable[[], tuple[int, int]]) -> Iterator[None]:
+    """Turn "this image is too big to decode" into 422 too_many_pixels, never a 500.
+
+    Covers Pillow's own bomb refusal and a MemoryError while decoding; `size()` gives
+    the dimensions for the message (it is only asked when something went wrong).
+    """
+    from PIL import Image
+
+    from ..drop import catalog
+
+    try:
+        yield
+    except Image.DecompressionBombError as exc:
+        raise too_many_pixels(name, *catalog.bomb_size(exc)) from exc
+    except MemoryError as exc:
+        try:
+            width, height = size()
+        except Exception:  # noqa: BLE001 — only for the message
+            width, height = 0, 0
+        raise too_many_pixels(name, width, height) from exc
+
+
+def check_decodable(name: str, size: tuple[int, int]) -> None:
+    """ApiError 422 too_many_pixels before decoding an image over the pixel limits."""
+    from ..drop import catalog
+
+    if catalog.too_many_pixels(size):
+        raise too_many_pixels(name, *size)
+
+
 def thumbnail(source: Path, width: int, cache: Path) -> Path:
     """A JPEG of `source` at most `width` px wide, upright, sRGB, flattened on white.
 
     Cached under `cache`, keyed by path + mtime + size + width, so an edited file
-    gets a new thumbnail and an unchanged one is rendered once.
+    gets a new thumbnail and an unchanged one is rendered once. An image too large to
+    decode safely raises ApiError 422 too_many_pixels (never a MemoryError / 500).
     """
     from PIL import Image
 
@@ -99,10 +148,15 @@ def thumbnail(source: Path, width: int, cache: Path) -> Path:
     target = cache / f"{key}.jpg"
     if target.is_file():
         return target
-    with Image.open(source) as opened:
+    dims: list[tuple[int, int]] = [(0, 0)]
+    with decoding(source.name, lambda: dims[0]), Image.open(source) as opened:
+        dims[0] = opened.size
         if opened.format == "JPEG":
             # Let libjpeg decode at a fraction of the size when that is plenty.
             opened.draft("RGB", (width, width * 4))
+        # After draft() the size is what will really be decoded: a huge JPEG can
+        # still get a thumbnail, a huge PNG cannot.
+        check_decodable(source.name, opened.size)
         image = mockup._as_displayed(opened)
         image = mockup.flatten_onto(image, mockup.WHITE)
         if image.width > width:

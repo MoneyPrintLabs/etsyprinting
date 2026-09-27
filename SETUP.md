@@ -2,19 +2,19 @@
 
 **Türkçe için [aşağı kaydırın](#kurulum-türkçe).**
 
-Nothing here is optional. Miss any one of these and every command fails, usually with
-an unhelpful `403`. The good news: you never have to work out *which* one you missed.
+Nothing here is optional. Miss any one of these and connecting fails, usually with an
+unhelpful Etsy error or a `403`. The good news is that you never have to work out *which*
+one you missed:
 
-```bash
-stallkit setup
-```
+- **In the app:** **Ayarlar → Kontrol listesi → Her şeyi kontrol et** (Settings →
+  Checklist → Check everything) checks the ten steps below and has a **Fix** link next to
+  anything missing.
+- **On the command line:** `stallkit setup` walks the same list, asks about the parts no
+  program can check, and ends with the single next command to run.
 
-That walks the whole list, asks you about the parts no program can check, and ends with
-the single next command to run. Run it again any time something stops working.
-
-> **Using the [desktop app](README.md#desktop-app-no-terminal)?** Steps 1–2 are done for
-> you. Steps 3–9 are the **1 · Setup** tab, top to bottom; **Check everything** runs the
-> same checklist as `stallkit setup`.
+> **Using the app?** Steps 1–2 are done for you if you downloaded it. Steps 3–9 are the
+> **Mağaza Bağlantısı** (Shop connection) screen, top to bottom. Step 10 is **Mockuplar**
+> and **Şablon İlan**. If something goes wrong, see [Troubleshooting](#troubleshooting).
 
 ---
 
@@ -22,22 +22,25 @@ the single next command to run. Run it again any time something stops working.
 
 | # | Thing | Why it cannot be skipped |
 |---|---|---|
-| 1 | **Python 3.9+** | The tool is a Python package. |
-| 2 | **stallkit installed** | `pip install -e .` from the repo. |
+| 1 | **Python 3.9–3.13**, only when running from source | The downloaded app has Python inside it. |
+| 2 | **stallkit**: the downloaded app, or `pip install -e .` | [README → Download](README.md#download-and-first-run) or [Run from source](README.md#run-from-source-windows-macos-linux). |
 | 3 | **An Etsy shop that is open** | stallkit manages a shop. It cannot create one. |
 | 4 | **An Etsy API app** | Free: [Create a seller app](https://www.etsy.com/developers/register-seller-app). |
 | 5 | **Keystring AND shared secret** | Etsy needs **both**, colon-joined, on every request. |
-| 6 | **A callback URL in your `.env`** | OAuth cannot start without one. |
-| 7 | **That same URL registered on your app** | Etsy checks it byte for byte. |
+| 6 | **A callback URL saved in stallkit** | OAuth cannot start without one. The app uses `http://localhost:3003/oauth/redirect`. |
+| 7 | **That same URL registered on your Etsy app** | Etsy checks it character for character. |
 | 8 | **Etsy accepting the credential** | Proves 5 is right before you trust it with a batch. |
-| 9 | **Your shop connected** | `stallkit auth login`. |
-| 10 | *(only for `stallkit drop`)* **a workspace and a template listing** | Fields no image can supply. |
+| 9 | **Your shop connected** | **Bağlan** in the app, or `stallkit auth login`. |
+| 10 | *(for Tasarım Yükle / `stallkit drop`)* **mockups and a template listing** | Fields no image can supply. |
 
 ---
 
 ## Step by step
 
 ### 1–2. Install
+
+The downloaded app needs nothing else: see [README → Download and first
+run](README.md#download-and-first-run). From source, with Python 3.9–3.13:
 
 ```bash
 git clone https://github.com/MoneyPrintLabs/etsyprinting.git
@@ -46,12 +49,17 @@ python -m venv .venv
 source .venv/bin/activate       # Windows: .venv\Scripts\activate
 pip install -e .
 stallkit --version
+stallkit desktop                # opens the app in your browser
 ```
+
+On Windows without activation: `.venv\Scripts\python -m pip install -e .`, then
+`.venv\Scripts\stallkit desktop`.
 
 ### 3. Have an Etsy shop
 
 If you do not have one yet, open it at <https://www.etsy.com/sell> first. This tool
-works on an existing shop; it does not create one, and it never publishes anything.
+works on an existing shop. It does not create one, and it never publishes anything
+unless you ask it to.
 
 ### 4. Create an API app
 
@@ -59,24 +67,25 @@ Since July 2026 Etsy offers a **Seller App**: an app for your own shop, two fiel
 usually approved within minutes. Signed in with the shop's account, open
 <https://www.etsy.com/developers/register-seller-app> (*Create a seller app*).
 
-- **App name:** anything without the word "Etsy" — Etsy's trademark rules refuse it.
+- **App name:** anything without the word "Etsy", which Etsy's trademark rules refuse.
 - **Why you want to use the API:** say plainly that it is your own tool for your own
-  shop, running on your computer — for example *"I manage my own shop with a tool that
-  runs on my own computer: creating draft listings in bulk from my product photos,
-  updating my listings and adding tracking numbers to my orders. It connects only to my
-  shop, and the keys stay on my computer."* Then **Read Terms and Create App**.
+  shop, running on your computer. The app has this text behind a Copy button: *"I manage
+  my own shop with a tool that runs on my own computer: creating draft listings in bulk
+  from my product photos, updating my listings and adding tracking numbers to my orders.
+  It connects only to my shop, and the keys stay on my computer."* Then press **Read
+  Terms and Create App**.
 
 Etsy allows one app per account. If you already have one (an older *personal* key), use
-its keys instead. Do not switch on **Developer Mode** in the developer settings — it hides
+its keys instead. Do not switch on **Developer Mode** in the developer settings: it hides
 your shop from search.
 
-Once approved, the Dashboard (<https://www.etsy.com/developers/>) shows two values:
+Once approved, <https://www.etsy.com/developers/your-apps> shows two values:
 
-- a **Keystring** — like a username, semi-public
-- a **Shared secret** — a real secret, treat it like a password
+- a **Keystring**, which works like a username and is semi-public;
+- a **Shared secret** (eye icon), which is a real secret: treat it like a password.
 
 > **You need both.** This trips almost everyone up, because OAuth with PKCE is described
-> as removing the client secret — and it does, from the *token exchange*. It does **not**
+> as removing the client secret, and it does, from the *token exchange*. It does **not**
 > remove the shared secret from the `x-api-key` header, which every single request
 > carries. With the keystring alone, Etsy replies:
 >
@@ -84,20 +93,16 @@ Once approved, the Dashboard (<https://www.etsy.com/developers/>) shows two valu
 > 403 {"error":"Invalid API key: should be in the format 'keystring:shared_secret'."}
 > ```
 
-### 5. Put them in a `.env`
+### 5. Save the keys
 
-```bash
-stallkit init
-```
+- **In the app:** paste both into **Mağaza Bağlantısı** and press **Kaydet ve kontrol et**
+  (Save and check). Etsy is asked straight away whether it accepts them.
+- **On the command line:** `stallkit init` asks for the keystring, then the shared secret
+  **with the typing hidden**, writes `~/.stallkit/.env` with `0600` permissions and
+  checks the credential against Etsy.
 
-It asks for the keystring, then the shared secret **with the typing hidden** — so the
-secret never appears on screen or in your shell history — then writes
-`~/.stallkit/.env` with `0600` permissions (the file the desktop app reads too) and
-verifies the credential against Etsy before you go further.
-
-`.env` is git-ignored. Never commit it, never paste it into an issue.
-
-Prefer to do it by hand? `cp .env.example .env` and fill in three values.
+Both write the same file, `~/.stallkit/.env`. Never commit it and never paste it into an
+issue. Prefer to do it by hand? `cp .env.example ~/.stallkit/.env` and fill in the values.
 
 ### 6–7. The callback URL
 
@@ -107,53 +112,54 @@ Etsy's own app settings screen states the rules:
 > - Host must be a **domain name** (e.g. `example.com`)
 > - **IP addresses are not allowed** (e.g. `127.0.0.1`)
 
-`localhost` counts as a domain name, so the easy option is:
+`localhost` counts as a domain name, so stallkit uses:
 
 ```
 http://localhost:3003/oauth/redirect
 ```
 
-Put that in `.env` as `ETSY_REDIRECT_URI`, **and** add the identical string to your app on
-Etsy: Dashboard → the app's **⋮** menu → *Edit callback URLs*. The Seller App form has no
-callback field; this is done after approval. stallkit then catches the redirect itself
-and you copy nothing.
+The app saves this address for you. Add the identical string to your app on Etsy: open
+<https://www.etsy.com/developers/your-apps>, click **⋮** next to the app → **Edit callback
+URLs**, paste it and save. The Seller App form has no callback field; the **⋮** menu
+appears only after Etsy approves the app. It must be `http` (not https), `localhost` (not
+127.0.0.1), port `3003`, with no slash at the end. stallkit then catches the redirect
+itself and you copy nothing.
 
 > Etsy's written documentation says the callback must use `https`. Taken literally that
-> rules out a local listener — but the settings screen accepts `http://localhost:PORT/…`
+> rules out a local listener, but the settings screen accepts `http://localhost:PORT/…`
 > and that is what is actually enforced. Use `127.0.0.1` and it *will* be rejected. That
 > is the real constraint, and it cost this project a rewrite to establish.
 
-Any other host works too: Etsy sends your browser there, the page does not need to exist,
-and you paste the address back in once.
+On the command line, any other host works too: Etsy sends your browser there, the page
+does not need to exist, and you paste the address back in once.
 
 ### 8–9. Connect
 
-```bash
-stallkit setup          # confirms 1-8
-stallkit auth login     # connects your shop
-```
+- **In the app:** press **Bağlan** (Connect) on **Mağaza Bağlantısı**. Etsy's consent
+  page opens in a new tab; approve it and the app shows your shop as connected. Keep
+  stallkit open while you approve; it waits up to 5 minutes.
+- **On the command line:** `stallkit setup` confirms steps 1–8, then `stallkit auth login`
+  opens the browser.
 
-A browser opens. Approve the scopes. The token lands in `~/.stallkit/token.json` with
-`0600` permissions, lasts an hour, and refreshes itself. The refresh token lasts 90 days,
-so you do this about once a quarter.
+The token lands in `~/.stallkit/token.json` with `0600` permissions, lasts an hour, and
+refreshes itself. The refresh token lasts 90 days, so you connect again about once a
+quarter at most.
 
 stallkit asks for the minimum it needs and **never asks for a delete scope**. It cannot
 delete a listing even if it is compromised.
 
-### 10. Only if you want `stallkit drop`
-
-```bash
-stallkit drop init
-stallkit drop template --from-listing <listing_id>
-```
+### 10. Mockups and a template listing
 
 **You must build one listing in Etsy by hand first.** `taxonomy_id`,
 `shipping_profile_id`, `return_policy_id`, `who_made`, `when_made`, processing times and
 price are decisions about a business, not facts about a picture. Guessing them would put
 wrong listings in a real shop, so stallkit copies yours instead.
 
-Then put mockup templates in `1-MOCKUPS`, designs in `2-PRODUCTS`, and run
-`stallkit drop run`.
+- **In the app:** add your product photos on **Mockuplar** and set each print area, then
+  pick that listing on **Şablon İlan**. **Tasarım Yükle** is then ready.
+- **On the command line:** `stallkit drop init`, then
+  `stallkit drop template --from-listing <listing_id>`. Put mockups in `1-MOCKUPS`,
+  designs in `2-PRODUCTS`, and run `stallkit drop run` (see [CLI.md](CLI.md)).
 
 ---
 
@@ -173,18 +179,69 @@ have 300 products validated and ready before Etsy replies.
 
 ---
 
-## When something fails
+## Troubleshooting
 
-Run `stallkit setup` first — it usually names the problem outright.
+Run the checklist first (**Ayarlar → Her şeyi kontrol et**, or `stallkit setup`). It
+usually names the problem outright.
+
+### Connecting the shop
+
+**Etsy says "The requested redirect URL is not permitted"**
+(Turkish: *"İstenen yönlendirme URL'sine izin verilmiyor"*). The callback address is not
+registered on your Etsy app. Open <https://www.etsy.com/developers/your-apps>, click **⋮**
+next to your app → **Edit callback URLs**, add exactly
+`http://localhost:3003/oauth/redirect` and save: `http` not `https`, `localhost` not
+`127.0.0.1`, no slash at the end. The easiest way is the copy button next to the address
+on **Mağaza Bağlantısı**. Then press **Bağlan** again.
+
+**There is no "Edit callback URLs" menu.** Your app has not been approved yet. Approval
+usually takes minutes, and the menu appears once it is approved.
+
+**"Etsy refused these keys"** (or *invalid client*). Copy the Keystring and the Shared
+secret from the same app, without spaces. Both are needed, and a brand-new app's keys do
+not work until the app is approved.
+
+**After approving, the browser says "This site can't be reached" on `localhost:3003`.**
+stallkit must be open while you approve; it waits 5 minutes. Go back to stallkit and
+press **Bağlan** again. If another program uses port 3003, close that program.
+
+**Etsy refused the app name.** Etsy does not accept app names containing "Etsy". Choose
+another name. Do not switch on Developer Mode.
+
+**Sending tracking numbers fails with 403.** Since 2024 Etsy has restricted adding
+tracking numbers with newer API keys in many countries, Türkiye included. Enter them in
+Etsy's Shop Manager.
+
+### Running the app
+
+**Windows says "Windows protected your PC".** The app is not code-signed. Click **More
+info → Run anyway**.
+
+**macOS says the app cannot be opened.** Open **System Settings → Privacy & Security**,
+scroll down and click **Open Anyway**.
+
+**"This page only opens from the stallkit app."** The address was opened by hand or from
+a bookmark, without the app's session. Double-click stallkit (or run `stallkit desktop`)
+again; it opens a signed-in tab in the app that is already running.
+
+**"Cannot reach stallkit."** The app has stopped. It stops about 90 seconds after its
+last tab closes when nothing is running, and after **Ayarlar → Kapat**. Double-click it
+again and reload the page. Nothing is lost.
+
+**Port 3000 is taken by another program.** stallkit uses the next free port (3001, 3002,
+3004 and so on) and opens the browser there. From source, `stallkit desktop --port N`
+picks one.
+
+### Error messages
 
 | Symptom | Cause |
 |---|---|
 | `403 Invalid API key: should be in the format 'keystring:shared_secret'` | Only one half is set. See step 5. |
-| `403 API key not found or not active` | Both halves are set but one is wrong. Re-check both on your app page. |
-| `403 Forbidden` on a specific command | A missing scope. `stallkit auth status` shows what Etsy *granted*. Log in again. |
+| `403 API key not found or not active` | Both halves are set but one is wrong, or the app is not approved yet. Re-check both on your app page. |
+| `403 Forbidden` on a specific command | A missing scope. `stallkit auth status` shows what Etsy *granted*. Connect again. |
 | Etsy says `redirect_uri is not valid` | Step 7. Compare character by character, including the port and any trailing slash. |
 | `Etsy does not accept IP addresses` | Use `localhost`, not `127.0.0.1`. |
-| `Cannot listen on 127.0.0.1:3003` | Another program holds the port. Pick another and change it in **both** places. |
+| `Cannot listen on 127.0.0.1:3003` | Another program holds the port. Close it, or on the command line pick another port and change it in **both** places. |
 | `400` when creating a listing | Usually a `taxonomy_id` that is not a leaf category, or a missing `shipping_profile_id`. `--dry-run` catches most of it. |
 | Turkish characters look wrong in Excel | Your spreadsheet did not save as UTF-8. stallkit always writes UTF-8 with BOM. |
 
@@ -193,11 +250,12 @@ Run `stallkit setup` first — it usually names the problem outright.
 ## Two things worth knowing
 
 **Rate limits are per app.** A Personal Access app gets **5 requests/second and 5,000 per
-day** — not the 10/sec, 10,000/day the general docs quote, which is the commercial tier.
-Your app's real allowance is printed on its row at
-[your-apps](https://www.etsy.com/developers/your-apps). stallkit defaults to 4/second.
+day**, not the 10/sec and 10,000/day the general docs quote, which is the commercial
+tier. Your app's real allowance is printed on its row at
+[your-apps](https://www.etsy.com/developers/your-apps). stallkit defaults to 4/second, and
+**Panel** shows the requests left for today.
 
-**Order exports contain your customers' personal data** — names, email addresses, postal
+**Order exports contain your customers' personal data**: names, email addresses, postal
 addresses, gift messages. `.gitignore` covers `*.csv` for exactly this reason, but a file
 you move elsewhere is no longer protected.
 
@@ -206,127 +264,182 @@ you move elsewhere is no longer protected.
 
 # Kurulum (Türkçe)
 
-Buradaki hiçbir adım isteğe bağlı değil. Biri eksikse her komut hata verir, genelde de
-işe yaramaz bir `403` ile. İyi haber: **hangisinin eksik olduğunu bulmak sana kalmıyor.**
+Buradaki hiçbir adım isteğe bağlı değil. Biri eksikse bağlantı kurulamaz, genelde de
+anlaşılmaz bir Etsy hatası ya da `403` ile. İyi haber: **hangisinin eksik olduğunu bulmak
+size kalmıyor.**
 
-```bash
-stallkit setup
-```
+- **Uygulamada:** **Ayarlar → Kontrol listesi → Her şeyi kontrol et** aşağıdaki on adımı
+  kontrol eder, eksik olanın yanında **Düzelt** bağlantısı çıkar.
+- **Komut satırında:** `stallkit setup` aynı listeyi gezer, programın kontrol edemeyeceği
+  kısımları size sorar ve sonunda çalıştırmanız gereken **tek komutu** yazar.
 
-Tüm listeyi tek tek gezer, programın kontrol edemeyeceği kısımları sana sorar ve sonunda
-çalıştırman gereken **tek komutu** yazar. Bir şey bozulduğunda tekrar çalıştır.
-
-> **[Masaüstü uygulamasını](README.md#desktop-app-no-terminal) mı kullanıyorsun?** 1–2.
-> adımlar zaten hazır. 3–9. adımlar **1 · Kurulum** sekmesinde, yukarıdan aşağı sırayla.
-> **Her şeyi kontrol et** düğmesi `stallkit setup` ile aynı listeyi çalıştırır.
+> **Uygulamayı mı kullanıyorsunuz?** İndirdiyseniz 1–2. adımlar hazır. 3–9. adımlar
+> **Mağaza Bağlantısı** ekranında, yukarıdan aşağı sırayla. 10. adım **Mockuplar** ve
+> **Şablon İlan**. Bir sorun çıkarsa [Sık karşılaşılan hatalar](#sık-karşılaşılan-hatalar).
 
 ## Gerekenler
 
 | # | Ne | Neden atlanamaz |
 |---|---|---|
-| 1 | **Python 3.9+** | Araç bir Python paketi. |
-| 2 | **stallkit kurulu** | Depo içinde `pip install -e .` |
-| 3 | **Açık bir Etsy mağazan** | Araç mağaza yönetir, mağaza açmaz. |
-| 4 | **Etsy API uygulaması** | Ücretsiz: [Seller App oluştur](https://www.etsy.com/developers/register-seller-app). |
+| 1 | **Python 3.9–3.13**, yalnızca kaynak koddan çalıştırırken | İndirilen uygulamanın içinde Python var. |
+| 2 | **stallkit**: indirilen uygulama ya da `pip install -e .` | [README'deki Türkçe bölüm](README.md#türkçe): indirme ya da kaynak koddan çalıştırma. |
+| 3 | **Açık bir Etsy mağazanız** | Araç mağaza yönetir, mağaza açmaz. |
+| 4 | **Etsy API uygulaması** | Ücretsiz: [Seller App oluşturun](https://www.etsy.com/developers/register-seller-app). |
 | 5 | **Keystring VE shared secret** | Etsy her istekte **ikisini birden** ister. |
-| 6 | **`.env` içinde callback adresi** | OAuth onsuz başlamaz. |
-| 7 | **Aynı adresin uygulamaya kayıtlı olması** | Etsy harfi harfine karşılaştırır. |
-| 8 | **Etsy'nin anahtarı kabul etmesi** | Toplu işe girişmeden önce 5. adımın doğruluğunu kanıtlar. |
-| 9 | **Mağazanın bağlı olması** | `stallkit auth login` |
-| 10 | *(sadece `stallkit drop` için)* **çalışma klasörü ve şablon listing** | Görselden türetilemeyen alanlar. |
+| 6 | **stallkit'te kayıtlı bir geri dönüş (callback) adresi** | OAuth onsuz başlamaz. Uygulama `http://localhost:3003/oauth/redirect` kullanır. |
+| 7 | **Aynı adresin Etsy uygulamanızda kayıtlı olması** | Etsy harfi harfine karşılaştırır. |
+| 8 | **Etsy'nin anahtarları kabul etmesi** | Toplu işe girişmeden önce 5. adımın doğru olduğunu kanıtlar. |
+| 9 | **Mağazanızın bağlı olması** | Uygulamada **Bağlan**, komut satırında `stallkit auth login`. |
+| 10 | *(Tasarım Yükle / `stallkit drop` için)* **mockup'lar ve bir şablon ilan** | Görselden çıkarılamayan alanlar. |
 
 ## Adımlar
 
-**1–2.** Depoyu klonla, sanal ortam kur, `pip install -e .`, `stallkit --version` ile doğrula.
+**1–2. Kurulum.** İndirilen uygulama başka bir şey istemez. Kaynak koddan: depoyu klonlayın,
+sanal ortam kurun, `pip install -e .`, sonra `stallkit desktop` (ayrıntılar
+[README](README.md#kaynak-koddan-çalıştırma-windows-macos-linux)'de).
 
-**3.** Etsy mağazan yoksa önce <https://www.etsy.com/sell> adresinden aç. Bu araç var olan
-bir mağaza üzerinde çalışır ve **hiçbir şeyi yayınlamaz** — hepsi taslak kalır.
+**3.** Etsy mağazanız yoksa önce <https://www.etsy.com/sell> adresinden açın. Bu araç var
+olan bir mağaza üzerinde çalışır ve siz istemedikçe **hiçbir şeyi yayınlamaz**; yeni
+ilanlar taslak olarak gider.
 
 **4.** Temmuz 2026'dan beri Etsy satıcılara kendi mağazaları için **Seller App** veriyor:
-iki alanlı bir form, onay genelde birkaç dakika. Mağazanın hesabıyla giriş yapıp
-<https://www.etsy.com/developers/register-seller-app> adresini aç (*Create a seller app*).
+iki alanlı bir form, onay genelde birkaç dakika. Mağazanızın hesabıyla giriş yapıp
+<https://www.etsy.com/developers/register-seller-app> adresini açın (*Create a seller app*).
 
-- **App name:** içinde "Etsy" geçmeyen herhangi bir isim; Etsy'nin marka kuralları
-  "Etsy" içeren ismi reddeder.
-- **Why you want to use the API:** kendi bilgisayarında çalışan, sadece kendi mağazana
-  bağlanan kendi aracın olduğunu açıkça yaz (yukarıdaki İngilizce örnek metni
-  kullanabilirsin). Sonra **Read Terms and Create App**.
+- **App name:** içinde "Etsy" geçmeyen herhangi bir ad; Etsy'nin marka kuralları "Etsy"
+  içeren adı reddeder.
+- **Why you want to use the API:** kendi bilgisayarınızda çalışan, yalnızca kendi
+  mağazanıza bağlanan kendi aracınız olduğunu açıkça yazın. Uygulamada bu metin bir
+  Kopyala düğmesiyle hazır (Etsy'nin formu İngilizce olduğu için metin de İngilizce;
+  yukarıdaki İngilizce bölümde de var). Sonra **Read Terms and Create App**'e basın.
 
-Etsy hesap başına bir uygulamaya izin veriyor. Zaten bir uygulaman (eski bir *personal*
-anahtar) varsa onun anahtarlarını kullan. Geliştirici ayarlarındaki **Developer Mode**'u
-açma, mağazanı aramada gizler.
+Etsy hesap başına bir uygulamaya izin verir. Zaten bir uygulamanız (eski bir *personal*
+anahtar) varsa onun anahtarlarını kullanın. Geliştirici ayarlarındaki **Developer
+Mode**'u açmayın, mağazanızı aramada gizler.
 
-Onaylanınca Dashboard'da (<https://www.etsy.com/developers/>) **Keystring** ve
+Onaylanınca <https://www.etsy.com/developers/your-apps> sayfasında **Keystring** ve
 **Shared secret** görünür (secret için göz ikonu).
 
 > **İkisi de gerekli.** Herkesin takıldığı yer burası: PKCE'nin "client secret'ı
-> kaldırdığı" söylenir — doğru, ama sadece *token değişiminden* kaldırır. Her isteğin
-> taşıdığı `x-api-key` başlığından kaldırmaz. Tek keystring ile Etsy şunu döner:
+> kaldırdığı" söylenir; doğru, ama yalnızca *token değişiminden* kaldırır. Her isteğin
+> taşıdığı `x-api-key` başlığından kaldırmaz. Yalnızca keystring ile Etsy şunu döner:
 >
 > ```
 > 403 {"error":"Invalid API key: should be in the format 'keystring:shared_secret'."}
 > ```
 
-**5.** `stallkit init` çalıştır. Keystring'i sorar, sonra shared secret'ı **gizli girişle**
-alır — ekranda da komut geçmişinde de görünmez — `~/.stallkit/.env` dosyasını `0600`
-izinle yazar (masaüstü uygulaması da bu dosyayı okur) ve devam etmeden önce anahtarı
-Etsy'ye doğrulatır. `.env` git tarafından yok sayılır; asla
-commit etme, asla bir issue'ya yapıştırma.
+**5. Anahtarları kaydedin.** Uygulamada ikisini **Mağaza Bağlantısı**'na yapıştırıp
+**Kaydet ve kontrol et**'e basın; Etsy'ye hemen sorulur. Komut satırında `stallkit init`
+keystring'i sorar, shared secret'ı **gizli girişle** alır, `~/.stallkit/.env` dosyasını
+`0600` izinle yazar ve anahtarı Etsy'ye doğrulatır. İkisi de aynı dosyaya yazar. Bu
+dosyayı asla commit etmeyin, asla bir issue'ya yapıştırmayın.
 
-**6–7.** Etsy'nin kendi ayar ekranındaki kurallar: `http://` veya `https://` olacak, host
-bir **alan adı** olacak, **IP adresi kabul edilmiyor**. `localhost` bir alan adı sayılır,
-o yüzden en kolayı:
+**6–7. Geri dönüş adresi.** Etsy'nin kendi ayar ekranındaki kurallar: `http://` veya
+`https://` olacak, host bir **alan adı** olacak, **IP adresi kabul edilmiyor**. `localhost`
+bir alan adı sayılır, o yüzden stallkit şunu kullanır:
 
 ```
 http://localhost:3003/oauth/redirect
 ```
 
-Bunu `.env`'e `ETSY_REDIRECT_URI` olarak yaz **ve** birebir aynısını Etsy'de uygulamana
-ekle: Dashboard → uygulamanın **⋮** menüsü → *Edit callback URLs*. Seller App formunda bu
-alan yok, onaydan sonra eklenir. Sonra stallkit yönlendirmeyi kendi yakalar, sen hiçbir
-şey kopyalamazsın.
+Uygulama bu adresi sizin için kaydeder. Birebir aynısını Etsy'de uygulamanıza ekleyin:
+<https://www.etsy.com/developers/your-apps> → uygulamanızın yanındaki **⋮** → **Edit callback
+URLs** → yapıştırın → kaydedin. Seller App formunda bu alan yok; **⋮** menüsü ancak Etsy
+uygulamayı onayladıktan sonra görünür. `http` olmalı (https değil), `localhost` olmalı
+(127.0.0.1 değil), port `3003`, sonunda `/` olmamalı. Sonra stallkit yönlendirmeyi
+kendisi yakalar, siz hiçbir şey kopyalamazsınız.
 
-> Etsy'nin yazılı dokümanı "https şart" diyor. Harfiyen alırsan yerel dinleyici imkânsız
-> görünür — ama ayar ekranı `http://localhost:PORT/…` adresini kabul ediyor ve asıl
-> uygulanan bu. `127.0.0.1` yazarsan **reddedilir.** Gerçek kısıt bu, ve bu projeye bir
-> yeniden yazıma mal oldu.
+> Etsy'nin yazılı dokümanı "https şart" diyor. Harfiyen alırsanız yerel dinleyici imkânsız
+> görünür, ama ayar ekranı `http://localhost:PORT/…` adresini kabul ediyor ve asıl
+> uygulanan bu. `127.0.0.1` yazarsanız **reddedilir.**
 
-**8–9.** `stallkit setup` ile 1–8'i doğrula, sonra `stallkit auth login` ile mağazanı bağla.
-Tarayıcı açılır, izin verirsin. Token `~/.stallkit/token.json` içine `0600` izinle yazılır,
-bir saat yaşar, kendini yeniler. Yenileme anahtarı 90 gün geçerli.
+**8–9. Bağlanın.** Uygulamada **Mağaza Bağlantısı**'nda **Bağlan**'a basın; Etsy'nin onay
+sayfası yeni sekmede açılır, izin verince uygulama mağazanızı bağlı gösterir. İzin
+verirken stallkit açık kalmalı, en fazla 5 dakika bekler. Komut satırında önce
+`stallkit setup`, sonra `stallkit auth login`. Oturum `~/.stallkit/token.json` içine
+`0600` izinle yazılır, bir saat geçerlidir ve kendini yeniler. Yenileme anahtarı 90 gün
+geçerlidir.
 
-stallkit sadece ihtiyacı olan izinleri ister ve **silme izni hiç istemez** — ele geçirilse
+stallkit yalnızca ihtiyacı olan izinleri ister ve **silme izni hiç istemez**; ele geçirilse
 bile bir ilanı silemez.
 
-**10.** `stallkit drop` kullanacaksan: `stallkit drop init`, sonra
+**10. Mockup'lar ve şablon ilan.** **Önce Etsy'de bir ilanı elle, düzgünce açmanız
+gerekir.** Kategori, kargo profili, iade politikası, üretim bilgisi, işleme süresi ve
+fiyat bir işletmeye dair kararlardır, bir görsele dair olgular değil. Bunları tahmin etmek
+mağazanıza yanlış ürün sokar; o yüzden stallkit sizinkini kopyalar. Uygulamada
+**Mockuplar**'a ürün fotoğraflarınızı ekleyip baskı alanlarını ayarlayın, sonra **Şablon
+İlan**'dan o ilanı seçin. Komut satırında `stallkit drop init`, sonra
 `stallkit drop template --from-listing <listing_id>`.
 
-**Önce Etsy'de bir ilanı elinle, düzgünce açman gerekiyor.** Kategori, kargo profili, iade
-politikası, üretim bilgisi, işleme süresi ve fiyat bir işletmeye dair kararlardır, bir
-görsele dair olgular değil. Bunları tahmin etmek senin mağazana yanlış ürün sokar; o yüzden
-stallkit seninkini kopyalar.
-
-## API onayın gelmeden de çalışır
+## API onayınız gelmeden de çalışır
 
 ```bash
 stallkit listings push urunler.csv --dry-run
 ```
 
-Anahtarsız ve internetsiz çalışır: başlık uzunluğu, 13 tag sınırı, tag başına 20 karakter,
-Etsy'nin izin verdiği karakter seti, tüm enum'lar, zorunlu alanlar ve görsel dosyalarının
-gerçekten var olup olmadığı kontrol edilir. Etsy cevap vermeden 300 ürünü hazır edebilirsin.
+Anahtarsız ve internetsiz çalışır: başlık uzunluğu, 13 etiket sınırı, etiket başına 20
+karakter, Etsy'nin izin verdiği karakterler, tüm seçenek değerleri, zorunlu alanlar ve
+görsel dosyalarının gerçekten var olup olmadığı kontrol edilir.
 
-## Bir şey çalışmazsa
+## Sık karşılaşılan hatalar
 
-Önce `stallkit setup`. Genelde sorunu doğrudan söyler. Ayrıntılı hata tablosu için yukarıdaki
-İngilizce [When something fails](#when-something-fails) bölümüne bak.
+Önce kontrol listesini çalıştırın (**Ayarlar → Her şeyi kontrol et** ya da
+`stallkit setup`); genelde sorunu doğrudan söyler.
+
+**Etsy "İstenen yönlendirme URL'sine izin verilmiyor" diyor**
+(*The requested redirect URL is not permitted*). Geri dönüş adresi Etsy uygulamanızda
+kayıtlı değil. <https://www.etsy.com/developers/your-apps> → uygulamanızın yanındaki **⋮** →
+**Edit callback URLs** → şu adresi **birebir** ekleyip kaydedin:
+`http://localhost:3003/oauth/redirect`. `https` değil `http`, `127.0.0.1` değil
+`localhost`, sonunda `/` yok. En kolayı **Mağaza Bağlantısı**'ndaki adresin yanındaki
+kopyalama düğmesi. Sonra **Bağlan**'a tekrar basın.
+
+**"Edit callback URLs" menüsü yok.** Uygulamanız henüz onaylanmamış. Onay genelde birkaç
+dakika sürer; onaylanınca menü çıkar.
+
+**"Etsy bu anahtarları kabul etmedi"** (ya da *invalid client*). Keystring ve Shared secret
+aynı uygulamadan, boşluksuz kopyalanmalı. İkisi birden gerekir. Uygulama onaylanmadan
+anahtarlar çalışmaz.
+
+**Etsy'de izin verdim ama tarayıcı `localhost:3003` için "Bu siteye ulaşılamıyor" diyor.**
+İzin verirken stallkit açık olmalı; uygulama 5 dakika bekler. stallkit'e dönüp **Bağlan**'a
+tekrar basın. 3003 portunu başka bir program kullanıyorsa o programı kapatın.
+
+**Uygulama adı reddedildi.** Etsy, adında "Etsy" geçen uygulamaları kabul etmiyor. Başka bir
+ad seçin. Developer Mode'u açmayın.
+
+**Takip numarası yüklenmiyor (403).** Etsy, 2024'ten beri yeni API anahtarlarıyla takip
+numarası eklemeyi Türkiye dahil birçok ülkede kısıtlıyor. Takip numaralarını Etsy Mağaza
+Yöneticisi'nden girin.
+
+**Windows "Windows kişisel bilgisayarınızı korudu" diyor.** Uygulama imzalı değil. **Ek
+bilgi → Yine de çalıştır**'a tıklayın.
+
+**macOS uygulamanın açılamayacağını söylüyor.** **Sistem Ayarları → Gizlilik ve
+Güvenlik**'e girin, aşağı kaydırın ve **Yine de Aç**'a tıklayın.
+
+**"Bu sayfa yalnızca stallkit uygulamasından açılır."** Adres elle ya da bir yer
+işaretinden, uygulamanın oturumu olmadan açıldı. stallkit'e yeniden çift tıklayın (ya da
+`stallkit desktop`); çalışan uygulamada oturumlu bir sekme açar.
+
+**"stallkit'e ulaşılamıyor."** Uygulama kapanmış. Son sekmesi kapandıktan yaklaşık 90
+saniye sonra, devam eden bir iş yoksa kendiliğinden kapanır; **Ayarlar → Kapat** da
+kapatır. Yeniden çift tıklayıp sayfayı yenileyin, hiçbir şey kaybolmaz.
+
+**3000 portunu başka bir program kullanıyor.** stallkit bir sonraki boş portu (3001, 3002,
+3004…) kullanır ve tarayıcıyı orada açar. Kaynak koddan `stallkit desktop --port N` ile
+port seçebilirsiniz.
+
+Komut satırı hata mesajlarının tablosu yukarıdaki İngilizce
+[Error messages](#error-messages) bölümünde.
 
 ## İki önemli not
 
 **Hız sınırı uygulama başına.** Personal Access uygulaması **saniyede 5, günde 5.000**
-istek alır — genel dokümandaki 10/sn ve 10.000/gün ticari erişim içindir. Uygulamanın
-gerçek sınırı [your-apps](https://www.etsy.com/developers/your-apps) sayfasında yazıyor.
+istek alır; genel dokümandaki 10/sn ve 10.000/gün ticari erişim içindir. Uygulamanızın
+gerçek sınırı [your-apps](https://www.etsy.com/developers/your-apps) sayfasında yazar;
+**Panel** de bugün kalan istek sayısını gösterir.
 
-**Sipariş dosyaları müşterilerinin kişisel verisini içerir** — ad, e-posta, adres, hediye
-notu. `.gitignore` tam da bu yüzden `*.csv` dosyalarını yok sayıyor; ama başka bir yere
-taşıdığın dosya artık korumasız.
+**Sipariş dosyaları müşterilerinizin kişisel verisini içerir**: ad, e-posta, adres, hediye
+notu. `.gitignore` tam da bu yüzden `*.csv` dosyalarını yok sayar; ama başka bir yere
+taşıdığınız dosya artık korumasız.

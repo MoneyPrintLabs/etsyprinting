@@ -671,3 +671,399 @@
   flex: none;
   margin-left: 4px;
 }
+
+/* ---- the callback address: copy it, where it goes on Etsy, Etsy's rules */
+.page-connect .cx-cb {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  background: #12131b;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+}
+.page-connect .cx-cb.is-compact {
+  padding: 12px 14px;
+}
+.page-connect .cx-cb-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.page-connect .cx-cb-head b {
+  font-size: 14px;
+  font-weight: 650;
+}
+.page-connect .cx-cb-head span {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.page-connect .cx-cb .copy-field {
+  width: 100%;
+  max-width: none;
+}
+.page-connect .cx-cb-copy .copy-input {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: 0.01em;
+}
+.page-connect .cx-cb-copy .btn {
+  flex: none;
+}
+.page-connect .cx-cb-where {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.page-connect .cx-cb-label {
+  flex: none;
+  font-size: 11.5px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.page-connect .cx-cb-path {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 0;
+  list-style: none;
+}
+.page-connect .cx-cb-path li {
+  line-height: 1.6;
+}
+.page-connect .cx-cb-path li + li::before {
+  content: "›";
+  margin: 0 8px;
+  color: var(--muted);
+}
+.page-connect .cx-cb-path b {
+  color: var(--text);
+  font-weight: 600;
+}
+.page-connect .cx-cb-apps {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  color: var(--accent-2);
+}
+.page-connect .cx-cb-apps:hover {
+  text-decoration: underline;
+}
+.page-connect .cx-kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  margin: 0 2px;
+  padding: 0 4px;
+  border-radius: 5px;
+  border: 1px solid var(--border-2);
+  background: var(--panel-3);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+}
+.page-connect .cx-cb-rules {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+}
+.page-connect .cx-cb-rule {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 9px 0 7px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--text-2);
+  background: var(--success-soft);
+  border: 1px solid color-mix(in srgb, var(--success) 22%, transparent);
+}
+.page-connect .cx-cb-rule .icon {
+  color: var(--success);
+}
+.page-connect .cx-cb-rule.is-bad {
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+}
+.page-connect .cx-cb-rule.is-bad .icon {
+  color: var(--danger);
+}
+.page-connect .cx-cb-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.page-connect .cx-cb-note .icon {
+  flex: none;
+  margin-top: 2px;
+}
+
+/* ---- Keystring vs Shared secret */
+.page-connect .cx-which {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+}
+.page-connect .cx-which-item {
+  display: flex;
+  gap: 10px;
+  padding: 11px 13px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border-2);
+}
+.page-connect .cx-which-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  color: var(--accent-2);
+  background: var(--accent-soft);
+}
+.page-connect .cx-which-item b {
+  font-size: 13.5px;
+  font-weight: 650;
+}
+.page-connect .cx-which-item p {
+  margin-top: 2px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.page-connect .cx-form-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: -4px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.page-connect .cx-form-hint .icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--accent-2);
+}
+
+/* ---- "did you add the callback?" before the first Bağlan */
+.page-connect .cx-gate {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 7%, #13141a);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+.page-connect .cx-gate.is-done {
+  border-color: color-mix(in srgb, var(--success) 38%, var(--border));
+  background: color-mix(in srgb, var(--success) 5%, #13141a);
+}
+.page-connect .cx-gate-head {
+  display: flex;
+  gap: 12px;
+}
+.page-connect .cx-gate-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  color: var(--accent-2);
+  background: var(--accent-soft);
+}
+.page-connect .cx-gate.is-done .cx-gate-icon {
+  color: var(--success);
+  background: var(--success-soft);
+}
+.page-connect .cx-gate-title {
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+.page-connect .cx-gate-text p {
+  margin-top: 3px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.page-connect .cx-gate .cx-cb {
+  background: #101118;
+}
+.page-connect .cx-gate-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.page-connect .cx-gate-check {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.page-connect .cx-gate-skip {
+  font-size: 12px;
+}
+.page-connect .cx-connect-row .cx-hint {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.page-connect .cx-connect-row .cx-hint + .spacer {
+  display: none;
+}
+.page-connect .cx-hint.is-warn {
+  color: var(--warning);
+}
+.page-connect .cx-problems {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.page-connect .cx-problems:empty {
+  display: none;
+}
+.page-connect .cx-problems .note-action {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.page-connect .cx-cb-meta {
+  margin-top: -8px;
+}
+.page-connect .cx-cb-meta .cx-link-btn {
+  display: inline;
+  font-size: 12px;
+}
+
+/* ---- "Etsy bir hata mı gösterdi?" while the connect waits */
+.page-connect .cx-trouble-slot:empty {
+  display: none;
+}
+.page-connect .cx-trouble {
+  border-radius: var(--radius);
+  background: var(--warning-soft);
+  border: 1px solid color-mix(in srgb, var(--warning) 32%, transparent);
+  animation: cx-rise 0.25s ease-out;
+}
+.page-connect .cx-trouble > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 13px 16px;
+  border-radius: var(--radius);
+}
+.page-connect .cx-trouble > summary .icon {
+  color: var(--warning);
+}
+.page-connect .cx-tr-sum {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.page-connect .cx-tr-sum b {
+  font-size: 14.5px;
+  font-weight: 650;
+  color: var(--text);
+}
+.page-connect .cx-tr-sum span {
+  font-size: 12.5px;
+  font-weight: 450;
+  color: var(--muted);
+}
+.page-connect .cx-tr-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 12px 12px;
+  list-style: none;
+}
+.page-connect .cx-tr-item {
+  display: flex;
+  gap: 12px;
+  padding: 12px 10px;
+  border-radius: 10px;
+  background: rgba(11, 12, 15, 0.45);
+}
+.page-connect .cx-tr-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+.page-connect .cx-tr-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+.page-connect .cx-tr-title {
+  font-size: 13.5px;
+  font-weight: 650;
+  line-height: 1.4;
+  color: var(--text);
+}
+.page-connect .cx-tr-body > p {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-2);
+}
+.page-connect .cx-tr-extra {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 6px;
+}
+.page-connect .cx-tr-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+@keyframes cx-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@media (max-width: 640px) {
+  .page-connect .cx-which {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .page-connect .cx-cb,
+  .page-connect .cx-cb.is-compact,
+  .page-connect .cx-gate {
+    padding: 12px;
+  }
+  .page-connect .cx-cb-copy .copy-input {
+    font-size: 12.5px;
+  }
+  .page-connect .cx-tr-list {
+    padding: 0 8px 8px;
+  }
+}

@@ -425,3 +425,51 @@ def test_a_template_written_by_the_cli_still_shows(web):
     assert summary["currency"] is None or summary["currency"] == "USD"
     assert summary["has_variations"] is False
     assert fields_by_key(summary)["price"]["value"]["amount"] == 24.9
+
+
+# ------------------------------------------------------------------------ Etsy's escaped text
+
+
+def test_etsy_entities_become_plain_text_in_the_template_and_new_drafts(web):
+    # Etsy sends titles, descriptions, tags and materials HTML-escaped. The client decodes
+    # them once, so the page, product.json and every draft built from it hold plain text.
+    from stallkit.drop import generate
+    from stallkit.drop.seeds import Seed
+
+    record = listing(
+        1000003, "Mom&#39;s &quot;Best&quot; Mug &amp; Gift",
+        description="Mom&#39;s favourite mug &amp; saucer. Holds 11&nbsp;oz.",
+        tags=["mother&#39;s day", "mom &amp; dad"], materials=["ceramic &amp; glaze"],
+    )
+    fake = connected(web, [record])
+    fake.add("GET", f"{SHOP}/shipping-profiles", {"count": 1, "results": [
+        {"shipping_profile_id": 501, "title": "Mugs &amp; Cups", "origin_country_iso": "US"}]})
+    plain_title = "Mom's \"Best\" Mug & Gift"
+    items = web.client.get("/api/template/listings").json()["items"]
+    assert items[0]["title"] == plain_title
+    preview = web.client.get("/api/template/preview/1000003").json()
+    assert preview["title"] == plain_title
+    assert fields_by_key(preview)["shipping"]["value"]["title"] == "Mugs & Cups"
+    saved = web.client.post("/api/template", json={"listing_id": 1000003}).json()["template"]
+    assert saved["title"] == plain_title
+    data = json.loads(web.ctx.workspace().template_path.read_text(encoding="utf-8"))
+    assert data["source_title"] == plain_title
+    assert data["description"] == "Mom's favourite mug & saucer. Holds 11 oz."
+    assert data["tags"] == ["mother's day", "mom & dad"]
+    assert data["materials"] == ["ceramic & glaze"]
+    assert "&#39;" not in json.dumps(data) and "&amp;" not in json.dumps(data)
+    # A draft's description is the template's own, so it carries plain text too.
+    template = template_mod.Template.from_dict(data)
+    description = generate.build_description(Seed("sunset mug", "sunset-mug.png"),
+                                             template.description, "Sunset Mug")
+    assert "Mom's favourite mug & saucer." in description and "&" + "#39;" not in description
+    current = web.client.get("/api/template").json()["template"]
+    assert current["title"] == plain_title
+
+
+def test_plain_text_is_not_decoded_a_second_time(web):
+    # A title whose plain text looks like an entity ("&amp;" typed by the seller comes
+    # back from Etsy as "&amp;amp;") stays what the seller typed.
+    connected(web, [listing(1000004, "R&amp;amp;B Poster")])
+    items = web.client.get("/api/template/listings").json()["items"]
+    assert items[0]["title"] == "R&amp;B Poster"

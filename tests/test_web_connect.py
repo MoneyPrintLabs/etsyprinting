@@ -146,6 +146,69 @@ def test_keys_cannot_be_checked_offline(web):
     assert data["check"] == "offline" and data["status"]["state"] == "offline"
 
 
+@pytest.mark.parametrize("key_field, secret_field", [
+    (" KEY123 ", " SECRET456\n"),
+    ("\tKEY123\r\n", "\nSECRET456\n\n"),
+    ('"KEY123"', "'SECRET456'"),
+    ("“KEY123”", "‘SECRET456’"),
+    ("`KEY123`,", "SECRET456."),
+    ("KEY\u200b123\ufeff", "SECRET\u00ad456"),
+    ("\u00a0KEY123\u00a0", "SECRET456"),
+    ("Keystring: KEY123", "Shared secret: SECRET456"),
+    ("keystring KEY123", "shared secret = SECRET456"),
+    ("KEYSTRING:\nKEY123", "Shared Secret\nSECRET456"),
+    ("Etsy keystring: 'KEY123'", "Secret: SECRET456"),
+    ("API key: KEY123", "SECRET456"),
+    ("x-api-key: KEY123:SECRET456", ""),
+    ("KEY123:SECRET456", ""),
+    (" KEY123 : SECRET456 ", ""),
+    ("", "KEY123:SECRET456"),
+    ("Keystring\nKEY123\nShared secret\nSECRET456", ""),
+    ("KEY123\nSECRET456", ""),
+    ("Shared secret: SECRET456", "Keystring: KEY123"),  # the labels win over the fields
+])
+def test_pasted_keys_are_cleaned(key_field, secret_field):
+    assert connect.clean_keys(key_field, secret_field) == (KEYSTRING, SHARED_SECRET)
+
+
+def test_a_field_s_own_value_wins_over_one_found_in_the_other_field():
+    assert connect.clean_keys("KEY123:OLDSECRET", "SECRET456") == (KEYSTRING, SHARED_SECRET)
+    assert connect.clean_keys("KEY123", "OTHERKEY:SECRET456") == (KEYSTRING, SHARED_SECRET)
+
+
+@pytest.mark.parametrize("key_field", ["KEY 123", "KEY123 and more", "a\nb\nc", "Keystring:"])
+def test_what_cannot_be_cleaned_is_left_for_the_checks(key_field):
+    key, _secret = connect.clean_keys(key_field, "")
+    assert key == "" or " " in key
+
+
+def test_a_labelled_paste_is_saved_clean(web):
+    use_fake_etsy(web, keys=False, connected=False)
+    resp = web.client.post("/api/connect/keys", json={
+        "keystring": "Keystring\n  KEY123  \nShared secret\n'SECRET456'\n", "shared_secret": ""})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["check"] == "ok"
+    assert settings.current("ETSY_KEYSTRING") == KEYSTRING
+    assert settings.current("ETSY_SHARED_SECRET") == SHARED_SECRET
+
+
+def test_a_callback_pasted_with_spaces_and_quotes_is_saved_clean(web):
+    use_fake_etsy(web, connected=False)
+    data = web.client.post("/api/connect/keys",
+                           json={"redirect_uri": ' "http://localhost:3005/etsy"\n'}).json()
+    assert data["redirect_uri"] == "http://localhost:3005/etsy"
+    assert settings.current("ETSY_REDIRECT_URI") == "http://localhost:3005/etsy"
+
+
+def test_a_secret_copied_while_hidden_is_explained(web):
+    resp = web.client.post("/api/connect/keys",
+                           json={"keystring": KEYSTRING, "shared_secret": "•" * 10})
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "masked_key"
+    assert resp.json()["error"]["params"]["field"] == "shared_secret"
+    assert not settings.env_path().exists()
+
+
 @pytest.mark.parametrize("body, field", [
     ({}, "keystring"),
     ({"keystring": KEYSTRING}, "shared_secret"),
@@ -381,17 +444,54 @@ def test_saying_no_on_etsy_is_reported(web):
     assert job["error"]["params"] == {"etsy_error": "access_denied"}
 
 
-def test_an_answer_to_another_request_is_refused(web, token_endpoint):
+def _forge(port: int, **params) -> httpx.Response:
+    """What a link or <img> on any web page can send to the listener while it waits."""
+    with httpx.Client(trust_env=False) as http:
+        return http.get(f"http://127.0.0.1:{port}/oauth/redirect", params=params,
+                        follow_redirects=False)
+
+
+def test_a_forged_answer_is_ignored_and_the_real_one_still_counts(web, token_endpoint):
     use_fake_etsy(web, connected=False)
     port = _free_port()
     settings.save({"ETSY_REDIRECT_URI": _local_callback(port)})
     started = _start(web)
-    with httpx.Client(trust_env=False) as http:
-        http.get(f"http://127.0.0.1:{port}/oauth/redirect",
-                 params={"code": "c", "state": "forged"}, follow_redirects=False)
+    forged = [
+        _forge(port, code="FORGED", state="forged"),
+        _forge(port, code="FORGED"),
+        _forge(port, error="access_denied", state="forged"),
+        _forge(port, error="access_denied"),
+    ]
+    for resp in forged:
+        # Refused, not sent on to the app ("Bağlandı"), and nothing of it echoed.
+        assert resp.status_code == 400 and "location" not in resp.headers
+        assert "FORGED" not in resp.text and "access_denied" not in resp.text
+    time.sleep(0.6)  # longer than the listener's own poll: it would have ended by now
+    job = web.client.get(f"/api/jobs/{started['job_id']}").json()
+    assert job["status"] == "running" and job["state"]["phase"] == "opened"
+    assert token_endpoint["calls"] == []
+
+    back = _come_back(started["url"], port, code="the-real-code")
+    assert back.status_code == 302
+    assert back.headers["location"] == f"http://localhost:{web.port}/oauth-done"
     job = wait_for_job(web, started["job_id"])
-    assert job["error"]["code"] == "state_mismatch"
-    assert token_endpoint["calls"] == [] and not auth.token_path().exists()
+    assert job["status"] == "done", job
+    assert [call["code"] for call in token_endpoint["calls"]] == ["the-real-code"]
+    assert auth._CallbackHandler.expected_state is None
+
+
+def test_a_forged_refusal_does_not_end_the_wait(web):
+    use_fake_etsy(web, connected=False)
+    port = _free_port()
+    settings.save({"ETSY_REDIRECT_URI": _local_callback(port)})
+    started = _start(web)
+    try:
+        assert _forge(port, error="access_denied", state="x").status_code == 400
+        time.sleep(0.6)
+        assert web.client.get(f"/api/jobs/{started['job_id']}").json()["status"] == "running"
+    finally:
+        web.client.post(f"/api/jobs/{started['job_id']}/cancel")
+        assert wait_for_job(web, started["job_id"])["status"] == "cancelled"
 
 
 def test_waiting_too_long_times_out(web, monkeypatch):
@@ -461,3 +561,189 @@ def test_the_oauth_done_page_is_the_app(web):
         resp = http.get("/oauth-done")
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/html")
+
+
+# --- the callback question, asked once per shop ---------------------------------------------
+
+
+def test_the_callback_question_is_asked_once_per_shop_and_address(web):
+    use_fake_etsy(web, connected=False)
+    assert web.client.get("/api/connect/info").json()["callback_confirmed"] is False
+    resp = web.client.post("/api/connect/callback-confirmed", json={"confirmed": True})
+    assert resp.status_code == 200
+    assert resp.json() == {"callback_confirmed": True, "redirect_uri": settings.ETSY_REDIRECT_DEFAULT}
+    assert web.ctx.shop_prefs()[connect.CALLBACK_PREF] == settings.ETSY_REDIRECT_DEFAULT
+    assert web.client.get("/api/connect/info").json()["callback_confirmed"] is True
+    # Another address has to be added on Etsy again, so it is asked again.
+    web.client.post("/api/connect/keys", json={"redirect_uri": "http://localhost:3005/etsy"})
+    info = web.client.get("/api/connect/info").json()
+    assert info["callback_confirmed"] is False and info["callback_port"] == 3005
+    # Unticked on purpose.
+    web.client.post("/api/connect/callback-confirmed", json={"confirmed": True})
+    web.client.post("/api/connect/callback-confirmed", json={"confirmed": False})
+    assert web.client.get("/api/connect/info").json()["callback_confirmed"] is False
+
+
+def test_the_callback_answer_must_be_true_or_false(web):
+    resp = web.client.post("/api/connect/callback-confirmed", json={"confirmed": "yes"})
+    assert resp.status_code == 422 and resp.json()["error"]["params"]["field"] == "confirmed"
+
+
+def test_a_shop_connected_before_the_question_existed_is_not_asked(web):
+    use_fake_etsy(web)  # a sign-in is saved: the callback worked
+    assert web.client.get("/api/connect/info").json()["callback_confirmed"] is True
+    web.client.post("/api/connect/disconnect", json={})
+    # The sign-in is gone, the answer stays.
+    assert web.client.get("/api/connect/info").json()["callback_confirmed"] is True
+
+
+def test_a_connect_that_got_etsy_s_answer_remembers_the_callback(web, token_endpoint):
+    use_fake_etsy(web, connected=False)
+    port = _free_port()
+    settings.save({"ETSY_REDIRECT_URI": _local_callback(port)})
+    assert web.client.get("/api/connect/info").json()["callback_confirmed"] is False
+    started = _start(web)  # the question is the page's; the server does not insist
+    _come_back(started["url"], port, code="c")
+    assert wait_for_job(web, started["job_id"])["status"] == "done"
+    assert web.ctx.shop_prefs()[connect.CALLBACK_PREF] == _local_callback(port)
+    assert web.client.get("/api/connect/info").json()["callback_confirmed"] is True
+
+
+def test_the_callback_answer_belongs_to_the_shop(web):
+    use_fake_etsy(web, connected=False)
+    web.client.post("/api/connect/callback-confirmed", json={"confirmed": True})
+    added = web.client.post("/api/shops/add", json={})
+    assert added.status_code == 200, added.text
+    use_fake_etsy(web, connected=False)
+    assert web.client.get("/api/connect/info").json()["callback_confirmed"] is False
+
+
+# --- pre-flight: before Etsy's page opens ------------------------------------------------------
+
+
+def _checks(web) -> dict:
+    resp = web.client.get("/api/connect/preflight")
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def test_preflight_without_keys(web):
+    data = _checks(web)
+    assert data["ok"] is False
+    assert data["checks"]["keys"]["ok"] is False
+    assert data["checks"]["keys"]["code"] == "setup_needed"
+    assert data["checks"]["callback"]["ok"] is True  # the default callback
+    assert data["redirect_uri"] == settings.ETSY_REDIRECT_DEFAULT and data["port"] == 3003
+
+
+def test_preflight_all_clear(web):
+    fake = use_fake_etsy(web, connected=False)
+    port = _free_port()
+    settings.save({"ETSY_REDIRECT_URI": _local_callback(port)})
+    data = _checks(web)
+    assert data["ok"] is True, data
+    assert {name: check["ok"] for name, check in data["checks"].items()} == {
+        "keys": True, "callback": True, "port": True}
+    assert data["port"] == port and data["callback_confirmed"] is False
+    assert ("GET", "/openapi-ping") in fake.calls  # never checked yet: asked once
+
+
+def test_preflight_trusts_a_fresh_status_check(web):
+    fake = use_fake_etsy(web, connected=False)
+    settings.save({"ETSY_REDIRECT_URI": _local_callback(_free_port())})
+    assert web.ctx.refresh_status(force=True)["state"] == "disconnected"
+    calls = len(fake.calls)
+    assert _checks(web)["checks"]["keys"]["ok"] is True
+    assert len(fake.calls) == calls  # no second call to Etsy
+
+
+def test_preflight_reports_keys_etsy_refuses(web):
+    fake = use_fake_etsy(web, connected=False)
+    fake.error("GET", "/openapi-ping", 403, "Invalid API key: should be in the format 'keystring:shared_secret'")
+    check = _checks(web)["checks"]["keys"]
+    assert check["ok"] is False and check["code"] == "keys_rejected"
+    assert "Invalid API key" in check["params"]["reason"]
+
+
+def test_preflight_offline(web):
+    fake = use_fake_etsy(web, connected=False)
+    fake.offline = True
+    check = _checks(web)["checks"]["keys"]
+    assert check["ok"] is False and check["code"] == "offline"
+
+
+def test_preflight_explains_a_callback_this_computer_cannot_catch(web):
+    use_fake_etsy(web, connected=False)
+    settings.save({"ETSY_REDIRECT_URI": "https://example.com/etsy-callback"})
+    data = _checks(web)
+    assert data["ok"] is False
+    assert data["checks"]["callback"]["code"] == "callback_not_local"
+    assert data["checks"]["callback"]["params"]["suggested"] == settings.ETSY_REDIRECT_DEFAULT
+    assert data["checks"]["port"] is None
+
+
+@pytest.mark.parametrize("uri", ["http://localhost:99999/oauth/redirect",
+                                 "http://localhost:0/oauth/redirect"])
+def test_preflight_refuses_a_callback_without_a_usable_port(web, uri):
+    use_fake_etsy(web, connected=False)
+    settings.save({"ETSY_REDIRECT_URI": uri})
+    check = _checks(web)["checks"]["callback"]
+    assert check["ok"] is False and check["code"] == "bad_redirect"
+
+
+def test_preflight_finds_a_busy_callback_port(web):
+    use_fake_etsy(web, connected=False)
+    with socket.socket() as blocker:
+        blocker.bind(("127.0.0.1", 0))
+        blocker.listen(1)
+        port = blocker.getsockname()[1]
+        settings.save({"ETSY_REDIRECT_URI": _local_callback(port)})
+        data = _checks(web)
+    assert data["ok"] is False
+    assert data["checks"]["port"] == {"ok": False, "code": "port_in_use",
+                                      "message": f"Port {port} is already in use.",
+                                      "params": {"port": port}}
+
+
+def test_a_program_on_the_ipv6_localhost_counts_as_busy(web, monkeypatch):
+    use_fake_etsy(web, connected=False)
+    port = _free_port()
+    settings.save({"ETSY_REDIRECT_URI": _local_callback(port)})
+    monkeypatch.setattr(connect, "_answers", lambda host, p, timeout: host == "::1" and p == port)
+    assert _checks(web)["checks"]["port"]["code"] == "port_in_use"
+    resp = web.client.post("/api/connect/start", json={})
+    assert resp.status_code == 409 and resp.json()["error"]["code"] == "port_in_use"
+
+
+def test_preflight_while_our_own_listener_waits(web):
+    use_fake_etsy(web, connected=False)
+    port = _free_port()
+    settings.save({"ETSY_REDIRECT_URI": _local_callback(port)})
+    started = _start(web)
+    try:
+        check = _checks(web)["checks"]["port"]
+        assert check["ok"] is True and check["params"] == {"listening": True}
+    finally:
+        web.client.post(f"/api/jobs/{started['job_id']}/cancel")
+        wait_for_job(web, started["job_id"])
+
+
+def test_connecting_with_keys_etsy_refuses_stops_before_etsy_opens(web):
+    fake = use_fake_etsy(web, connected=False)
+    port = _free_port()
+    settings.save({"ETSY_REDIRECT_URI": _local_callback(port)})
+    fake.error("GET", "/openapi-ping", 403, "Invalid API key: should be in the format 'keystring:shared_secret'")
+    resp = web.client.post("/api/connect/start", json={})
+    assert resp.status_code == 409
+    error = resp.json()["error"]
+    assert error["code"] == "keys_rejected" and "Invalid API key" in error["params"]["reason"]
+    assert auth.port_is_free(port)  # no listener was opened
+    assert web.client.get("/api/jobs", params={"kind": "connect"}).json() == []
+
+
+def test_connecting_offline_stops_before_etsy_opens(web):
+    fake = use_fake_etsy(web, connected=False)
+    settings.save({"ETSY_REDIRECT_URI": _local_callback(_free_port())})
+    fake.offline = True
+    resp = web.client.post("/api/connect/start", json={})
+    assert resp.status_code == 503 and resp.json()["error"]["code"] == "offline"

@@ -8,6 +8,7 @@ transparent token refresh on 401, and offset pagination.
 
 from __future__ import annotations
 
+import html
 import random
 import threading
 import time
@@ -24,11 +25,79 @@ from .config import API_BASE, MAX_PAGE_LIMIT, Config
 from .errors import AuthError, EtsyApiError, ValidationError
 
 MAX_ATTEMPTS = 5
-# Etsy's search offset window is finite; walking past this returns errors, not pages.
+# The marketplace search (findAllListingsActive) only pages through its first 12,000
+# results; walking past that returns errors, not pages. The OAS documents no such
+# window (it gives every `offset` only min=0), and the shop's own collections —
+# listings, receipts, the payment ledger — have none, so only the search passes it.
 MAX_SEARCH_OFFSET = 12_000
 # getListingsByListingIds: "Limit 100 ids maximum per query" (Etsy OpenAPI spec). The
 # same ceiling is used for the other id-list parameters, which document none.
 MAX_BATCH_IDS = 100
+
+# Etsy sends the seller's own words HTML-escaped: a title typed as `Mom's Mug & Gift`
+# comes back as `Mom&#39;s Mug &amp; Gift` (the OAS types these as plain strings and
+# does not say so). They are decoded exactly once, here, where they are read, so the
+# rest of stallkit — the editors, the SEO audit and fix, templates, drafts, Pins, CSV
+# — only ever sees and sends plain text. Etsy stores what it is sent as-is, so sending
+# the escaped form back would put a literal "&#39;" on the live listing.
+LISTING_TEXT_FIELDS = ("title", "description", "suggested_title")
+LISTING_LIST_FIELDS = ("tags", "materials", "style")
+RECEIPT_TEXT_FIELDS = ("name", "city", "state", "message_from_buyer", "gift_message")
+TRANSACTION_TEXT_FIELDS = ("title", "description")
+
+
+def unescape_text(value: Any) -> Any:
+    """`value` with HTML entities decoded when it is a string; anything else unchanged."""
+    if isinstance(value, str) and "&" in value:
+        return html.unescape(value)
+    return value
+
+
+def _unescape_fields(record: dict[str, Any], names: Iterable[str]) -> None:
+    for name in names:
+        if isinstance(record.get(name), str):
+            record[name] = unescape_text(record[name])
+
+
+def unescape_listing(listing: Any) -> Any:
+    """Decode the text fields of one ShopListing (in place) and return it."""
+    if not isinstance(listing, dict):
+        return listing
+    _unescape_fields(listing, LISTING_TEXT_FIELDS)
+    for name in LISTING_LIST_FIELDS:
+        values = listing.get(name)
+        if isinstance(values, list):
+            listing[name] = [unescape_text(v) for v in values]
+    return listing
+
+
+def unescape_transaction(transaction: Any) -> Any:
+    """Decode a ShopReceiptTransaction's title, description and variations (in place)."""
+    if not isinstance(transaction, dict):
+        return transaction
+    _unescape_fields(transaction, TRANSACTION_TEXT_FIELDS)
+    for variation in transaction.get("variations") or []:
+        if isinstance(variation, dict):
+            _unescape_fields(variation, ("formatted_name", "formatted_value"))
+    return transaction
+
+
+def unescape_receipt(receipt: Any) -> Any:
+    """Decode a ShopReceipt's text and its transactions' (in place) and return it."""
+    if not isinstance(receipt, dict):
+        return receipt
+    _unescape_fields(receipt, RECEIPT_TEXT_FIELDS)
+    for transaction in receipt.get("transactions") or []:
+        unescape_transaction(transaction)
+    return receipt
+
+
+def _unescape_titles(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Shipping profiles and shop sections: the seller named them, Etsy escaped the name."""
+    for record in records:
+        if isinstance(record, dict):
+            _unescape_fields(record, ("title",))
+    return records
 
 
 def encode_form(data: dict[str, Any]) -> dict[str, str]:
@@ -192,7 +261,9 @@ class EtsyClient:
         may_retry = idempotent if retry is None else retry
         max_attempts = getattr(self._local, "attempts", None) or MAX_ATTEMPTS
 
-        for attempt in range(1, max_attempts + 1):
+        attempt = 0
+        while True:
+            attempt += 1
             self.limiter.acquire()
             headers = self._headers(authed=authed)
             try:
@@ -208,7 +279,7 @@ class EtsyClient:
             except httpx.HTTPError as exc:
                 # A connection that was never established cannot have changed anything.
                 never_arrived = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
-                if attempt == max_attempts or not (may_retry or never_arrived):
+                if attempt >= max_attempts or not (may_retry or never_arrived):
                     message = f"network error: {exc}"
                     if not idempotent and not never_arrived:
                         message += (
@@ -231,11 +302,14 @@ class EtsyClient:
                 except ValueError:
                     return resp.text
 
-            # An expired token that we did not predict — refresh once, then retry.
+            # An expired token that we did not predict — refresh once, then send again.
+            # That re-send is not a retry: it does not use up an attempt, so it happens
+            # under attempts(1) too (Etsy refused the request, it did not act on it).
             if resp.status_code == 401 and authed and not refreshed_once and self.token:
                 refreshed_once = True
                 sent = headers.get("Authorization", "")[len("Bearer "):]
                 self._refresh_after_401(sent)
+                attempt -= 1
                 continue
 
             error = EtsyApiError(
@@ -248,14 +322,12 @@ class EtsyClient:
             # 429 is always safe to retry: it means Etsy refused, not that it acted.
             # A 5xx on a write may mean the write landed, so do not repeat it.
             retryable = resp.status_code == 429 or (resp.status_code >= 500 and may_retry)
-            if not retryable or attempt == max_attempts:
+            if not retryable or attempt >= max_attempts:
                 raise error
 
             retry_after = resp.headers.get("Retry-After")
             delay = float(retry_after) if retry_after and retry_after.isdigit() else self._backoff(attempt)
             time.sleep(delay)
-
-        raise EtsyApiError(0, "exhausted retries", method=method, path=path)
 
     @staticmethod
     def _backoff(attempt: int) -> float:
@@ -293,8 +365,14 @@ class EtsyClient:
         max_items: int | None = None,
         authed: bool = True,
         page_size: int = MAX_PAGE_LIMIT,
+        max_offset: int | None = None,
     ) -> Iterator[dict[str, Any]]:
-        """Walk an offset-paginated collection, yielding one record at a time."""
+        """Walk an offset-paginated collection, yielding one record at a time.
+
+        It stops at `max_items`, at the collection's `count`, or at a short page.
+        `max_offset` is for an endpoint that cannot page past a window (the
+        marketplace search); a shop's own collections are read to the end.
+        """
         offset = 0
         seen = 0
         page_size = min(page_size, MAX_PAGE_LIMIT)
@@ -314,7 +392,9 @@ class EtsyClient:
             total = (payload or {}).get("count")
             if isinstance(total, int) and offset >= total:
                 return
-            if len(results) < page_size or offset >= MAX_SEARCH_OFFSET:
+            if len(results) < page_size:
+                return
+            if max_offset is not None and offset >= max_offset:
                 return
 
     # --- identity ---------------------------------------------------------------
@@ -360,7 +440,7 @@ class EtsyClient:
 
     def shipping_profiles(self) -> list[dict[str, Any]]:
         payload = self.get(f"/shops/{self.shop_id()}/shipping-profiles")
-        return (payload or {}).get("results") or []
+        return _unescape_titles((payload or {}).get("results") or [])
 
     def return_policies(self) -> list[dict[str, Any]]:
         payload = self.get(f"/shops/{self.shop_id()}/policies/return")
@@ -368,7 +448,7 @@ class EtsyClient:
 
     def shop_sections(self) -> list[dict[str, Any]]:
         payload = self.get(f"/shops/{self.shop_id()}/sections")
-        return (payload or {}).get("results") or []
+        return _unescape_titles((payload or {}).get("results") or [])
 
     def shipping_carriers(self, origin_country_iso: str) -> list[dict[str, Any]]:
         payload = self.get(
@@ -400,11 +480,12 @@ class EtsyClient:
         params: dict[str, Any] = {"state": state, "sort_on": sort_on, "sort_order": sort_order}
         if includes:
             params["includes"] = ",".join(includes)
-        yield from self.paginate(
+        for listing in self.paginate(
             f"/shops/{self.shop_id()}/listings",
             params={k: v for k, v in params.items() if v is not None},
             max_items=max_items,
-        )
+        ):
+            yield unescape_listing(listing)
 
     def count_listings(self, state: str = "active") -> int:
         """How many listings the shop has in `state`, from one limit=1 request."""
@@ -413,10 +494,16 @@ class EtsyClient:
         )
         return _count(payload)
 
-    def listing(self, listing_id: int, *, includes: Sequence[str] | None = None) -> dict[str, Any]:
-        """One listing by id. Key-only endpoint — no OAuth scope needed."""
+    def listing(
+        self, listing_id: int, *, includes: Sequence[str] | None = None, authed: bool = False
+    ) -> dict[str, Any]:
+        """One listing by id (getListing). The OAS gives it API-key security only.
+
+        `authed=True` sends the sign-in as well, for the seller's own draft or inactive
+        listing, which the key-only view may hide.
+        """
         params = {"includes": ",".join(includes)} if includes else None
-        return self.get(f"/listings/{listing_id}", params=params, authed=False)
+        return unescape_listing(self.get(f"/listings/{listing_id}", params=params, authed=authed))
 
     def listing_images(self, listing_id: int) -> list[dict[str, Any]]:
         """getListingImages: every image of a listing, ordered by rank.
@@ -446,11 +533,12 @@ class EtsyClient:
             if includes:
                 params["includes"] = ",".join(includes)
             payload = self.get("/listings/batch", params=params, authed=self.token is not None)
-            out.extend((payload or {}).get("results") or [])
+            out.extend(unescape_listing(item) for item in (payload or {}).get("results") or [])
         return out
 
     def create_draft_listing(self, fields: dict[str, Any]) -> dict[str, Any]:
-        return self.post(f"/shops/{self.shop_id()}/listings", form=fields)
+        # `fields` is plain text (see LISTING_TEXT_FIELDS); Etsy's answer is escaped again.
+        return unescape_listing(self.post(f"/shops/{self.shop_id()}/listings", form=fields))
 
     def listing_inventory(self, listing_id: int) -> dict[str, Any]:
         return self.get(f"/listings/{listing_id}/inventory")
@@ -463,7 +551,9 @@ class EtsyClient:
         return self.put(f"/listings/{listing_id}/inventory", json_body=inventory)
 
     def update_listing(self, listing_id: int, fields: dict[str, Any]) -> dict[str, Any]:
-        return self.patch(f"/shops/{self.shop_id()}/listings/{listing_id}", form=fields)
+        return unescape_listing(
+            self.patch(f"/shops/{self.shop_id()}/listings/{listing_id}", form=fields)
+        )
 
     def upload_listing_image(
         self, listing_id: int, image: Path, *, rank: int = 1, alt_text: str = ""
@@ -484,9 +574,22 @@ class EtsyClient:
         )
 
     def receipts(self, *, max_items: int | None = None, **filters: Any) -> Iterator[dict[str, Any]]:
-        yield from self.paginate(
+        for receipt in self.paginate(
             f"/shops/{self.shop_id()}/receipts", params=filters, max_items=max_items
-        )
+        ):
+            yield unescape_receipt(receipt)
+
+    def receipts_page(self, *, limit: int, offset: int = 0, **filters: Any) -> dict[str, Any]:
+        """One page of getShopReceipts: {"count": int | None, "results": [receipt, ...]}."""
+        params = {k: v for k, v in filters.items() if v is not None}
+        params.update(limit=limit, offset=offset)
+        payload = self.get(f"/shops/{self.shop_id()}/receipts", params=params) or {}
+        results = [r for r in payload.get("results") or [] if isinstance(r, dict)]
+        count = payload.get("count")
+        return {
+            "count": count if isinstance(count, int) else None,
+            "results": [unescape_receipt(r) for r in results],
+        }
 
     def count_receipts(self, **filters: Any) -> int:
         """How many receipts match getShopReceipts' filters, from one limit=1 request.
@@ -501,7 +604,7 @@ class EtsyClient:
 
     def receipt(self, receipt_id: int) -> dict[str, Any]:
         """getShopReceipt (transactions_r)."""
-        return self.get(f"/shops/{self.shop_id()}/receipts/{receipt_id}")
+        return unescape_receipt(self.get(f"/shops/{self.shop_id()}/receipts/{receipt_id}"))
 
     def shop_transactions(
         self, *, max_items: int | None = None, **filters: Any
@@ -511,11 +614,12 @@ class EtsyClient:
         The spec gives this endpoint no date or state filters, only limit/offset (and
         `legacy`); anything in `filters` is passed through as a query parameter.
         """
-        yield from self.paginate(
+        for transaction in self.paginate(
             f"/shops/{self.shop_id()}/transactions",
             params={k: v for k, v in filters.items() if v is not None},
             max_items=max_items,
-        )
+        ):
+            yield unescape_transaction(transaction)
 
     def ledger_entries(
         self, min_created: int, max_created: int, *, max_items: int | None = None
@@ -561,19 +665,21 @@ class EtsyClient:
 
     def create_receipt_shipment(self, receipt_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         # Note: unlike listings, this endpoint takes JSON, not form encoding.
-        return self.post(
+        return unescape_receipt(self.post(
             f"/shops/{self.shop_id()}/receipts/{receipt_id}/tracking",
             json_body={k: v for k, v in payload.items() if v is not None},
-        )
+        ))
 
     def search_active_listings(
         self, *, keywords: str, max_items: int = 100, **filters: Any
     ) -> Iterator[dict[str, Any]]:
         """Public marketplace search. Needs the API key but no OAuth token."""
         params = {"keywords": keywords, **filters}
-        yield from self.paginate(
-            "/listings/active", params=params, max_items=max_items, authed=False
-        )
+        for listing in self.paginate(
+            "/listings/active", params=params, max_items=max_items, authed=False,
+            max_offset=MAX_SEARCH_OFFSET,
+        ):
+            yield unescape_listing(listing)
 
 
 def _count(payload: Any) -> int:

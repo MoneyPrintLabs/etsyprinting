@@ -4,7 +4,8 @@
     GET  /api/orders/summary?fresh=          tab counts, shipped this month, restriction flag
     GET  /api/orders/carriers?country=       Etsy's carriers for a ship-from country
     POST /api/orders/country {country}       remember the ship-from country, answer its carriers
-    POST /api/orders/ship {rows:[{receipt_id, carrier_name, tracking_code, note_to_buyer?}]}
+    POST /api/orders/ship {rows:[{receipt_id, carrier_name, tracking_code, note_to_buyer?}],
+                          country?, confirm: true}
     GET  /api/orders/export.csv?tab=         (POST {tab, edits} adds the numbers typed so far)
     POST /api/orders/import-tracking         raw CSV body -> parsed rows (no Etsy call)
 
@@ -16,9 +17,10 @@ every time it succeeds, and accepts the carrier name "other"; getShippingCarrier
 needs origin_country_iso and only the API key.
 
 Uploading tracking is irreversible (Etsy e-mails every buyer), so the page asks
-first, one job at a time, and the job refuses any receipt that is no longer
-waiting for shipment. Etsy has withdrawn tracking uploads from newer API keys in
-many countries: the first 403 on /tracking stops the job and is remembered.
+first and the request must say {"confirm": true}; one job at a time, and the job
+refuses any receipt that is no longer waiting for shipment. Etsy has withdrawn
+tracking uploads from newer API keys in many countries: the first 403 on /tracking
+stops the job and is remembered.
 """
 
 from __future__ import annotations
@@ -57,6 +59,7 @@ TABS = tuple(TAB_FILTERS)
 SORT = {"sort_on": "created", "sort_order": "desc"}
 
 SCAN_LIMIT = 500          # receipts read for a search, or for the waiting list
+SHIPPED_SCAN_LIMIT = 1000  # shipped receipts changed this month, read to count this month's
 EXPORT_LIMIT = 1000       # receipts in one CSV export
 MAX_PER_PAGE = 100
 SHIP_MAX_ROWS = 500
@@ -357,6 +360,38 @@ def month_start(now: float | None = None) -> int:
     return int(moment.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp())
 
 
+def shipped_since(receipt: dict[str, Any], since: int) -> bool:
+    """True when the order went out at or after `since` (epoch seconds).
+
+    When it went out is its first shipment's shipment_notification_timestamp (OAS: "the
+    time at which Etsy notified the buyer of the shipment event"); a later shipment is
+    a corrected tracking number, not a second sending. An order marked shipped with no
+    shipment record has no such time: it counts only when it was also created since
+    then (it cannot have gone out before it existed).
+    """
+    stamps = [
+        s["shipment_notification_timestamp"]
+        for s in receipt.get("shipments") or []
+        if isinstance(s, dict) and isinstance(s.get("shipment_notification_timestamp"), (int, float))
+    ]
+    if stamps:
+        return min(stamps) >= since
+    created = receipt.get("created_timestamp") or receipt.get("create_timestamp")
+    return isinstance(created, (int, float)) and created >= since
+
+
+def still_waiting(receipt: Any) -> bool:
+    """A receipt (getShopReceipt) that is paid, not shipped and not cancelled."""
+    if not isinstance(receipt, dict) or not receipt.get("receipt_id"):
+        return False
+    status = str(receipt.get("status") or "").lower()
+    return (
+        receipt.get("is_paid") is not False
+        and not receipt.get("is_shipped")
+        and status not in ("canceled", "fully refunded")
+    )
+
+
 # --- the endpoints --------------------------------------------------------------------------
 
 
@@ -421,8 +456,10 @@ class OrdersApi:
         return tab
 
     def _scan(self, client: Any, tab: str, *, fresh: bool = False,
-              limit: int = SCAN_LIMIT) -> tuple[list[dict[str, Any]], bool]:
-        """Up to `limit` receipts of a tab, newest first (cached a minute)."""
+              limit: int | None = None) -> tuple[list[dict[str, Any]], bool]:
+        """Up to `limit` (default SCAN_LIMIT) receipts of a tab, newest first (cached a
+        minute), and whether the tab holds more than that."""
+        limit = limit or SCAN_LIMIT
         key = (self._shop(), tab, limit)
         if not fresh:
             cached = self.receipts.get(key, LIST_TTL)
@@ -497,12 +534,11 @@ class OrdersApi:
             # Every order of the list, in order: the page finds where an imported number is.
             ids = [r.get("receipt_id") for r in hits]
         else:
-            payload = client.get(
-                f"/shops/{client.shop_id()}/receipts",
-                params={**TAB_FILTERS[tab], **SORT, "limit": per_page, "offset": offset},
-            ) or {}
-            page_items = [r for r in payload.get("results") or [] if isinstance(r, dict)]
-            total = payload.get("count") if isinstance(payload.get("count"), int) else len(page_items)
+            payload = client.receipts_page(
+                limit=per_page, offset=offset, **TAB_FILTERS[tab], **SORT
+            )
+            page_items = payload["results"]
+            total = payload["count"] if payload["count"] is not None else len(page_items)
         rows = [flatten(r, tab) for r in page_items]
         self._add_thumbs(client, rows)
         self._anonymise(rows, offset)
@@ -540,16 +576,31 @@ class OrdersApi:
         cached = None if req.bool_query("fresh") else self.counts.get(shop, LIST_TTL)
         if cached is None:
             counts = {tab: client.count_receipts(**filters) for tab, filters in TAB_FILTERS.items()}
-            shipped_month = client.count_receipts(
-                was_paid=True, was_shipped=True, min_created=month_start()
-            )
-            cached = self.counts.put(shop, {"counts": counts, "shipped_month": shipped_month})
+            shipped_month, partial = self._shipped_this_month(client)
+            cached = self.counts.put(shop, {"counts": counts, "shipped_month": shipped_month,
+                                            "shipped_month_partial": partial})
         prefs = self.ctx.shop_prefs()
         return {
             **cached,
             "tracking_restricted": bool(prefs.get("tracking_restricted")),
             "sold_orders_url": SOLD_ORDERS_URL,
         }
+
+    def _shipped_this_month(self, client: Any) -> tuple[int, bool]:
+        """(orders that went out this month, whether more were left unread).
+
+        getShopReceipts can only filter on when a receipt was created or last changed,
+        not on when it shipped, so an order placed last month and shipped this month
+        is not in a min_created count. Shipping it changed it this month, though: read
+        the shipped receipts changed since the 1st and look at their shipments.
+        """
+        since = month_start()
+        found = list(client.receipts(
+            max_items=SHIPPED_SCAN_LIMIT + 1, was_paid=True, was_shipped=True,
+            min_last_modified=since, sort_on="updated", sort_order="desc",
+        ))
+        partial = len(found) > SHIPPED_SCAN_LIMIT
+        return sum(1 for r in found[:SHIPPED_SCAN_LIMIT] if shipped_since(r, since)), partial
 
     # --- carriers ---------------------------------------------------------------------------
 
@@ -702,6 +753,10 @@ class OrdersApi:
             raise ApiError(422, "invalid", problems[0]["message"], field="rows", rows=problems)
         if any(job.active for job in ctx.jobs.list(kind="orders")):
             raise ApiError(409, "busy", "Tracking numbers are already being sent.")
+        # Etsy e-mails every buyer and nothing takes it back: like every other live
+        # write, the page asks first and says so; a request that skipped it sends nothing.
+        if body.get("confirm") is not True:
+            raise ApiError(409, "confirm_required", "Sending tracking numbers needs confirm: true.")
 
         def work(job: Any) -> dict[str, Any]:
             return self._run_ship(job, rows, country)
@@ -716,7 +771,9 @@ class OrdersApi:
         total = len(rows)
         job.progress(0, total)
         # Only orders still waiting: never a second "your order shipped" e-mail by mistake.
-        waiting_list, _truncated = self._scan(client, "unshipped", fresh=True)
+        # The scan holds the newest SCAN_LIMIT waiting orders; when there are more, an
+        # order outside it is asked about on its own (getShopReceipt) before it is sent.
+        waiting_list, truncated = self._scan(client, "unshipped", fresh=True)
         waiting = {r.get("receipt_id") for r in waiting_list}
         results: list[dict[str, Any]] = []
         counts = {"sent": 0, "failed": 0, "skipped": 0}
@@ -735,10 +792,15 @@ class OrdersApi:
                     "carrier_name": row["carrier_name"],
                     "tracking_code": row["tracking_code"],
                 }
+                refusal = None
+                if not stopped and receipt_id not in waiting:
+                    refusal = self._not_waiting(client, receipt_id, truncated)
                 if stopped:
                     result.update(status="skipped", code=stopped)
-                elif receipt_id not in waiting:
-                    result.update(status="skipped", code="not_waiting")
+                elif refusal is not None:
+                    result.update(refusal)
+                    if refusal["status"] == "error" and refusal["code"] in STOP_CODES:
+                        stopped = refusal["code"]
                 else:
                     payload = {"tracking_code": row["tracking_code"],
                                "carrier_name": row["carrier_name"]}
@@ -767,6 +829,28 @@ class OrdersApi:
             self._after_ship(counts, stopped, used, country)
         return {**counts, "total": total, "stopped": stopped,
                 "restricted": stopped == "tracking_restricted", "rows": results}
+
+    def _not_waiting(self, client: Any, receipt_id: int, truncated: bool) -> dict[str, Any] | None:
+        """Why an order outside the waiting scan must not be sent; None when it may be.
+
+        A complete scan is the answer: the order is no longer waiting. A cut one (a shop
+        with more than SCAN_LIMIT waiting orders) is not, so the order is read on its
+        own and sent only if it is still paid, unshipped and not cancelled.
+        """
+        skipped = {"status": "skipped", "code": "not_waiting"}
+        if not truncated:
+            return skipped
+        try:
+            receipt = client.receipt(receipt_id)
+        except (EtsyApiError, AuthError) as exc:
+            if isinstance(exc, EtsyApiError) and exc.status in (400, 404):
+                return skipped
+            code, message, http_status = _ship_error(exc)
+            error: dict[str, Any] = {"status": "error", "code": code, "message": message}
+            if http_status is not None:
+                error["http_status"] = http_status
+            return error
+        return None if still_waiting(receipt) else skipped
 
     def _after_ship(self, counts: dict[str, int], stopped: str | None, used: dict[str, int],
                     country: str) -> None:

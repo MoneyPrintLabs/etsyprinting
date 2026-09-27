@@ -546,3 +546,117 @@ def test_import_apply(web):
     # A token is used once.
     again = web.client.post("/api/listings/import/apply", json={"token": token, "confirm": True})
     assert again.status_code == 410
+
+
+# --- review fixes -------------------------------------------------------------------------------
+
+
+def _escape(text):
+    import html
+
+    return html.escape(text, quote=True).replace("&#x27;", "&#39;")
+
+
+def test_an_escaped_listing_is_shown_and_edited_as_plain_text(web):
+    # Etsy sends "Mom&#39;s ...". Before the client decoded it, this title failed
+    # "'&' may be used only once" and its literal "&#39;" would have gone back to Etsy.
+    title = "Mom's Coffee Mug, Mother's Day Gift, \"Best Mom\" Cup"
+    listing = make(1, title=_escape(title), tags=[_escape("mother's day"), "coffee mug"],
+                   description=_escape("Mom's favourite mug & saucer."))
+    shop = Shop(web, [listing])
+    detail = web.client.get("/api/listings/1000001").json()["listing"]
+    assert detail["title"] == title and detail["tags"] == ["mother's day", "coffee mug"]
+    assert detail["description"] == "Mom's favourite mug & saucer."
+    row = web.client.get("/api/listings").json()["items"][0]
+    assert row["title"] == title
+    new_title = "Mom's Coffee Mug & Mother's Day Gift"
+    resp = web.client.patch("/api/listings/1000001", json={
+        "title": new_title, "tags": detail["tags"] + ["gift for mom"],
+    })
+    assert resp.status_code == 200, resp.text
+    assert shop.forms(1000001)[-1] == {
+        "title": new_title, "tags": "mother's day,coffee mug,gift for mom",
+    }
+    # The PATCH answer comes back escaped (the fixture still holds Etsy's description).
+    assert resp.json()["listing"]["description"] == "Mom's favourite mug & saucer."
+    assert resp.json()["listing"]["title"] == new_title
+
+
+def test_the_export_has_no_views_column(web):
+    shop_with(web, drafts=1, active=0, inactive=0)
+    rows = read_csv(web.client.get("/api/listings/export.csv", params={"tab": "draft"}).content)
+    assert "views" not in rows[0] and "num_favorers" in rows[0] and "url" in rows[0]
+    assert "views" not in listings_api.EXPORT_COLUMNS
+
+
+def _png(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (8, 8), "white").save(path)
+    return path
+
+
+def _import_row(images):
+    return {"listing_id": "", "title": "Lemon Summer Sticker", "description": "A citrus sticker.",
+            "price": "4.50", "quantity": "10", "who_made": "i_did", "when_made": "made_to_order",
+            "taxonomy_id": "482", "tags": "lemon sticker", "images": images}
+
+
+@pytest.mark.parametrize("value", [
+    "OUTSIDE",  # replaced by the absolute path of a real image outside the folder
+    "../outside.png",
+    "2-PRODUCTS/../../outside.png",
+    "~/outside.png",
+    "\\\\127.0.0.1\\c$\\outside.png",
+    "//127.0.0.1/c$/outside.png",
+    "C:outside.png",
+    "C:\\outside.png",
+    "/outside.png",
+    "2-PRODUCTS/design.png:stream",
+])
+def test_import_images_must_be_inside_the_workspace(web, monkeypatch, tmp_path, value):
+    from pathlib import Path
+
+    shop = shop_with(web, drafts=1, active=0, inactive=0)
+    root = web.ctx.workspace().root
+    outside = _png(tmp_path / "elsewhere" / "outside.png")
+    if value == "OUTSIDE":
+        value = str(outside)
+    touched = []
+    real_is_file, real_stat = Path.is_file, Path.stat
+
+    def is_file(self):
+        touched.append(str(self))
+        return real_is_file(self)
+
+    def stat(self, *args, **kwargs):
+        touched.append(str(self))
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_file", is_file)
+    monkeypatch.setattr(Path, "stat", stat)
+    check = web.client.post("/api/listings/import", content=csv_body([_import_row(value)])).json()
+    monkeypatch.undo()
+    result = check["results"][0]
+    assert check["errors"] == 1 and result["status"] == "error", result
+    assert "inside the stallkit folder" in result["message"]
+    # Refused from the text alone: nothing outside the folder (or on the network) was looked at.
+    assert not [p for p in touched if "outside" in p or "127.0.0.1" in p]
+    apply = web.client.post("/api/listings/import/apply", json={"token": check["token"], "confirm": True})
+    assert apply.status_code == 422 and apply.json()["error"]["code"] == "import_invalid"
+    assert not any(method == "POST" for method, _ in shop.fake.calls)
+    assert root.is_dir()
+
+
+def test_import_images_inside_the_workspace_are_found(web):
+    shop_with(web, drafts=1, active=0, inactive=0)
+    root = web.ctx.workspace().root
+    _png(root / "2-PRODUCTS" / "design.png")
+    for value in ("2-PRODUCTS/design.png", "2-PRODUCTS\\design.png", "./2-PRODUCTS/design.png"):
+        check = web.client.post("/api/listings/import",
+                                content=csv_body([_import_row(value)])).json()
+        result = check["results"][0]
+        assert check["errors"] == 0 and result["status"] == "dry-run", (value, result)
+        assert result["message"].endswith("1 image(s)")
+    missing = web.client.post("/api/listings/import",
+                              content=csv_body([_import_row("2-PRODUCTS/nope.png")])).json()
+    assert "image not found" in missing["results"][0]["message"]

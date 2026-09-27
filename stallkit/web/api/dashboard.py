@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from ..errors import describe
 from ..router import ApiError, Request
+from .profit import receipt_money
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..context import AppContext
@@ -197,18 +198,19 @@ def month_start(now: datetime | None = None) -> datetime:
 
 
 def receipt_revenue(receipt: dict[str, Any]) -> tuple[float, str | None]:
-    """What the buyer paid for items and shipping, after coupons and refunds; tax excluded.
+    """One receipt's revenue and currency, exactly as Kâr-Zarar counts it.
 
-    ShopReceipt (OAS): subtotal = total_price minus coupon discounts, no tax or shipping;
-    total_shipping_cost; refunds[].amount. A fully refunded order counts as nothing.
+    Items after coupons + shipping + gift wrap - the revenue share of its refunds; tax
+    excluded; a fully refunded or cancelled order is 0 (profit.receipt_money).
     """
-    if str(receipt.get("status") or "").lower() in ("canceled", "fully refunded"):
+    if str(receipt.get("status") or "").lower() == "canceled":
         return 0.0, None
-    subtotal, currency = _money(receipt.get("subtotal"))
-    shipping, ship_currency = _money(receipt.get("total_shipping_cost"))
-    refunded = sum(_money(refund.get("amount"))[0] for refund in receipt.get("refunds") or []
-                   if isinstance(refund, dict))
-    return subtotal + shipping - refunded, currency or ship_currency
+    currency = next(
+        (_money(receipt.get(name))[1] for name in ("subtotal", "total_shipping_cost", "grandtotal")
+         if _money(receipt.get(name))[1]),
+        None,
+    )
+    return round(receipt_money(receipt)["revenue"], 4), currency
 
 
 def _count_active(client: Any) -> dict[str, Any]:
@@ -243,16 +245,20 @@ def _revenue(client: Any, shop_currency: str | None) -> dict[str, Any]:
     total = 0.0
     orders = 0
     currency: str | None = None
-    receipts = client.receipts(
-        max_items=REVENUE_MAX_RECEIPTS,
+    # The same receipts Kâr-Zarar reads for this month (paid, not cancelled, created
+    # since local midnight on the 1st), one more than the cap to know it was cut.
+    receipts = list(client.receipts(
+        max_items=REVENUE_MAX_RECEIPTS + 1,
         min_created=int(start.timestamp()),
         was_paid=True,
         was_canceled=False,
-    )
-    for receipt in receipts:
-        amount, cur = receipt_revenue(receipt)
-        if cur is None and amount == 0:
+    ))
+    for receipt in receipts[:REVENUE_MAX_RECEIPTS]:
+        # Every paid order that was not cancelled counts, a fully refunded one at 0,
+        # as on Kâr-Zarar.
+        if not isinstance(receipt, dict) or str(receipt.get("status") or "").lower() == "canceled":
             continue
+        amount, cur = receipt_revenue(receipt)
         total += amount
         orders += 1
         currency = currency or cur
@@ -261,7 +267,7 @@ def _revenue(client: Any, shop_currency: str | None) -> dict[str, Any]:
         "currency": currency or shop_currency or "USD",
         "orders": orders,
         "month": start.strftime("%Y-%m"),
-        "partial": orders >= REVENUE_MAX_RECEIPTS,
+        "partial": len(receipts) > REVENUE_MAX_RECEIPTS,
     }
 
 

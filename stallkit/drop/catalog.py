@@ -4,10 +4,16 @@ The mockup files themselves stay the source of truth — whatever image sits in
 1-MOCKUPS is a mockup. This module only keeps the facts a file name cannot hold
 reliably, in `1-MOCKUPS/mockups.json`:
 
-    {"shirt-white.jpg": {"type": "tshirt", "color": "Beyaz", "enabled": true}}
+    {"shirt-white.jpg": {"type": "tshirt", "color": "Beyaz", "enabled": true, "order": 0}}
 
 A mockup with no entry gets a guess from its file name and is enabled. An entry
 whose file is gone is ignored (kept on disk, so renaming the file back restores it).
+
+`order` is the seller's own sequence (0 first). The first mockup a draft uses
+becomes its main image (Etsy's rank 1), so the order matters. Mockups without an
+order (every mockup of an older catalog, or one added after the last reorder)
+follow the ordered ones, in folder order. Drafts use the enabled mockups in this
+order, at most MAX_ENABLED of them; `usage` says exactly which.
 
 Print areas stay in positions.json (see `mockup.load_positions`); the helpers at
 the bottom answer "which rectangle does this mockup use, and why" exactly the way
@@ -18,6 +24,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import re
 import threading
 import unicodedata
@@ -49,6 +56,13 @@ TYPES = (
 
 # Etsy takes 20 images per listing, and every draft also carries the flat design.
 MAX_ENABLED = 19
+
+# Pixel limits for an uploaded image (mockups and designs). Pillow itself refuses only
+# above ~179M pixels, yet one 13000x13000 image already needs ~680 MB per decoded copy,
+# and composing, thumbnails and previews each make copies. 60M pixels is 7745 px
+# square, far more than Etsy shows (its zoom viewer wants 2000 px on the short side).
+MAX_PIXELS = 60_000_000
+MAX_EDGE = 12_000
 
 SOURCE_OWN = "own"
 SOURCE_SAME_SIZE = "same_size"
@@ -98,15 +112,50 @@ _FOLD = str.maketrans({"ı": "i", "ş": "s", "ç": "c", "ğ": "g", "ö": "o", "�
 _LOCK = threading.RLock()
 
 
+class TooManyPixels(ValidationError):
+    """An image whose pixel dimensions are too large to handle safely."""
+
+    def __init__(self, name: str, width: int, height: int) -> None:
+        self.name = name
+        self.width = int(width)
+        self.height = int(height)
+        super().__init__(
+            f"{name} is {self.width}x{self.height} px. Images can be at most {MAX_EDGE} px "
+            f"on a side and {MAX_PIXELS // 1_000_000} million pixels; make it smaller."
+        )
+
+
+def too_many_pixels(size: tuple[int, int]) -> bool:
+    """Whether an image of `size` (width, height) is over the pixel limits."""
+    width, height = (int(v) for v in size)
+    return width * height > MAX_PIXELS or max(width, height) > MAX_EDGE
+
+
+def check_pixels(name: str, size: tuple[int, int]) -> None:
+    """Raise TooManyPixels when `size` is over the limits."""
+    if too_many_pixels(size):
+        raise TooManyPixels(name, *size)
+
+
+def bomb_size(exc: BaseException) -> tuple[int, int]:
+    """A (width, height) for Pillow's DecompressionBombError, which only gives the pixel
+    count: the square of that many pixels, or (0, 0) when the text has no count."""
+    found = re.search(r"\((\d+) pixels\)", str(exc))
+    side = math.isqrt(int(found.group(1))) if found else 0
+    return side, side
+
+
 @dataclass
 class MockupInfo:
     name: str
     type: str
     color: str
     enabled: bool = True
+    order: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"name": self.name, "type": self.type, "color": self.color, "enabled": self.enabled}
+        return {"name": self.name, "type": self.type, "color": self.color,
+                "enabled": self.enabled, "order": self.order}
 
 
 def _fold(text: str) -> str:
@@ -158,6 +207,13 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def _order_value(value: Any) -> int | None:
+    # bool is an int in Python, but `true` is not a position.
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
 def _info(name: str, raw: Any) -> MockupInfo:
     kind, color = guess(name)
     if not isinstance(raw, dict):
@@ -170,14 +226,36 @@ def _info(name: str, raw: Any) -> MockupInfo:
         type=stored_type if stored_type in TYPES else kind,
         color=str(stored_color).strip() if isinstance(stored_color, str) else color,
         enabled=enabled if isinstance(enabled, bool) else True,
+        order=_order_value(raw.get("order")),
     )
 
 
+def _sorted(infos: list[MockupInfo]) -> list[MockupInfo]:
+    """The seller's order: mockups with an order by it, then the rest in folder order.
+
+    `infos` arrive in folder order, and equal orders keep it (sorted() is stable).
+    """
+    ordered = sorted((i for i in infos if i.order is not None), key=lambda i: i.order or 0)
+    return ordered + [i for i in infos if i.order is None]
+
+
+def _infos(ws: Workspace, raw: dict[str, Any]) -> list[MockupInfo]:
+    return _sorted([_info(path.name, raw.get(path.name)) for path in ws.mockup_files()])
+
+
 def load(ws: Workspace) -> dict[str, MockupInfo]:
-    """Every mockup file, in `mockup_files()` order, with its catalog facts."""
+    """Every mockup file with its catalog facts, first (main image) to last.
+
+    The order is the seller's saved one; without any, it is `mockup_files()` order.
+    """
     with _LOCK:
         raw = _read_json(catalog_path(ws))
-        return {path.name: _info(path.name, raw.get(path.name)) for path in ws.mockup_files()}
+        return {info.name: info for info in _infos(ws, raw)}
+
+
+def ordered_names(ws: Workspace) -> list[str]:
+    """Every mockup's file name, first (main image) to last."""
+    return list(load(ws))
 
 
 def _mockup_path(ws: Workspace, name: str) -> Path:
@@ -216,9 +294,63 @@ def update(
             info.color = color
         if enabled is not None:
             info.enabled = bool(enabled)
-        raw[name] = {"type": info.type, "color": info.color, "enabled": info.enabled}
+        raw[name] = _entry(info)
         _write_json(path, raw)
         return info
+
+
+def _entry(info: MockupInfo) -> dict[str, Any]:
+    """What mockups.json stores for one mockup (`order` only once it has one)."""
+    entry: dict[str, Any] = {"type": info.type, "color": info.color, "enabled": info.enabled}
+    if info.order is not None:
+        entry["order"] = info.order
+    return entry
+
+
+def arrange(
+    ws: Workspace,
+    *,
+    order: list[str] | None = None,
+    enabled: list[str] | None = None,
+) -> dict[str, MockupInfo]:
+    """Save the seller's order and/or exactly which mockups drafts may use, at once.
+
+    `order` lists mockup names first (main image) to last; mockups it leaves out keep
+    their sequence after the listed ones. `enabled` is the complete set to switch on:
+    every other mockup is switched off. Everything is checked before anything is
+    written: ValidationError for a name listed twice, FileNotFoundError for a name that
+    is not a mockup. Returns the new `load(ws)`.
+    """
+    if order is None and enabled is None:
+        raise ValidationError("Nothing to change: send an order or the enabled mockups.")
+    known = {p.name for p in ws.mockup_files()}
+    for names, what in ((order, "order"), (enabled, "enabled")):
+        if names is None:
+            continue
+        for name in names:
+            if not isinstance(name, str) or name not in known:
+                raise FileNotFoundError(str(name))
+        if len(set(names)) != len(names):
+            raise ValidationError(f"A mockup is listed twice in {what}.")
+    with _LOCK:
+        path = catalog_path(ws)
+        raw = _read_json(path)
+        infos = _infos(ws, raw)
+        if order is not None:
+            by_name = {info.name: info for info in infos}
+            listed = [by_name[name] for name in order if name in by_name]
+            chosen = {info.name for info in listed}
+            infos = listed + [info for info in infos if info.name not in chosen]
+            for index, info in enumerate(infos):
+                info.order = index
+        if enabled is not None:
+            switched_on = set(enabled)
+            for info in infos:
+                info.enabled = info.name in switched_on
+        for info in infos:
+            raw[info.name] = _entry(info)
+        _write_json(path, raw)
+        return {info.name: info for info in infos}
 
 
 def remove(ws: Workspace, name: str) -> None:
@@ -266,9 +398,14 @@ def add(ws: Workspace, filename: str, data: bytes) -> str:
         raise ValidationError(f"{name} is empty.")
     try:
         with Image.open(io.BytesIO(data)) as image:
+            size = image.size
             image.verify()
-    except (OSError, ValueError, SyntaxError, Image.DecompressionBombError) as exc:
+    except Image.DecompressionBombError as exc:
+        # Pillow refuses above ~179M pixels before the size can be read.
+        raise TooManyPixels(name, *bomb_size(exc)) from exc
+    except (OSError, ValueError, SyntaxError) as exc:
         raise ValidationError(f"{name} is not an image that can be read ({exc}).") from exc
+    check_pixels(name, size)
     ws.mockups.mkdir(parents=True, exist_ok=True)
     stem = Path(name).stem
     with _LOCK:
@@ -286,11 +423,31 @@ def add(ws: Workspace, filename: str, data: bytes) -> str:
 
 
 def enabled_mockups(ws: Workspace) -> list[Path]:
-    """The mockups drafts are made with: enabled ones, in folder order, at most 19."""
-    infos = load(ws)
-    return [p for p in ws.mockup_files() if infos.get(p.name, None) is None or infos[p.name].enabled][
-        :MAX_ENABLED
-    ]
+    """The mockups drafts are made with: enabled ones, in the seller's order, at most 19.
+
+    The first one becomes the draft's main image. `usage` has the same rule with names.
+    """
+    paths = {path.name: path for path in ws.mockup_files()}
+    return [paths[name] for name in usage(ws)["used"] if name in paths]
+
+
+def usage(ws: Workspace, infos: dict[str, MockupInfo] | None = None) -> dict[str, Any]:
+    """Which mockups a draft uses: the one rule every screen shows.
+
+    {"used": [names first to last; the first is the main image],
+     "over_limit": [switched-on names that do not fit, beyond MAX_ENABLED],
+     "enabled": how many are switched on, "total": how many mockups, "max": MAX_ENABLED}
+    """
+    if infos is None:
+        infos = load(ws)
+    switched_on = [name for name, info in infos.items() if info.enabled]
+    return {
+        "used": switched_on[:MAX_ENABLED],
+        "over_limit": switched_on[MAX_ENABLED:],
+        "enabled": len(switched_on),
+        "total": len(infos),
+        "max": MAX_ENABLED,
+    }
 
 
 # --- print areas ------------------------------------------------------------------

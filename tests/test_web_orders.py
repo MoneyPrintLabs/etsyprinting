@@ -94,6 +94,9 @@ class ReceiptStore:
             rows = [r for r in rows if (r["status"] == "canceled") == flag("was_canceled")]
         if "min_created" in q:
             rows = [r for r in rows if r["created_timestamp"] >= int(q["min_created"])]
+        if "min_last_modified" in q:
+            since = int(q["min_last_modified"])
+            rows = [r for r in rows if r.get("updated_timestamp", r["created_timestamp"]) >= since]
         offset, limit = int(q.get("offset", 0)), int(q.get("limit", 25))
         page = [{k: v for k, v in r.items() if not k.startswith("_")} for r in rows]
         return httpx.Response(200, json={"count": len(rows), "results": page[offset:offset + limit]})
@@ -322,7 +325,8 @@ def test_ship_job_sends_and_reports_each_row(web):
 
     started = {}
     events = read_events(web, done, after_connect=lambda: started.update(
-        job=web.client.post("/api/orders/ship", json={"rows": rows, "country": "TR"}).json()))
+        job=web.client.post("/api/orders/ship",
+                            json={"rows": rows, "country": "TR", "confirm": True}).json()))
     job = wait_for_job(web, started["job"]["id"])
     assert job["title_key"] == "orders:job.ship" and job["params"] == {"n": 3}
     result = job["result"]
@@ -353,7 +357,7 @@ def test_tracking_restricted_stops_after_the_first_refusal(web):
         fake.error("POST", f"{RECEIPTS}/{3000000 + n}/tracking", 403, "Unauthorized")
     rows = [{"receipt_id": 3000000 + n, "carrier_name": "UPS", "tracking_code": f"1Z{n}"}
             for n in range(1, 6)]
-    job = web.client.post("/api/orders/ship", json={"rows": rows}).json()
+    job = web.client.post("/api/orders/ship", json={"rows": rows, "confirm": True}).json()
     final = wait_for_job(web, job["id"])
     result = final["result"]
     assert result["restricted"] is True and result["stopped"] == "tracking_restricted"
@@ -371,7 +375,7 @@ def test_a_later_success_clears_the_restriction(web):
     fake, _store = setup_orders(web, [make_receipt(1)])
     web.ctx.update_shop_prefs(tracking_restricted=True)
     fake.add("POST", f"{RECEIPTS}/3000001/tracking", shipment_answer)
-    job = web.client.post("/api/orders/ship", json={"rows": [
+    job = web.client.post("/api/orders/ship", json={"confirm": True, "rows": [
         {"receipt_id": 3000001, "carrier_name": "UPS", "tracking_code": "1Z1"}]}).json()
     assert wait_for_job(web, job["id"])["result"]["sent"] == 1
     assert "tracking_restricted" not in web.ctx.shop_prefs()
@@ -381,7 +385,7 @@ def test_one_failed_row_does_not_stop_the_others(web):
     fake, _store = setup_orders(web, [make_receipt(1), make_receipt(2)])
     fake.error("POST", f"{RECEIPTS}/3000001/tracking", 400, "tracking_code is invalid")
     fake.add("POST", f"{RECEIPTS}/3000002/tracking", shipment_answer)
-    job = web.client.post("/api/orders/ship", json={"rows": [
+    job = web.client.post("/api/orders/ship", json={"confirm": True, "rows": [
         {"receipt_id": 3000001, "carrier_name": "UPS", "tracking_code": "x"},
         {"receipt_id": 3000002, "carrier_name": "UPS", "tracking_code": "1Z2"}]}).json()
     result = wait_for_job(web, job["id"])["result"]
@@ -419,7 +423,7 @@ def test_ship_rejects_a_carrier_etsy_does_not_list(web):
     assert "Pigeon Post" in error["message"]
     # "other" is always allowed (createReceiptShipment docs).
     fake.add("POST", f"{RECEIPTS}/3000001/tracking", shipment_answer)
-    ok = web.client.post("/api/orders/ship", json={"country": "TR", "rows": [
+    ok = web.client.post("/api/orders/ship", json={"country": "TR", "confirm": True, "rows": [
         {"receipt_id": 3000001, "carrier_name": "Other", "tracking_code": "1Z1"}]})
     assert ok.status_code == 200
     assert wait_for_job(web, ok.json()["id"])["result"]["rows"][0]["carrier_name"] == "other"
@@ -498,3 +502,127 @@ def test_export_csv_round_trips_into_the_import(web):
     back = orders_api.parse_tracking_csv(typed.content)
     assert back["rows"] == [{"receipt_id": 3000001, "tracking_code": "40183355",
                              "carrier_name": "DHL", "note_to_buyer": "", "line": 2}]
+
+
+# --- review fixes: escaped text, the send guard, the confirm, this month's shipments ----------------
+
+
+def test_titles_and_names_arrive_as_plain_text(web):
+    # Etsy sends what sellers and buyers typed HTML-escaped; the page shows it as typed.
+    receipt = make_receipt(1)
+    receipt["name"] = "Example O&#39;Buyer"
+    receipt["transactions"][0]["title"] = "Mom&#39;s Mug &amp; &quot;Best&quot; Gift"
+    receipt["transactions"][0]["variations"][0]["formatted_value"] = "11&quot; x 14&quot;"
+    shipped = make_receipt(2, shipped=True)
+    shipped["transactions"][0]["title"] = "Tom &amp; Jerry Poster"
+    setup_orders(web, [receipt, shipped])
+    rows = web.client.get("/api/orders", params={"tab": "unshipped"}).json()["rows"]  # a scan
+    item = rows[0]["items"][0]
+    assert item["title"] == "Mom's Mug & \"Best\" Gift"
+    assert item["variations"][0]["value"] == "11\" x 14\""
+    assert rows[0]["buyer"] == "Example O."
+    page = web.client.get("/api/orders", params={"tab": "shipped"}).json()["rows"]  # one page
+    assert page[0]["items"][0]["title"] == "Tom & Jerry Poster"
+    found = web.client.get("/api/orders", params={"tab": "unshipped", "q": "mom's mug"}).json()
+    assert [r["receipt_id"] for r in found["rows"]] == [3000001]
+    text = web.client.get("/api/orders/export.csv", params={"tab": "all"}).content.decode("utf-8-sig")
+    assert "Mom's Mug & \"\"Best\"\" Gift" in text
+    assert "&#39;" not in text and "&amp;" not in text and "&quot;" not in text
+
+
+@pytest.mark.parametrize("confirm", [None, False, "true", 1])
+def test_sending_tracking_needs_confirm_true(web, confirm):
+    fake, _store = setup_orders(web, [make_receipt(1)])
+    fake.add("POST", f"{RECEIPTS}/3000001/tracking", shipment_answer)
+    body = {"rows": [{"receipt_id": 3000001, "carrier_name": "UPS", "tracking_code": "1Z1"}]}
+    if confirm is not None:
+        body["confirm"] = confirm
+    resp = web.client.post("/api/orders/ship", json=body)
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["error"]["code"] == "confirm_required"
+    assert not [r for r in fake.requests if r.method == "POST"]
+    assert web.client.get("/api/jobs", params={"kind": "orders"}).json() == []
+
+
+def test_orders_beyond_the_waiting_scan_are_checked_one_by_one(web, monkeypatch):
+    # A shop with more waiting orders than one scan holds: an older one is still sent,
+    # after getShopReceipt says it is waiting; one that is not waiting is still skipped.
+    monkeypatch.setattr(orders_api, "SCAN_LIMIT", 1)
+    receipts = [make_receipt(1), make_receipt(2), make_receipt(3)]
+    fake, _store = setup_orders(web, receipts)
+    older = {k: v for k, v in receipts[1].items() if not k.startswith("_")}
+    fake.add("GET", f"{RECEIPTS}/3000002", older)
+    gone = {k: v for k, v in make_receipt(4, shipped=True).items() if not k.startswith("_")}
+    fake.add("GET", f"{RECEIPTS}/3000004", gone)
+    for n in (1, 2, 4, 5):
+        fake.add("POST", f"{RECEIPTS}/{3000000 + n}/tracking", shipment_answer)
+    rows = [{"receipt_id": 3000000 + n, "carrier_name": "UPS", "tracking_code": f"1Z{n}"}
+            for n in (1, 2, 4, 5)]
+    job = web.client.post("/api/orders/ship", json={"rows": rows, "confirm": True}).json()
+    result = wait_for_job(web, job["id"])["result"]
+    by_id = {r["receipt_id"]: r for r in result["rows"]}
+    assert by_id[3000001]["status"] == "ok"  # in the scan
+    assert by_id[3000002]["status"] == "ok"  # older than the scan, still waiting
+    assert by_id[3000004]["code"] == "not_waiting"  # shipped already
+    assert by_id[3000005]["code"] == "not_waiting"  # Etsy has no such order (404)
+    posts = [r.url.path.split("/")[-2] for r in fake.requests if r.method == "POST"]
+    assert posts == ["3000001", "3000002"]
+    looked_up = [r.url.path.rsplit("/", 1)[-1] for r in fake.requests
+                 if r.method == "GET" and r.url.path.rsplit("/", 1)[-1].startswith("30000")]
+    assert looked_up == ["3000002", "3000004", "3000005"]  # not the one the scan held
+
+
+def test_a_complete_scan_is_the_answer_without_asking_again(web):
+    fake, _store = setup_orders(web, [make_receipt(1), make_receipt(2, shipped=True)])
+    fake.add("POST", f"{RECEIPTS}/3000002/tracking", shipment_answer)
+    job = web.client.post("/api/orders/ship", json={"confirm": True, "rows": [
+        {"receipt_id": 3000002, "carrier_name": "UPS", "tracking_code": "1Z2"}]}).json()
+    result = wait_for_job(web, job["id"])["result"]
+    assert result["rows"][0]["code"] == "not_waiting"
+    assert not [r for r in fake.requests if r.url.path.endswith("/3000002")]
+    assert not [r for r in fake.requests if r.method == "POST"]
+
+
+def test_shipped_this_month_counts_shipments_not_order_dates(web, monkeypatch):
+    start = 1790000000
+    monkeypatch.setattr(orders_api, "month_start", lambda now=None: start)
+    late = make_receipt(1, shipped=True)  # placed last month, shipped this month: counts
+    late["created_timestamp"] = start - 5 * 86400
+    late["shipments"][0]["shipment_notification_timestamp"] = start + 3600
+    late["updated_timestamp"] = start + 3600
+    early = make_receipt(2, shipped=True)  # shipped last month, delivered (changed) this month
+    early["created_timestamp"] = start - 9 * 86400
+    early["shipments"][0]["shipment_notification_timestamp"] = start - 7 * 86400
+    early["updated_timestamp"] = start + 7200
+    fixed = make_receipt(3, shipped=True)  # shipped last month, tracking corrected this month
+    fixed["created_timestamp"] = start - 9 * 86400
+    fixed["shipments"] = [
+        {"carrier_name": "UPS", "tracking_code": "1ZA", "shipment_notification_timestamp": start - 86400},
+        {"carrier_name": "UPS", "tracking_code": "1ZB", "shipment_notification_timestamp": start + 100},
+    ]
+    fixed["updated_timestamp"] = start + 100
+    bare = make_receipt(4, shipped=True)  # marked shipped without a shipment, placed this month
+    bare["created_timestamp"] = start + 50
+    bare["shipments"] = []
+    bare["updated_timestamp"] = start + 60
+    old = make_receipt(5, shipped=True)  # nothing happened this month
+    old["created_timestamp"] = start - 20 * 86400
+    old["shipments"][0]["shipment_notification_timestamp"] = start - 19 * 86400
+    old["updated_timestamp"] = start - 19 * 86400
+    _fake, store = setup_orders(web, [late, early, fixed, bare, old])
+    data = web.client.get("/api/orders/summary").json()
+    assert data["shipped_month"] == 2 and data["shipped_month_partial"] is False
+    scan = [q for q in store.queries if "min_last_modified" in q]
+    assert scan and scan[0]["min_last_modified"] == str(start)
+    assert scan[0]["was_shipped"] == "true" and scan[0]["was_paid"] == "true"
+    assert scan[0]["sort_on"] == "updated"
+    assert not any("min_created" in q for q in store.queries)
+    assert orders_api.shipped_since(late, start) and not orders_api.shipped_since(fixed, start)
+
+
+def test_shipped_this_month_says_when_it_stopped_counting(web, monkeypatch):
+    monkeypatch.setattr(orders_api, "month_start", lambda now=None: 1790000000 - 86400 * 30)
+    monkeypatch.setattr(orders_api, "SHIPPED_SCAN_LIMIT", 2)
+    setup_orders(web, [make_receipt(n, shipped=True) for n in range(1, 5)])
+    data = web.client.get("/api/orders/summary").json()
+    assert data["shipped_month"] == 2 and data["shipped_month_partial"] is True

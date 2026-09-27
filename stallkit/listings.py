@@ -364,8 +364,30 @@ class PreparedRow:
     image_paths: list[Path] = field(default_factory=list)
 
 
+ImageResolver = Callable[[str], Path]
+"""Turns one `images` cell value into a path, or raises ValidationError to refuse it.
+
+The CLI reads a CSV the seller keeps next to their pictures, so it takes any path
+(csvio.resolve_paths). The web app's CSV arrives as an upload with no folder of its
+own and may come from anywhere, so it passes a resolver that keeps every image inside
+the workspace and refuses the rest before the filesystem is touched.
+"""
+
+
+def _image_paths(
+    values: list[str], base_dir: Path, resolver: ImageResolver | None
+) -> list[Path]:
+    if resolver is None:
+        return resolve_paths(values, base_dir)
+    return [resolver(value) for value in values]
+
+
 def prepare(
-    rows: Sequence[dict[str, str]], *, base_dir: Path, upload_images: bool = True
+    rows: Sequence[dict[str, str]],
+    *,
+    base_dir: Path,
+    upload_images: bool = True,
+    image_resolver: ImageResolver | None = None,
 ) -> list[PreparedRow]:
     """Validate every row. Pure local work — no network, no writes, no side effects."""
     prepared: list[PreparedRow] = []
@@ -393,11 +415,19 @@ def prepare(
             prepared.append(PreparedRow(result, is_update))
             continue
 
-        image_paths = resolve_paths(split_multi(row.get("images", "")), base_dir)
         # Only the run that will actually upload them cares how many there are, or
         # whether they exist. Under --no-images nothing is sent, and failing a row over
         # a column this run ignores would stop a seller fixing their titles.
         if upload_images:
+            try:
+                image_paths = _image_paths(
+                    split_multi(row.get("images", "")), base_dir, image_resolver
+                )
+            except ValidationError as exc:
+                result.status = "error"
+                result.message = str(exc)
+                prepared.append(PreparedRow(result, is_update, payload))
+                continue
             if len(image_paths) > MAX_LISTING_IMAGES:
                 # Etsy accepts the create and then refuses the eleventh upload, leaving
                 # a draft stallkit has no delete scope to undo — the one state this tool
@@ -434,7 +464,9 @@ def prepare(
     return prepared
 
 
-def inventory_for_copy(inventory: dict[str, Any]) -> dict[str, Any]:
+def inventory_for_copy(
+    inventory: dict[str, Any], *, readiness_state_id: int | None = None
+) -> dict[str, Any]:
     """Turn a getListingInventory response into an updateListingInventory body.
 
     The two are nearly the same shape and not quite: the read carries ids the write
@@ -442,6 +474,12 @@ def inventory_for_copy(inventory: dict[str, Any]) -> dict[str, Any]:
     in as a plain number, and deleted offerings are listed but must not be recreated.
     Everything that defines the options — properties, their values and which of them
     drive price, quantity, SKU and processing time — is carried across unchanged.
+
+    `readiness_state_id` on every offering is required by updateListingInventory
+    (OAS: required [price, quantity, is_enabled, readiness_state_id], nullable), but
+    getListingInventory only returns it for an active physical listing. An offering
+    without one gets `readiness_state_id` (the template listing's processing profile)
+    here, or None, which `_write_row` fills from the new draft's own profile.
     """
     products = []
     for product in inventory.get("products") or []:
@@ -454,13 +492,13 @@ def inventory_for_copy(inventory: dict[str, Any]) -> dict[str, Any]:
             price = offering.get("price")
             if isinstance(price, dict):
                 price = price.get("amount", 0) / (price.get("divisor") or 100)
+            readiness = offering.get("readiness_state_id")
             entry = {
                 "price": round(float(price), 2),
                 "quantity": int(offering.get("quantity") or 0),
                 "is_enabled": bool(offering.get("is_enabled", True)),
+                "readiness_state_id": readiness if readiness is not None else readiness_state_id,
             }
-            if offering.get("readiness_state_id") is not None:
-                entry["readiness_state_id"] = offering["readiness_state_id"]
             offerings.append(entry)
         if not offerings:
             continue
@@ -491,6 +529,28 @@ def has_variations(inventory: dict[str, Any] | None) -> bool:
     return bool(inventory) and any(p.get("property_values") for p in inventory["products"])
 
 
+def inventory_with_readiness(
+    inventory: dict[str, Any], readiness_state_id: Any
+) -> dict[str, Any]:
+    """A copy of an updateListingInventory body whose offerings all name a profile.
+
+    An offering that has none takes the new listing's own `readiness_state_id` (the one
+    its create payload carried); every offering keeps the key, None at worst, because
+    the endpoint requires it. The shared body is never changed: one run copies it onto
+    many drafts.
+    """
+    products = []
+    for product in inventory.get("products") or []:
+        offerings = []
+        for offering in product.get("offerings") or []:
+            entry = dict(offering)
+            if entry.get("readiness_state_id") is None:
+                entry["readiness_state_id"] = readiness_state_id
+            offerings.append(entry)
+        products.append({**product, "offerings": offerings})
+    return {**inventory, "products": products}
+
+
 def push(
     client: EtsyClient | None,
     rows: Sequence[dict[str, str]],
@@ -501,6 +561,7 @@ def push(
     allow_partial: bool = False,
     on_progress: Callable[[RowResult], None] | None = None,
     inventory: dict[str, Any] | None = None,
+    image_resolver: ImageResolver | None = None,
 ) -> PushReport:
     """Apply a CSV to the shop.
 
@@ -517,7 +578,9 @@ def push(
         raise ValidationError("A client is required unless dry_run is set.")
 
     report = PushReport()
-    prepared = prepare(rows, base_dir=base_dir, upload_images=upload_images)
+    prepared = prepare(
+        rows, base_dir=base_dir, upload_images=upload_images, image_resolver=image_resolver
+    )
     invalid = [p for p in prepared if p.result.failed]
 
     if dry_run:
@@ -603,7 +666,10 @@ def _write_row(
     # update never replaces options a seller may have tuned by hand.
     if inventory and not item.is_update and result.listing_id:
         try:
-            client.update_listing_inventory(result.listing_id, inventory)
+            client.update_listing_inventory(
+                result.listing_id,
+                inventory_with_readiness(inventory, item.payload.get("readiness_state_id")),
+            )
             result.message = f"{result.message} with {len(inventory['products'])} variations"
         except (EtsyApiError, ValidationError, OSError, ValueError) as exc:
             result.status = "partial"
@@ -671,7 +737,7 @@ def pull(client: EtsyClient, *, state: str = "active", max_items: int | None = N
                 "images": "",  # Etsy serves images by URL; re-uploading them is never wanted.
                 "state": listing.get("state", ""),
                 "url": listing.get("url", ""),
-                "views": listing.get("views", ""),
+                # No "views": ShopListing (OAS) has no such field, so it was always empty.
                 "num_favorers": listing.get("num_favorers", ""),
             }
         )

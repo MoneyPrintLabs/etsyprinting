@@ -60,7 +60,8 @@ def test_load_guesses_what_has_no_entry_and_ignores_orphans(ws):
     infos = catalog.load(ws)
     assert list(infos) == ["a-shirt-white.png", "b-shirt-black.png", "c-mug.png"]
     assert infos["a-shirt-white.png"].to_dict() == {
-        "name": "a-shirt-white.png", "type": "tshirt", "color": "Beyaz", "enabled": True}
+        "name": "a-shirt-white.png", "type": "tshirt", "color": "Beyaz", "enabled": True,
+        "order": None}
     assert infos["c-mug.png"].enabled is False and infos["c-mug.png"].color == "Krem"
 
 
@@ -142,3 +143,123 @@ def test_same_size_names_and_save_area(ws):
         "a-shirt-white.png", "b-shirt-black.png", "c-mug.png"}
     assert catalog.clear_area(ws, "c-mug.png") is True
     assert catalog.clear_area(ws, "c-mug.png") is False
+
+
+# --- order and which mockups drafts use (FIXLIST 9, 10) ------------------------------------
+
+
+def test_an_older_catalog_without_order_keeps_folder_order(ws):
+    # mockups.json from v0.2.0: no "order" anywhere.
+    catalog.catalog_path(ws).write_text(json.dumps({
+        "a-shirt-white.png": {"type": "tshirt", "color": "Beyaz", "enabled": True},
+        "c-mug.png": {"type": "mug", "color": "", "enabled": True},
+    }), encoding="utf-8")
+    assert catalog.ordered_names(ws) == ["a-shirt-white.png", "b-shirt-black.png", "c-mug.png"]
+    assert [p.name for p in catalog.enabled_mockups(ws)] == catalog.ordered_names(ws)
+
+
+def test_the_saved_order_decides_the_main_image(ws):
+    infos = catalog.arrange(ws, order=["c-mug.png", "a-shirt-white.png"])
+    # b- was not listed: it keeps its place after the listed ones.
+    assert list(infos) == ["c-mug.png", "a-shirt-white.png", "b-shirt-black.png"]
+    assert [p.name for p in catalog.enabled_mockups(ws)] == [
+        "c-mug.png", "a-shirt-white.png", "b-shirt-black.png"]
+    assert catalog.enabled_mockups(ws)[0] == ws.mockups / "c-mug.png"  # the main image
+    stored = json.loads(catalog.catalog_path(ws).read_text(encoding="utf-8"))
+    assert stored["c-mug.png"]["order"] == 0 and stored["b-shirt-black.png"]["order"] == 2
+    # Changing type/colour/enabled keeps the place in the order.
+    catalog.update(ws, "c-mug.png", color="Siyah", enabled=True)
+    assert catalog.ordered_names(ws)[0] == "c-mug.png"
+    assert json.loads(catalog.catalog_path(ws).read_text(encoding="utf-8"))["c-mug.png"] == {
+        "type": "mug", "color": "Siyah", "enabled": True, "order": 0}
+
+
+def test_a_new_mockup_joins_at_the_end_of_a_saved_order(ws):
+    catalog.arrange(ws, order=["c-mug.png", "b-shirt-black.png", "a-shirt-white.png"])
+    catalog.add(ws, "0-first-by-name.png", image_bytes())
+    assert catalog.ordered_names(ws) == [
+        "c-mug.png", "b-shirt-black.png", "a-shirt-white.png", "0-first-by-name.png"]
+
+
+def test_a_removed_mockup_leaves_no_gap_in_what_is_used(ws):
+    catalog.arrange(ws, order=["c-mug.png", "b-shirt-black.png", "a-shirt-white.png"])
+    catalog.remove(ws, "b-shirt-black.png")
+    assert [p.name for p in catalog.enabled_mockups(ws)] == ["c-mug.png", "a-shirt-white.png"]
+
+
+def test_arrange_sets_exactly_the_enabled_set(ws):
+    catalog.arrange(ws, enabled=["b-shirt-black.png"])
+    infos = catalog.load(ws)
+    assert [n for n, i in infos.items() if i.enabled] == ["b-shirt-black.png"]
+    assert [p.name for p in catalog.enabled_mockups(ws)] == ["b-shirt-black.png"]
+    # Order untouched when only the selection changes.
+    assert list(infos) == ["a-shirt-white.png", "b-shirt-black.png", "c-mug.png"]
+    catalog.arrange(ws, enabled=[])
+    assert catalog.enabled_mockups(ws) == []
+
+
+def test_arrange_checks_everything_before_writing(ws):
+    with pytest.raises(FileNotFoundError):
+        catalog.arrange(ws, order=["c-mug.png", "../product.json"])
+    with pytest.raises(FileNotFoundError):
+        catalog.arrange(ws, enabled=["missing.png"])
+    with pytest.raises(ValidationError):
+        catalog.arrange(ws, order=["c-mug.png", "c-mug.png"])
+    with pytest.raises(ValidationError):
+        catalog.arrange(ws)
+    assert not catalog.catalog_path(ws).exists()
+
+
+def test_a_broken_order_value_is_ignored(ws):
+    catalog.catalog_path(ws).write_text(json.dumps({
+        "c-mug.png": {"order": 0},
+        "a-shirt-white.png": {"order": True},
+        "b-shirt-black.png": {"order": "1"},
+    }), encoding="utf-8")
+    assert catalog.ordered_names(ws) == ["c-mug.png", "a-shirt-white.png", "b-shirt-black.png"]
+
+
+def test_usage_marks_what_does_not_fit_in_order(ws):
+    for n in range(25):
+        (ws.mockups / f"z-{n:02d}.png").write_bytes(image_bytes())
+    catalog.update(ws, "b-shirt-black.png", enabled=False)
+    names = catalog.ordered_names(ws)
+    # The last mockup becomes the main image; the first switched-on ones follow.
+    catalog.arrange(ws, order=[names[-1], *names[:-1]])
+    use = catalog.usage(ws)
+    assert use["total"] == 28 and use["enabled"] == 27 and use["max"] == catalog.MAX_ENABLED
+    assert use["used"][0] == "z-24.png"
+    assert len(use["used"]) == 19 and len(use["over_limit"]) == 8
+    assert "b-shirt-black.png" not in use["used"] + use["over_limit"]
+    assert use["used"][1:3] == ["a-shirt-white.png", "c-mug.png"]
+    assert use["over_limit"][0] == "z-16.png"
+    assert [p.name for p in catalog.enabled_mockups(ws)] == use["used"]
+
+
+# --- pixel limits (review finding design-pixel-bomb-500) -------------------------------------
+
+
+def test_add_refuses_too_many_pixels(ws):
+    # A 1-bit PNG of 8000x8000 is tiny on disk and 64M pixels once decoded.
+    buffer = io.BytesIO()
+    Image.new("1", (8000, 8000)).save(buffer, format="PNG")
+    with pytest.raises(catalog.TooManyPixels) as caught:
+        catalog.add(ws, "huge.png", buffer.getvalue())
+    assert (caught.value.width, caught.value.height) == (8000, 8000)
+    buffer = io.BytesIO()
+    Image.new("1", (12001, 10)).save(buffer, format="PNG")
+    with pytest.raises(catalog.TooManyPixels):
+        catalog.add(ws, "long.png", buffer.getvalue())
+    assert not (ws.mockups / "huge.png").exists() and not (ws.mockups / "long.png").exists()
+    assert catalog.too_many_pixels((7000, 8000)) is False
+    assert catalog.too_many_pixels((7746, 7746)) is True
+    assert catalog.too_many_pixels((12000, 5000)) is False
+
+
+def test_add_reports_pillows_own_bomb_refusal_as_too_many_pixels(ws, monkeypatch):
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 1000)
+    buffer = io.BytesIO()
+    Image.new("1", (100, 100)).save(buffer, format="PNG")
+    with pytest.raises(catalog.TooManyPixels) as caught:
+        catalog.add(ws, "bomb.png", buffer.getvalue())
+    assert caught.value.width == 100

@@ -7,6 +7,109 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-09-27
+
+### Changed
+
+- **The app now runs in your browser.** Double-clicking the download, or running
+  `stallkit desktop`, starts a small server on this computer and opens
+  `http://localhost:3000` (the next free port if 3000 is taken) instead of a Tk window.
+  Double-clicking again opens a tab in the app that is already running. Closing the last
+  tab stops the app about 90 seconds later unless a task is still running, and
+  **Ayarlar → Kapat** quits at once. Turkish comes first and English second; the app
+  follows the system language, and you can switch it in **Ayarlar**.
+- **Only this computer can reach it.** The server listens on `127.0.0.1` and `::1` only.
+  Only the tab the app opened has a session. Requests with a foreign Host or Origin are
+  refused, and every response carries a strict Content Security Policy.
+- **`stallkit desktop --port N --no-browser`.** `python -m stallkit desktop` works the same
+  way. The downloaded app still runs any command when given arguments, for scheduled
+  jobs.
+- **The README is about the app now.** The command line documentation moved to
+  `CLI.md`, and SETUP.md names the app's screens.
+- The release check starts the packaged app's web server and fetches every file of the
+  interface from it.
+
+### Added
+
+The screens from the video, all in Turkish and English:
+
+- **Mağaza Bağlantısı** (Shop connection) walks through the Seller App steps with copy
+  buttons. The keys are checked with Etsy the moment they are saved. Connecting opens
+  Etsy's consent page in a new tab, which closes itself when done. The screen then shows
+  the permissions Etsy granted and offers a disconnect.
+- **Mockuplar** (Mockups) uploads mockups and has a print-area editor. One area can be
+  applied to every mockup of the same size, and you choose which mockups go into drafts.
+- **Şablon İlan** (Template listing) picks the listing whose price, category, shipping,
+  return policy, processing time, description and variations every new draft copies.
+- **Tasarım Yükle** (Upload designs) takes designs or folders of finished photos by drag
+  and drop. Each one goes through six steps (mockup, research, title, tags, check, draft),
+  three at a time, with live progress, and is sent to Etsy as a draft. A run can be
+  stopped. The upload history prevents duplicates, and nothing is published.
+- **İlanlar** and **Taslak İlan** (Listings, Draft listing) show drafts and live
+  listings. You can edit the title, tags and description, and publish one listing or many
+  after a confirmation that states Etsy's listing fee. Listings can be downloaded as CSV
+  or updated from one.
+- **SEO** scores every listing out of 100, weakest first, and offers tag research for any
+  keyword. **Düzelt** (Fix) sends the suggested change after a confirmation, and refuses
+  if the listing changed on Etsy since the audit. The report downloads as CSV.
+- **Siparişler** (Orders) lists waiting, shipped and delivered orders. Tracking numbers
+  can be typed or loaded from a CSV, and they are sent after a confirmation.
+- **Kâr-Zarar** (Profit & loss) shows revenue, Etsy fees from the payment ledger, the
+  product and shipping costs you enter, and net profit and margin per month. Amounts are
+  in the shop's currency and in TRY, using the Central Bank of Turkey's rate (fetched at
+  most once a day) or one you type.
+- **Panel** (Dashboard) shows today's numbers and quick actions.
+- **Pinterest** connects your account, queues Pins from live listings and posts the ones
+  that are due.
+- **Ayarlar** (Settings) covers language, hiding the shop name for screenshots, several
+  shops, the products folder, the ten-step setup checklist, and quitting.
+- **Across the app:** a notification bell, long tasks that keep running when you move
+  between screens, and a question before you leave a page with unsaved edits.
+- **Etsy's trademark notice** is shown on every screen.
+
+### Fixed
+
+From reports on 0.2.0:
+
+- **"The requested redirect URL is not permitted."** **Mağaza Bağlantısı** shows the
+  callback address with a copy button and the exact place to add it in Etsy (**⋮ → Edit
+  callback URLs**, which appears only after Etsy approves the app). It asks once, before
+  opening Etsy, whether the address has been added. While it waits, it lists Etsy's usual
+  errors and how to fix each one.
+- **Checks before connecting.** The keys, the callback address and port 3003 are checked
+  first, with a plain message when another program holds the port.
+- **Pasted keys are cleaned up.** Spaces, line breaks and quotes are removed, and a
+  single `keystring:shared_secret` line is accepted.
+- **The print area is easy to find.** Every mockup card has a visible "Baskı alanını
+  ayarla" (Set print area) action. A banner says how many mockups still use the default
+  area, which puts the design in the middle.
+- **Choosing mockups is explicit.** You pick which mockups go into drafts in a selection
+  mode, with select all and none, type and colour filters, and a counter. Etsy allows 20
+  images per listing, so up to 19 mockups plus the flat design. Nothing is left out
+  silently, and you can change the order, and with it the main image.
+- **Running from source and troubleshooting are documented.** The README and SETUP.md
+  cover running from source on Windows, macOS and Linux with Python 3.9–3.13, and both
+  have a troubleshooting section.
+
+From the review before this release:
+
+- **Text with `&` or an apostrophe is handled correctly.** Etsy returns a seller's own
+  titles, tags and descriptions HTML-escaped (`Mom&#39;s Mug &amp; Gift`). They are now
+  decoded once, where they are read. As a result, edits, SEO fixes, new drafts, Pins and
+  CSV files carry plain text instead of sending the entities back to Etsy.
+- **Tracking numbers and Pins need the confirmation on the server too,** as publishing,
+  edits and SEO fixes already did. Nothing reaches a buyer without it.
+- **Kâr-Zarar counts refunds correctly.** A refund comes off revenue without its tax
+  share, and a fully refunded order counts as nothing. The Panel counts revenue the same
+  way. A month too large to read whole is marked as partial instead of being shown as
+  complete.
+- **Receipts, the payment ledger and listings are read in full.** Only Etsy's marketplace
+  search stops at its first 12,000 results.
+
+### Removed
+
+- The Tk window, and with it the need for `tkinter`.
+
 ## [0.2.0] — 2026-09-26
 
 ### Added
@@ -143,6 +246,7 @@ Recorded here and in the code so nobody has to re-derive them:
 - There is no idempotency key, so non-idempotent writes are never retried on a timeout
   or a 5xx — a repeat would mean a duplicate listing, or a second email to a buyer.
 
-[Unreleased]: https://github.com/MoneyPrintLabs/etsyprinting/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/MoneyPrintLabs/etsyprinting/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/MoneyPrintLabs/etsyprinting/releases/tag/v0.3.0
 [0.2.0]: https://github.com/MoneyPrintLabs/etsyprinting/releases/tag/v0.2.0
 [0.1.0]: https://github.com/MoneyPrintLabs/etsyprinting/releases/tag/v0.1.0

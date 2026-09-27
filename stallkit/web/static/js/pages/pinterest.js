@@ -418,6 +418,13 @@ export default {
       try {
         w = window.open("", "_blank");
         if (w) {
+          // Pinterest's page (and anything later loaded in that tab) gets no handle on
+          // this app: this tab keeps its own reference `w` to fill and close it.
+          try {
+            w.opener = null;
+          } catch {
+            /* ignore */
+          }
           w.document.title = "Pinterest";
           w.document.body.style.cssText = "background:#0b0c0f;color:#b6b9c4;font:15px system-ui;display:grid;place-items:center;height:100vh;margin:0";
           w.document.body.textContent = t("connect.opening");
@@ -456,13 +463,25 @@ export default {
     }
 
     function closePopup() {
-      // Best effort: the consent tab is ours to close; after Pinterest it may no longer be reachable.
-      try {
-        if (S.popup) S.popup.close();
-      } catch {
-        /* ignore */
-      }
+      // Only a tab still on this origin (the blank tab, or /oauth-done) is closed from here.
+      // Once it shows Pinterest's page it is no longer ours: its opener was cut when it
+      // opened, and the browser refuses (and logs) a close from a page that is not its opener.
+      const w = S.popup;
       S.popup = null;
+      if (!w || w.closed) return;
+      let ours = false;
+      try {
+        ours = w.location.origin === location.origin;
+      } catch {
+        ours = false;
+      }
+      if (ours) {
+        try {
+          w.close();
+        } catch {
+          /* ignore */
+        }
+      }
     }
 
     // ------------------------------------------------------------------ ready mode
@@ -1108,7 +1127,8 @@ export default {
       if (!ok) return;
       postBtn.setLoading(true);
       try {
-        const r = await ctx.api.post("/api/pinterest/post", {});
+        // confirm: the seller said yes in the modal above; the server refuses without it.
+        const r = await ctx.api.post("/api/pinterest/post", { confirm: true });
         S.postJob = r.job;
         renderPostProgress();
       } catch (err) {

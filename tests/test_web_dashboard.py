@@ -131,8 +131,11 @@ def test_the_six_numbers(web):
     assert stats["seo"]["value"] == round(sum(scores) / 2)
     assert stats["seo"]["sample"] == 2 and stats["seo"]["low"] == 1
     revenue = stats["revenue"]
-    assert revenue["value"] == 40.0  # 20 + 5 shipping, 18.50 - 3.50 refunded; the refunded order is out
-    assert revenue["orders"] == 2 and revenue["currency"] == "USD"
+    # 20 + 5 shipping, 18.50 - 3.50 refunded; the fully refunded order counts as 0, as on
+    # Kâr-Zarar (it is still one of the month's orders).
+    assert revenue["value"] == 40.0
+    assert revenue["orders"] == 3 and revenue["currency"] == "USD"
+    assert revenue["partial"] is False
     assert revenue["month"] == datetime.now().strftime("%Y-%m")
     assert stats["quota"]["value"] == 9876
     assert all(stats[name]["error"] is None for name in stats)
@@ -232,9 +235,42 @@ def test_the_pinterest_line_counts_the_local_queue(web):
 def test_revenue_of_one_receipt():
     assert dashboard.receipt_revenue(RECEIPTS[0]) == (25.0, "USD")
     assert dashboard.receipt_revenue(RECEIPTS[1]) == (15.0, "USD")
-    assert dashboard.receipt_revenue(RECEIPTS[2]) == (0.0, None)
+    assert dashboard.receipt_revenue(RECEIPTS[2]) == (0.0, "USD")
+    assert dashboard.receipt_revenue({"status": "canceled", "subtotal": RECEIPTS[0]["subtotal"]}) == (
+        0.0, None)
     assert dashboard.receipt_revenue({"status": "paid"}) == (0.0, None)
 
 
 def test_the_month_starts_at_local_midnight_on_the_first():
     assert dashboard.month_start(datetime(2026, 9, 26, 14, 5, 7)) == datetime(2026, 9, 1)
+
+
+def test_the_panel_and_kar_zarar_agree_on_a_months_revenue():
+    # Gift wrap, a taxed order refunded in full, a partial refund, a failed refund and a
+    # fully refunded order: the Panel tile and Kâr-Zarar must show the same number.
+    from stallkit.web.api import profit
+
+    def receipt(n, status, *, items, shipping=0, gift=0, tax=0, refunds=()):
+        return {
+            "receipt_id": 3000100 + n, "status": status,
+            "subtotal": _usd(items), "total_shipping_cost": _usd(shipping),
+            "gift_wrap_price": _usd(gift), "total_tax_cost": _usd(tax), "total_vat_cost": _usd(0),
+            "refunds": [{"amount": _usd(cents), "status": state} for cents, state in refunds],
+            "transactions": [{"listing_id": 1000001, "title": "Example Mug", "quantity": 1,
+                              "price": _usd(items)}],
+        }
+
+    receipts = [
+        receipt(1, "paid", items=2000, shipping=500, gift=300),
+        receipt(2, "partially refunded", items=2000, shipping=500, tax=200,
+                refunds=[(2700, "succeeded")]),
+        receipt(3, "partially refunded", items=4000, tax=400, refunds=[(1100, "succeeded")]),
+        receipt(4, "paid", items=1500, refunds=[(1500, "failed")]),
+        receipt(5, "fully refunded", items=9900, tax=800),
+    ]
+    panel = sum(dashboard.receipt_revenue(r)[0] for r in receipts)
+    raw = {**profit.summarise_receipts(receipts, "USD"), "month": "2026-09", "currency": "USD"}
+    kar_zarar = profit.compute_month(raw, {})["revenue"]
+    assert panel == pytest.approx(kar_zarar)
+    # 28 (gift wrap counts) + 0 (the refund took its tax share back) + 30 + 15 + 0
+    assert kar_zarar == pytest.approx(28 + 0 + 30 + 15 + 0)

@@ -108,7 +108,9 @@ def test_without_keys_the_pending_view_says_what_is_missing(web):
     data = resp.json()
     assert data["items"] == [] and data["ready"] is False
     assert data["blockers"] == ["keys", "template", "empty"]
-    assert data["mockups"] == {"enabled": 0, "total": 0, "types": {}, "primary": None}
+    assert data["mockups"] == {"enabled": 0, "used": 0, "switched_on": 0, "over_limit": 0,
+                               "max": 19, "main": None, "total": 0, "types": {},
+                               "primary": None}
     assert data["shop"]["connected"] is False
 
     start = web.client.post("/api/designs/start", json={})
@@ -447,3 +449,79 @@ def test_a_run_that_breaks_off_leaves_no_product_waiting(web, fast_images, monke
     assert final["status"] == "error" and final["error"]["code"] == "invalid"
     statuses = [item["status"] for item in final["state"]["items"]]
     assert "queued" not in statuses and "running" not in statuses and "waiting" not in statuses
+
+
+# --- mockups the run uses (FIXLIST 9, 10) and the pixel limit (design-pixel-bomb-500) --------
+
+
+def test_pending_counts_mockups_by_the_mockuplar_rule(web):
+    from stallkit.drop import catalog
+
+    _fake, ws = _setup_shop(web, mockups=0)
+    for n in range(21):
+        (ws.mockups / f"tee-{n:02d}.jpg").write_bytes(_jpg())
+    catalog.update(ws, "tee-00.jpg", enabled=False)
+    catalog.arrange(ws, order=["tee-20.jpg"])
+    mockups = web.client.get("/api/designs/pending").json()["mockups"]
+    # 20 switched on, 19 fit in a listing next to the flat design; the chip says 19.
+    assert mockups["enabled"] == 19 and mockups["used"] == 19
+    assert mockups["switched_on"] == 20 and mockups["over_limit"] == 1
+    assert mockups["max"] == 19 and mockups["total"] == 21
+    assert mockups["main"] == "tee-20.jpg"
+    assert mockups["main"] == catalog.enabled_mockups(ws)[0].name
+
+
+def test_a_run_uses_the_saved_mockup_order_first_is_the_main_image(web, fast_images):
+    from stallkit.drop import catalog
+
+    _fake, ws = _setup_shop(web, mockups=3)
+    catalog.arrange(ws, order=["tote-natural.jpg", "mug-white.jpg", "tshirt-white.jpg"],
+                    enabled=["tote-natural.jpg", "mug-white.jpg"])
+    _put(web, "retro-mountain-sunset.png", _png())
+    job = web.client.post("/api/designs/start", json={}).json()
+    final = wait_for_job(web, job["id"], timeout=20)
+    assert final["status"] == "done", final
+    images = final["state"]["items"][0]["images"]
+    assert [path.rsplit("--", 1)[1] for path in images] == [
+        "tote-natural.jpg", "mug-white.jpg", "flat.jpg"]
+
+
+def _huge_png(size) -> bytes:
+    # 1-bit: a small file that is tens of millions of pixels once decoded.
+    buffer = io.BytesIO()
+    Image.new("1", size).save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize("size", [(8000, 8000), (12001, 100)])
+def test_a_design_with_too_many_pixels_is_refused(web, size):
+    resp = _put(web, "bigdesign.png", _huge_png(size))
+    assert resp.status_code == 422
+    error = resp.json()["error"]
+    assert error["code"] == "too_many_pixels"
+    assert error["params"]["name"] == "bigdesign.png"
+    assert (error["params"]["width"], error["params"]["height"]) == size
+    assert error["params"]["max_edge"] == 12000 and error["params"]["max_mp"] == 60
+    assert not any(web.ctx.workspace().products.iterdir())
+
+
+def test_a_design_pillow_itself_refuses_is_too_many_pixels(web, monkeypatch):
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 100)
+    resp = _put(web, "sunset.png", _png())
+    assert resp.status_code == 422 and resp.json()["error"]["code"] == "too_many_pixels"
+
+
+def test_a_large_but_sane_design_is_accepted(web):
+    resp = _put(web, "poster.png", _huge_png((7000, 8000)))
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.filterwarnings("ignore::PIL.Image.DecompressionBombWarning")
+def test_a_huge_design_already_in_the_folder_gets_422_thumbnails(web):
+    # The review's reproduction: 13000x13000 answered 500 internal (MemoryError) before.
+    ws = web.ctx.workspace()
+    (ws.products / "bigdesign.png").write_bytes(_huge_png((13000, 13000)))
+    resp = web.client.get("/api/files/thumb", params={"path": "2-PRODUCTS/bigdesign.png",
+                                                      "w": 400})
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "too_many_pixels"

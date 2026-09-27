@@ -31,7 +31,7 @@ from typing import Any, Callable
 
 import httpx
 
-from .auth import LoopbackServer
+from .auth import FOREIGN_DETAIL, FOREIGN_TITLE, LoopbackServer, listener_page, state_matches
 from .client import RateLimiter
 from .config import home_dir, read_json, write_json_private
 from .errors import AuthError, ConfigError, StallKitError, ValidationError
@@ -251,6 +251,11 @@ def code_from_redirect(text: str, expected_state: str) -> str:
 
 class _Callback(http.server.BaseHTTPRequestHandler):
     result: dict[str, str] = {}
+    # The state of the consent request being waited for. Only a request carrying it
+    # is recorded (and sent on to the app); any other is refused and the wait goes on,
+    # so a link or <img> on some web page cannot end the flow or fake a success.
+    # None records any answer (a handler used on its own).
+    expected_state: str | None = None
     # Where to send the browser once Pinterest answers with a code — the web app's
     # page that closes the tab. None keeps the plain page below (the CLI).
     return_url: str | None = None
@@ -265,6 +270,15 @@ class _Callback(http.server.BaseHTTPRequestHandler):
             self.send_response(404)
             self.send_header("Content-Length", "0")
             self.end_headers()
+            return
+        if not state_matches(params.get("state"), type(self).expected_state):
+            body = listener_page(FOREIGN_TITLE, FOREIGN_DETAIL)
+            self.send_response(400)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
             return
         type(self).result = params
         # Only a success goes back to the app: an error keeps the page below.
@@ -302,6 +316,7 @@ def _listen_for_code(
         server = LoopbackServer(("127.0.0.1", port), _Callback)
     except OSError as exc:
         raise AuthError(f"Cannot listen on port {port} ({exc}). Use --paste instead.") from exc
+    _Callback.expected_state = state  # a forged answer is refused and the wait goes on
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.4}, daemon=True)
     thread.start()
     deadline = time.time() + timeout
@@ -313,6 +328,7 @@ def _listen_for_code(
     finally:
         server.shutdown()
         server.server_close()
+        _Callback.expected_state = None
     result = dict(_Callback.result)
     if not result and cancel is not None and cancel.is_set():
         raise AuthError("Cancelled before Pinterest sent the browser back. Nothing was changed.")

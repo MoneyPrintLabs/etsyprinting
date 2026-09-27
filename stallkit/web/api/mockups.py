@@ -52,6 +52,7 @@ _sample_lock = threading.Lock()
 
 def register(r: Router, ctx: AppContext) -> None:
     r.get("/api/mockups", list_mockups)
+    r.post("/api/mockups/arrange", arrange_mockups)
     r.put("/api/mockups/files", upload_mockup)
     r.get("/api/mockups/designs", list_designs)
     r.get("/api/mockups/design-image", design_image)
@@ -153,12 +154,16 @@ def display_image(source: Path, max_edge: int) -> Path:
     target = _cache_dir() / f"{key}.jpg"
     if target.is_file():
         return target
-    try:
-        with Image.open(source) as opened:
-            image = mockup.flatten_onto(mockup._as_displayed(opened), mockup.WHITE)
-    except (OSError, ValueError, Image.DecompressionBombError) as exc:
-        raise _unreadable(source.name, exc) from exc
-    return _save_atomic(_shrink(image, max_edge), target, "JPEG", quality=88, optimize=True)
+    dims: list[tuple[int, int]] = [(0, 0)]
+    with files.decoding(source.name, lambda: dims[0]):
+        try:
+            with Image.open(source) as opened:
+                dims[0] = opened.size
+                files.check_decodable(source.name, opened.size)
+                image = mockup.flatten_onto(mockup._as_displayed(opened), mockup.WHITE)
+        except (OSError, ValueError) as exc:
+            raise _unreadable(source.name, exc) from exc
+        return _save_atomic(_shrink(image, max_edge), target, "JPEG", quality=88, optimize=True)
 
 
 def design_png(source: Path, max_edge: int) -> Path:
@@ -169,12 +174,16 @@ def design_png(source: Path, max_edge: int) -> Path:
     target = _cache_dir() / f"{key}.png"
     if target.is_file():
         return target
-    try:
-        with Image.open(source) as opened:
-            image = mockup._as_displayed(opened).convert("RGBA")
-    except (OSError, ValueError, Image.DecompressionBombError) as exc:
-        raise _unreadable(source.name, exc) from exc
-    return _save_atomic(_shrink(image, max_edge), target, "PNG", optimize=False)
+    dims: list[tuple[int, int]] = [(0, 0)]
+    with files.decoding(source.name, lambda: dims[0]):
+        try:
+            with Image.open(source) as opened:
+                dims[0] = opened.size
+                files.check_decodable(source.name, opened.size)
+                image = mockup._as_displayed(opened).convert("RGBA")
+        except (OSError, ValueError) as exc:
+            raise _unreadable(source.name, exc) from exc
+        return _save_atomic(_shrink(image, max_edge), target, "PNG", optimize=False)
 
 
 def sample_design() -> Path:
@@ -246,9 +255,16 @@ def _draw_sample(size: int = 1200) -> Any:
 
 
 def _items(ws: Workspace) -> dict[str, Any]:
-    paths = ws.mockup_files()
+    """The grid: every mockup in the seller's order, and which ones drafts use.
+
+    items[i]["position"] is the image number a draft gives it (1 = main image) or None;
+    "over_limit" marks a switched-on mockup that does not fit (beyond MAX_ENABLED).
+    "default_area" counts the mockups still on the default print area, with the first
+    one to fix (in order, preferring one that drafts use) for the page's banner.
+    """
+    paths = {p.name: p for p in ws.mockup_files()}
     infos = catalog.load(ws)
-    sizes = mockup.mockup_sizes(paths)
+    sizes = mockup.mockup_sizes(list(paths.values()))
     positions_error = None
     try:
         areas = catalog.effective_areas(ws, sizes=sizes)
@@ -259,24 +275,29 @@ def _items(ws: Workspace) -> dict[str, Any]:
     if positions_error is None:
         try:
             stored = mockup.load_positions(ws.positions_path)
-            orphans = sorted(set(stored) - {p.name for p in paths})
+            orphans = sorted(set(stored) - set(paths))
         except ValidationError:
             orphans = []
     per_size = Counter(sizes.values())
-    in_use = {p.name for p in catalog.enabled_mockups(ws)}
+    use = catalog.usage(ws, infos)
+    position = {name: n for n, name in enumerate(use["used"], 1)}
+    over = set(use["over_limit"])
     items = []
-    for path in paths:
-        info = infos.get(path.name) or catalog.MockupInfo(path.name, *catalog.guess(path.name))
-        size = sizes.get(path.name)
-        area, source = areas.get(path.name, (mockup.DEFAULT_PRINT_AREA, catalog.SOURCE_DEFAULT))
+    for index, (name, info) in enumerate(infos.items()):
+        path = paths[name]
+        size = sizes.get(name)
+        area, source = areas.get(name, (mockup.DEFAULT_PRINT_AREA, catalog.SOURCE_DEFAULT))
         items.append({
-            "name": path.name,
-            "path": f"{MOCKUPS_DIR}/{path.name}",
+            "name": name,
+            "path": f"{MOCKUPS_DIR}/{name}",
             "version": _version(path),
             "type": info.type,
             "color": info.color,
             "enabled": info.enabled,
-            "in_use": path.name in in_use,
+            "in_use": name in position,
+            "position": position.get(name),
+            "over_limit": name in over,
+            "order": index,
             "width": size[0] if size else None,
             "height": size[1] if size else None,
             "small": bool(size) and min(size) < SMALL_EDGE,
@@ -284,18 +305,40 @@ def _items(ws: Workspace) -> dict[str, Any]:
             "area_source": source,
             "same_size_count": per_size[size] - 1 if size else 0,
         })
-    enabled = sum(1 for item in items if item["enabled"])
     return {
         "items": items,
         "types": dict(Counter(item["type"] for item in items)),
-        "counts": {"total": len(items), "enabled": enabled, "in_use": len(in_use)},
+        "counts": {"total": use["total"], "enabled": use["enabled"], "in_use": len(use["used"])},
+        "usage": use,
         "max_enabled": catalog.MAX_ENABLED,
         "limit_note": (
-            {"enabled": enabled, "max": catalog.MAX_ENABLED} if enabled > catalog.MAX_ENABLED else None
+            {"enabled": use["enabled"], "max": catalog.MAX_ENABLED} if use["over_limit"] else None
         ),
+        "default_area": _default_area(items, sizes),
         "positions_error": positions_error,
         "orphans": orphans,
         "type_order": list(catalog.TYPES),
+    }
+
+
+def _default_area(items: list[dict[str, Any]], sizes: dict[str, tuple[int, int]]) -> dict[str, Any]:
+    """How many mockups still put designs in the default (centred) area, and where to start.
+
+    `first` is the first such mockup in order that drafts use (else the first of all);
+    `first_same_size` is how many of the others share its pixel size, so one save in the
+    editor with "apply to same-size mockups" fixes them together.
+    """
+    waiting = [item for item in items if item["area_source"] == catalog.SOURCE_DEFAULT]
+    if not waiting:
+        return {"count": 0, "used": 0, "first": None, "first_same_size": 0}
+    first = next((item for item in waiting if item["in_use"]), waiting[0])
+    size = sizes.get(first["name"])
+    same = sum(1 for item in waiting if item is not first and size and sizes.get(item["name"]) == size)
+    return {
+        "count": len(waiting),
+        "used": sum(1 for item in waiting if item["in_use"]),
+        "first": first["name"],
+        "first_same_size": same,
     }
 
 
@@ -329,10 +372,44 @@ def upload_mockup(req: Request) -> dict[str, Any]:
         raise ApiError(422, "bad_image", f"{safe} is empty.", name=safe)
     try:
         name = catalog.add(ws, filename, req.body)
+    except catalog.TooManyPixels as exc:
+        raise files.too_many_pixels(safe, exc.width, exc.height) from exc
     except ValidationError as exc:
         raise ApiError(422, "bad_image", str(exc), name=safe) from exc
     _ctx(req).set_status_soon()
     return {"name": name, "item": _item(ws, name)}
+
+
+def _names(body: dict[str, Any], field: str) -> list[str] | None:
+    if field not in body or body[field] is None:
+        return None
+    value = body[field]
+    if not isinstance(value, list) or not all(isinstance(n, str) for n in value):
+        raise ApiError(422, "invalid", f"{field} must be a list of mockup names", field=field)
+    return value
+
+
+def arrange_mockups(req: Request) -> dict[str, Any]:
+    """POST /api/mockups/arrange {order?: [names], enabled?: [names]} -> the grid.
+
+    `order` is first (main image) to last; `enabled` is exactly the set drafts may use
+    (every other mockup is switched off). One write for the whole selection, so 37
+    mockups are chosen in one go. A name that is not a mockup: 404, nothing saved.
+    """
+    ws = _ws(req)
+    body = req.json_object()
+    order = _names(body, "order")
+    enabled = _names(body, "enabled")
+    if order is None and enabled is None:
+        raise ApiError(422, "invalid", "Send order and/or enabled.")
+    try:
+        catalog.arrange(ws, order=order, enabled=enabled)
+    except FileNotFoundError as exc:
+        raise ApiError(404, "not_found", f"No such mockup: {exc}", name=str(exc)) from exc
+    except ValidationError as exc:
+        raise ApiError(422, "invalid", str(exc)) from exc
+    _ctx(req).set_status_soon()
+    return _items(ws)
 
 
 def patch_mockup(req: Request) -> dict[str, Any]:

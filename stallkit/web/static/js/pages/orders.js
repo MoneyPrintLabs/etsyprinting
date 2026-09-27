@@ -252,7 +252,9 @@ export default {
       else if (sm) {
         const waiting = sm.counts.unshipped;
         if (waiting > 0) sub = t("subtitle.waiting", { n: waiting });
-        else if (sm.shipped_month > 0) sub = t("subtitle.month", { n: sm.shipped_month });
+        // Orders that went out this month (by shipment date); "n+" when Etsy had more
+        // shipped orders changed this month than the server reads for the count.
+        else if (sm.shipped_month > 0) sub = t(sm.shipped_month_partial ? "subtitle.month_more" : "subtitle.month", { n: sm.shipped_month });
         else sub = t("subtitle.none");
       }
       ctx.setHeader({ subtitle: sub });
@@ -953,9 +955,11 @@ export default {
       // Old answers go now: the new job's first rows may arrive before the POST's answer.
       for (const id of ids) S.results.delete(id);
       try {
+        // confirm: the seller said yes in the modal above; the server refuses without it.
         const job = await ctx.api.post("/api/orders/ship", {
           country: (S.carriers && S.carriers.country) || undefined,
           rows: list,
+          confirm: true,
         });
         if (!S.finished.has(job.id)) {
           S.lastDone = null;

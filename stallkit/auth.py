@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import html
 import http.server
 import ipaddress
@@ -336,11 +337,42 @@ class LoopbackServer(http.server.HTTPServer):
         self.server_name, self.server_port = self.server_address[:2]
 
 
+def state_matches(got: str | None, expected: str | None) -> bool:
+    """The listener's CSRF check: None expects nothing (a handler used on its own)."""
+    if expected is None:
+        return True
+    return hmac.compare_digest((got or "").encode("utf-8"), expected.encode("utf-8"))
+
+
+# Shown for a request that does not carry the state of the consent request being
+# waited for: a link or <img> on any web page can reach localhost, and such a request
+# must neither end the wait nor look like a success. Nothing of it is echoed.
+FOREIGN_TITLE = "Not from stallkit · stallkit'ten değil"
+FOREIGN_DETAIL = (
+    "This address was not opened by the connection stallkit is waiting for, so it was "
+    "ignored. Go back to stallkit.<br>Bu adres stallkit'in beklediği bağlantıdan gelmedi, "
+    "yok sayıldı. stallkit'e dönün."
+)
+
+
+def listener_page(title: str, detail: str) -> bytes:
+    """The listener's small bilingual page (detail is HTML: escape anything received)."""
+    return f"""<!doctype html><meta charset="utf-8"><title>{title}</title>
+<div style="font:16px/1.6 system-ui,sans-serif;max-width:34rem;margin:14vh auto;padding:0 1.5rem">
+<h1 style="font-size:1.4rem;margin:0 0 .5rem">{title}</h1>
+<p style="color:#555;margin:0">{detail}</p></div>""".encode()
+
+
 class _CallbackHandler(http.server.BaseHTTPRequestHandler):
     """Serves the single request an https tunnel forwards to this machine."""
 
     result: dict[str, str] = {}
     expected_path = "/"
+    # The state of the consent request being waited for (_capture_via_listener sets
+    # it). Only a request carrying it is recorded, and only then is the browser sent
+    # on: anything else is refused and the wait goes on, so a forged request can
+    # neither end the flow nor fake a success. None records any request.
+    expected_state: str | None = None
     # Where to send the browser once Etsy has handed over a code, instead of showing
     # the receipt page below: the web app sets its own http://localhost:<port>/oauth-done
     # so the consent tab lands back in stallkit. None (the CLI) keeps the page. The
@@ -351,6 +383,15 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
     # socket blocks serve_forever, and shutdown() — Cancel — waits on it.
     timeout = 2
 
+    def _send_page(self, status: int, title: str, detail: str) -> None:
+        encoded = listener_page(title, detail)
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(encoded)
+
     def do_GET(self) -> None:  # noqa: N802 — name fixed by BaseHTTPRequestHandler
         parsed = urllib.parse.urlparse(self.path)
         if self.expected_path not in ("", "/") and parsed.path != self.expected_path:
@@ -359,9 +400,13 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
             return
 
         params = urllib.parse.parse_qs(parsed.query)
-        for key in ("code", "state", "error", "error_description"):
-            if key in params:
-                type(self).result[key] = params[key][0]
+        if not state_matches(params.get("state", [None])[0], type(self).expected_state):
+            self._send_page(400, FOREIGN_TITLE, FOREIGN_DETAIL)
+            return
+        if "code" in params or "error" in params:  # an answer; a bare visit is not one
+            for key in ("code", "state", "error", "error_description"):
+                if key in params:
+                    type(self).result[key] = params[key][0]
 
         ok = "code" in params and "error" not in params
         # Only a success goes back to the app: an error keeps this listener's own page.
@@ -389,16 +434,7 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
             detail = html.escape(
                 params.get("error_description", params.get("error", ["Unknown error"]))[0]
             )
-        body = f"""<!doctype html><meta charset="utf-8"><title>{title}</title>
-<div style="font:16px/1.6 system-ui,sans-serif;max-width:34rem;margin:14vh auto;padding:0 1.5rem">
-<h1 style="font-size:1.4rem;margin:0 0 .5rem">{title}</h1>
-<p style="color:#555;margin:0">{detail}</p></div>"""
-        encoded = body.encode("utf-8")
-        self.send_response(200 if ok else 400)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(encoded)))
-        self.end_headers()
-        self.wfile.write(encoded)
+        self._send_page(200 if ok else 400, title, detail)
 
     def log_message(self, *_args: Any) -> None:
         """Silence the default stderr access log — it would clutter CLI output."""
@@ -419,6 +455,8 @@ def _capture_via_listener(
     except OSError as exc:
         raise AuthError(f"Cannot listen on 127.0.0.1:{port} ({exc}). Free the port or pick another.") from exc
 
+    # Only the answer to this request counts; a forged one is refused and ignored.
+    _CallbackHandler.expected_state = request.state
     server.socket.settimeout(1.0)
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.4}, daemon=True)
     thread.start()
@@ -433,6 +471,7 @@ def _capture_via_listener(
     finally:
         server.shutdown()
         server.server_close()
+        _CallbackHandler.expected_state = None
 
     result = dict(_CallbackHandler.result)
     if not result and cancel is not None and cancel.is_set():

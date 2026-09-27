@@ -9,7 +9,7 @@
     GET  /api/pinterest/listings     ?refresh=1: active listings for the picker
     GET  /api/pinterest/queue
     POST /api/pinterest/queue        {listing_ids, board_id, per_day, images, ai_modified, dry_run}
-    POST /api/pinterest/post         {limit?} -> job: post the Pins due today
+    POST /api/pinterest/post         {limit?, confirm: true} -> job: post the Pins due today
     POST /api/pinterest/retry        {ids}: put failed / uncertain Pins back for today
     POST /api/pinterest/remove       {ids}: drop Pins that were not posted from the queue
 
@@ -726,6 +726,10 @@ def post_due(req: Request) -> dict[str, Any]:
     if not due:
         raise ApiError(409, "pinterest_nothing_due", "No Pin is due today.")
     _pin_client().close()  # not set up / not connected: say so now, not in the job
+    # Pins go out publicly under the seller's name: like every other live write, the
+    # page asks first and says so; a request that skipped the question posts nothing.
+    if body.get("confirm") is not True:
+        raise ApiError(409, "confirm_required", "Posting Pins needs confirm: true.")
     total = min(len(due), limit) if limit else len(due)
 
     def work(job: Job) -> dict[str, Any]:

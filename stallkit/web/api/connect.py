@@ -2,7 +2,10 @@
 
     GET  /api/connect/info        what is saved (never the secret) and what Etsy granted
     POST /api/connect/keys        save keystring + shared secret (+ callback), ask Etsy
-    POST /api/connect/start       open the callback listener, start the `connect` job
+    POST /api/connect/callback-confirmed
+                                  "I added the callback to my Etsy app" (asked once per shop)
+    GET  /api/connect/preflight   keys, callback and callback port, before Etsy is opened
+    POST /api/connect/start       the same checks, then the callback listener and the job
     POST /api/connect/disconnect  forget this computer's sign-in (token.json)
 
 The consent happens on Etsy's own page, in a tab the browser opened for it. Etsy sends
@@ -14,6 +17,7 @@ tab on to /oauth-done in the app. The code never leaves the listener.
 from __future__ import annotations
 
 import logging
+import re
 import socket
 import threading
 import time
@@ -47,6 +51,11 @@ LISTEN_WAIT = 5.0  # how long /start waits for the listener to accept connection
 BIND_FAILS_WITHIN = 2.0  # a listener that gives up this fast never got its port
 DONE_PATH = "/oauth-done"
 MAX_KEY_LEN = 200
+# Shop pref: the callback address the person said is on their Etsy app (or that has
+# worked). A new callback address asks again.
+CALLBACK_PREF = "etsy_callback_confirmed"
+# Status states in which Etsy has accepted the saved keys at the last check.
+KEYS_ACCEPTED = ("disconnected", "connected", "reconnect")
 
 # _CallbackHandler.return_url is class state: one connect flow sets it at a time.
 _listener_lock = threading.Lock()
@@ -55,6 +64,8 @@ _listener_lock = threading.Lock()
 def register(r: Router, ctx: AppContext) -> None:
     r.get("/api/connect/info", info)
     r.post("/api/connect/keys", save_keys)
+    r.post("/api/connect/callback-confirmed", callback_confirmed)
+    r.get("/api/connect/preflight", preflight)
     r.post("/api/connect/start", start)
     r.post("/api/connect/disconnect", disconnect)
 
@@ -85,6 +96,50 @@ def _active_connect(ctx: AppContext) -> Job | None:
     return jobs[0] if jobs else None
 
 
+def _redirect() -> tuple[str, bool]:
+    """The callback address in use (the default when none is saved), and whether saved."""
+    saved = _clean_text(settings.current("ETSY_REDIRECT_URI"))
+    return saved or settings.ETSY_REDIRECT_DEFAULT, bool(saved)
+
+
+def _callback_port(uri: str) -> int | None:
+    """The port the listener opens for `uri`; None when the address has no usable one."""
+    try:
+        port = urllib.parse.urlparse(uri).port
+    except ValueError:
+        return None
+    if port is None:
+        return 80 if uri.lower().startswith("http://") else None
+    return port if 0 < port < 65536 else None
+
+
+def _load_token() -> auth.Token | None:
+    try:
+        return auth.load_token()
+    except ConfigError:
+        return None
+
+
+def _callback_confirmed(ctx: AppContext, redirect: str, token: auth.Token | None) -> bool:
+    """Has this shop's callback been added on Etsy? Asked once per shop and address.
+
+    A sign-in made before the question existed proves the address worked then.
+    """
+    confirmed_for = ctx.shop_prefs().get(CALLBACK_PREF)
+    if isinstance(confirmed_for, str) and confirmed_for:
+        return confirmed_for == redirect
+    if confirmed_for is False:  # unticked on purpose
+        return False
+    return token is not None
+
+
+def _remember_callback(ctx: AppContext, redirect: str) -> None:
+    try:
+        ctx.update_shop_prefs(**{CALLBACK_PREF: redirect})
+    except (OSError, StallKitError):
+        log.warning("could not save the callback confirmation")
+
+
 # --- GET /api/connect/info -------------------------------------------------------------
 
 
@@ -92,17 +147,13 @@ def info(req: Request) -> dict[str, Any]:
     """Everything the page shows about the connection, read from disk (no network)."""
     ctx = _ctx(req)
     keystring, secret = _saved_keys()
-    saved_redirect = settings.current("ETSY_REDIRECT_URI")
-    redirect = saved_redirect or settings.ETSY_REDIRECT_DEFAULT
+    redirect, saved = _redirect()
     problem = ""
     try:
         auth.validate_redirect_uri(redirect)
     except AuthError as exc:
         problem = _first_line(exc)
-    try:
-        token = auth.load_token()
-    except ConfigError:
-        token = None
+    token = _load_token()
     requested = _requested_scopes()
     name = shops.current().name or None
     job = _active_connect(ctx)
@@ -111,11 +162,13 @@ def info(req: Request) -> dict[str, Any]:
         "keystring_prefix": keystring[:6],
         "secret_length": len(secret),
         "redirect_uri": redirect,
-        "redirect_saved": bool(saved_redirect),
+        "redirect_saved": saved,
         "redirect_default": settings.ETSY_REDIRECT_DEFAULT,
         "redirect_ok": not problem,
         "redirect_problem": problem,
         "redirect_local": auth.is_loopback(redirect),
+        "callback_port": _callback_port(redirect),
+        "callback_confirmed": _callback_confirmed(ctx, redirect, token),
         "scopes_requested": requested,
         "scopes_default": list(DEFAULT_SCOPES),
         "scopes_granted": list(token.scopes) if token else [],
@@ -127,6 +180,25 @@ def info(req: Request) -> dict[str, Any]:
     }
 
 
+# --- POST /api/connect/callback-confirmed ------------------------------------------------
+
+
+def callback_confirmed(req: Request) -> dict[str, Any]:
+    """The person says the callback address is on their Etsy app ({"confirmed": bool}).
+
+    Remembered per shop for the address in use, so the question comes back only when
+    the address changes.
+    """
+    ctx = _ctx(req)
+    confirmed = req.json_object().get("confirmed", True)
+    if not isinstance(confirmed, bool):
+        raise ApiError(422, "invalid", "confirmed must be true or false", field="confirmed")
+    redirect, _saved = _redirect()
+    ctx.update_shop_prefs(**{CALLBACK_PREF: redirect if confirmed else False})
+    return {"callback_confirmed": _callback_confirmed(ctx, redirect, _load_token()),
+            "redirect_uri": redirect}
+
+
 # --- POST /api/connect/keys -------------------------------------------------------------
 
 
@@ -136,10 +208,88 @@ def _text(body: dict[str, Any], name: str) -> str:
         return ""
     if not isinstance(value, str):
         raise ApiError(422, "invalid", f"{name} must be text", field=name)
-    return value.strip()
+    return value
+
+
+# What a copy from Etsy's app page, an e-mail or a chat brings along with a key:
+# invisible characters, quotes, a label ("Keystring", "Shared secret"), the value on
+# the line after its label, or both halves in the x-api-key form "keystring:secret".
+_INVISIBLE = dict.fromkeys(map(ord, "\u200b\u200c\u200d\u2060\ufeff\u00ad"), None)
+_EDGE = "\"'`\u201c\u201d\u2018\u2019\u201e\u00ab\u00bb\u2039\u203a<>[](){},;. \t"
+_LABEL = re.compile(
+    r"^(?:etsy\s+)?(?P<label>key\s*string|x-api-key|api\s*key|client[\s_-]*id"
+    r"|shared\s*secret|secret)(?![a-z0-9])\s*[:=]?\s*(?P<rest>.*)$",
+    re.IGNORECASE,
+)
+
+
+def _clean_text(value: str) -> str:
+    """One line with the invisible characters, spaces and quotes around it removed."""
+    value = (value or "").translate(_INVISIBLE).replace("\u00a0", " ").replace("\u202f", " ")
+    return value.strip().strip(_EDGE).strip()
+
+
+def _key_pairs(role: str, value: str) -> list[tuple[str, str]]:
+    if ":" in value:  # "keystring:shared_secret" in one piece
+        head, _, tail = value.partition(":")
+        return [("key", _clean_text(head)), ("secret", _clean_text(tail))]
+    return [(role, value)]
+
+
+def _key_pieces(text: str, role: str) -> list[tuple[str, str]]:
+    """The ("key"|"secret", value) pieces in one field; `role` is the field's own."""
+    found: list[tuple[str, str]] = []
+    plain: list[str] = []
+    waiting = ""  # a label alone on its line: its value is on the next line
+    for raw in (text or "").translate(_INVISIBLE).splitlines():
+        line = _clean_text(raw)
+        if not line:
+            continue
+        match = _LABEL.match(line)
+        if match:
+            label_role = "secret" if "secret" in match["label"].lower() else "key"
+            rest = _clean_text(match["rest"])
+            if rest:
+                found += _key_pairs(label_role, rest)
+            else:
+                waiting = label_role
+        elif waiting:
+            found += _key_pairs(waiting, line)
+            waiting = ""
+        else:
+            plain.append(line)
+    if len(plain) == 2 and not found and ":" not in "".join(plain):
+        found += [("key", plain[0]), ("secret", plain[1])]  # the two values, one per line
+    elif plain:
+        # Anything longer stays one value, and the space in it makes it refused below.
+        found += _key_pairs(role, " ".join(plain))
+    return [(r, v) for r, v in found if v]
+
+
+def clean_keys(keystring: str, shared_secret: str) -> tuple[str, str]:
+    """The keystring and shared secret in whatever the person pasted into the two fields.
+
+    Each field may hold its own value, both (labelled, one per line, or colon-joined),
+    or the other one (a label says which). A field's own value wins over one found in
+    the other field.
+    """
+    in_key = _key_pieces(keystring, "key")
+    in_secret = _key_pieces(shared_secret, "secret")
+
+    def first(role: str, *groups: list[tuple[str, str]]) -> str:
+        for group in groups:
+            for got_role, value in group:
+                if got_role == role:
+                    return value
+        return ""
+
+    return first("key", in_key, in_secret), first("secret", in_secret, in_key)
 
 
 def _check_key(name: str, value: str) -> None:
+    if value and set(value) <= set("•●∙·*"):
+        # Etsy's page shows the secret as dots until the eye icon is pressed.
+        raise ApiError(422, "masked_key", f"The {name} was copied while hidden.", field=name)
     if len(value) > MAX_KEY_LEN or any(ch.isspace() for ch in value):
         raise ApiError(422, "invalid_key", f"That does not look like an Etsy {name}.", field=name)
 
@@ -168,8 +318,8 @@ def save_keys(req: Request) -> dict[str, Any]:
     """
     ctx = _ctx(req)
     body = req.json_object()
-    typed_key, typed_secret = split_credential(_text(body, "keystring"), _text(body, "shared_secret"))
-    typed_redirect = _text(body, "redirect_uri")
+    typed_key, typed_secret = clean_keys(_text(body, "keystring"), _text(body, "shared_secret"))
+    typed_redirect = _clean_text(_text(body, "redirect_uri"))
     saved_key, saved_secret = _saved_keys()
     keystring = typed_key or saved_key
     secret = typed_secret or (saved_secret if keystring == saved_key else "")
@@ -179,7 +329,7 @@ def save_keys(req: Request) -> dict[str, Any]:
                        field=missing)
     _check_key("keystring", keystring)
     _check_key("shared_secret", secret)
-    redirect = typed_redirect or settings.current("ETSY_REDIRECT_URI") or settings.ETSY_REDIRECT_DEFAULT
+    redirect = typed_redirect or _redirect()[0]
     try:
         auth.validate_redirect_uri(redirect)
     except AuthError as exc:
@@ -255,8 +405,101 @@ def _extra_scopes(body: dict[str, Any]) -> list[str]:
     return extra
 
 
+# --- the checks before Etsy's page opens (GET /api/connect/preflight, and /start) --------
+
+# The HTTP status each refusal of /start answers with.
+_REFUSAL_STATUS = {"offline": 503, "bad_redirect": 422}
+
+
+def _check(ok: bool, code: str | None = None, message: str = "", **params: Any) -> dict[str, Any]:
+    return {"ok": ok, "code": code, "message": message, "params": params}
+
+
+def _keys_check(ctx: AppContext) -> dict[str, Any]:
+    """Does Etsy accept the saved keys? The last status check says so when it got an
+    answer; otherwise (never checked, refused before, offline) one key-only call now."""
+    keystring, secret = _saved_keys()
+    if not (keystring and secret):
+        return _check(False, "setup_needed", "Save the Etsy app keys first.", step="keys")
+    if ctx.status["state"] in KEYS_ACCEPTED:
+        return _check(True)
+    verdict, reason = _verify(ctx)
+    if verdict == "rejected":
+        return _check(False, "keys_rejected", reason, reason=reason)
+    if verdict == "offline":
+        return _check(False, "offline", reason)
+    ctx.set_status_soon()  # the status the page shows is older than this answer
+    return _check(True)  # "unknown" too: Etsy's own page will tell more than a guess
+
+
+def _callback_check(redirect: str) -> dict[str, Any]:
+    """Can the callback be caught here: valid for Etsy, plain http, localhost, a port?"""
+    try:
+        auth.validate_redirect_uri(redirect)
+    except AuthError as exc:
+        return _check(False, "bad_redirect", _first_line(exc), field="redirect_uri")
+    if not auth.is_loopback(redirect):
+        return _check(
+            False, "callback_not_local",
+            "Only an http://localhost callback can be caught on this computer.",
+            redirect_uri=redirect, suggested=settings.ETSY_REDIRECT_DEFAULT,
+        )
+    if _callback_port(redirect) is None:
+        return _check(False, "bad_redirect", f"{redirect} has no usable port.",
+                      field="redirect_uri")
+    return _check(True)
+
+
+def _answers(host: str, port: int, timeout: float) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:  # refused, timed out, or no IPv6 on this machine
+        return False
+
+
+def _port_check(ctx: AppContext, port: int, *, own_listener_ok: bool = True) -> dict[str, Any]:
+    """Is the callback port free? The browser tries localhost on IPv6 (::1) first, so a
+    program there would get Etsy's answer even with our listener on 127.0.0.1."""
+    job = _active_connect(ctx) if own_listener_ok else None
+    if job is not None and job.params.get("port") == port:
+        return _check(True, listening=True)  # our own listener, waiting for Etsy
+    if port == ctx.port or not auth.port_is_free(port) or _answers("::1", port, 0.3):
+        return _check(False, "port_in_use", f"Port {port} is already in use.", port=port)
+    return _check(True)
+
+
+def _preflight(ctx: AppContext) -> dict[str, Any]:
+    redirect, saved = _redirect()
+    port = _callback_port(redirect)
+    callback = _callback_check(redirect)
+    checks = {
+        "keys": _keys_check(ctx),
+        "callback": callback,
+        "port": _port_check(ctx, port) if callback["ok"] and port is not None else None,
+    }
+    return {
+        "ok": all(check["ok"] for check in checks.values() if check is not None),
+        "checks": checks,
+        "redirect_uri": redirect,
+        "redirect_saved": saved,
+        "port": port,
+        "callback_confirmed": _callback_confirmed(ctx, redirect, _load_token()),
+    }
+
+
+def preflight(req: Request) -> dict[str, Any]:
+    """What would stop "Bağlan" now, checked before the person is sent to Etsy."""
+    return _preflight(_ctx(req))
+
+
+def _refuse(check: dict[str, Any]) -> ApiError:
+    code = check["code"] or "internal"
+    return ApiError(_REFUSAL_STATUS.get(code, 409), code, check["message"], **check["params"])
+
+
 def start(req: Request) -> dict[str, Any]:
-    """Open the listener on the callback port and start the `connect` job.
+    """Check the keys, the callback and its port, open the listener, start the job.
 
     Answers only once the listener accepts connections, so the browser can be sent to
     Etsy straight away: {job_id, url, job}.
@@ -280,19 +523,13 @@ def start(req: Request) -> dict[str, Any]:
         settings.save(changes)
         config = Config.load()
 
-    try:
-        auth.validate_redirect_uri(config.redirect_uri)
-    except AuthError as exc:
-        raise ApiError(422, "bad_redirect", _first_line(exc), field="redirect_uri") from exc
-    if not auth.is_loopback(config.redirect_uri):
-        raise ApiError(
-            409, "callback_not_local",
-            "Only an http://localhost callback can be caught on this computer.",
-            redirect_uri=config.redirect_uri, suggested=settings.ETSY_REDIRECT_DEFAULT,
-        )
-    port = urllib.parse.urlparse(config.redirect_uri).port or 80
-    if port == ctx.port or not auth.port_is_free(port):
-        raise ApiError(409, "port_in_use", f"Port {port} is already in use.", port=port)
+    callback = _callback_check(config.redirect_uri)
+    if not callback["ok"]:
+        raise _refuse(callback)
+    port = _callback_port(config.redirect_uri) or 80
+    for check in (_port_check(ctx, port, own_listener_ok=False), _keys_check(ctx)):
+        if not check["ok"]:
+            raise _refuse(check)
 
     request = auth.build_authorization_url(config)
     return_url = f"http://localhost:{ctx.port}{DONE_PATH}"
@@ -359,6 +596,8 @@ def _connect(
         finally:
             auth._CallbackHandler.return_url = None
     job.check_cancel()
+    # Etsy sent the browser to this address, so it is on the app: never ask again.
+    _remember_callback(ctx, config.redirect_uri)
 
     _phase(job, "code_received", 2)
     try:
@@ -399,6 +638,10 @@ def disconnect(req: Request) -> dict[str, Any]:
     ctx = _ctx(req)
     if ctx.jobs.busy():
         raise ApiError(409, "busy", "Wait for the running task to finish first.")
+    redirect, _saved = _redirect()
+    token = _load_token()
+    if token is not None and _callback_confirmed(ctx, redirect, token):
+        _remember_callback(ctx, redirect)  # the sign-in proved it: keep it past the token
     removed = auth.clear_token()
     ctx.reset_client()
     return {"removed": removed, "status": ctx.refresh_status(force=True)}

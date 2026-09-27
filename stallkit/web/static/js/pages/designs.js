@@ -266,16 +266,21 @@ class DesignsPage {
         onClick ? "button" : "div",
         { class: cx("dz-chip", tone && `is-${tone}`), type: onClick ? "button" : undefined, onClick },
         h("span", { class: "dz-chip-icon" }, icon(ic, { size: 15 })),
-        h("span", { class: "dz-chip-label" }, label),
+        label ? h("span", { class: "dz-chip-label" }, label) : null,
         value !== null ? h("strong", { class: "dz-chip-value ellipsis" }, value) : skeleton({ lines: 1, height: 10, widths: ["90px"] }),
         extra || null,
       );
+    // "n mockup kullanılacak": the Mockuplar rule (switched on, in order, at most 19), and
+    // always a link there, where the seller chooses and orders them.
     const mockups = p ? p.mockups.enabled : null;
+    const over = p && p.mockups.over_limit ? h("span", { class: "dz-chip-extra" }, t("chip.mockup_over", { n: p.mockups.switched_on })) : null;
+    const mockupChip = chip("image", null, p ? (mockups ? t("chip.mockup_value", { n: mockups }) : t(p.mockups.total ? "chip.mockup_none" : "chip.mockup_empty")) : null, [over, h("span", { class: "dz-chip-go", "aria-hidden": "true" }, icon("arrow-right", { size: 13 }))], p && !mockups ? "warn" : null, () => this.ctx.navigate("/kurulum/mockuplar"));
+    mockupChip.title = t("chip.mockup_hint");
     const template = p ? (p.template && p.template.title) || (p.template ? t("chip.template_unnamed") : null) : null;
     const shop = p ? p.shop : null;
     const shopOk = shop && shop.connected;
     const row = [
-      chip("image", t("chip.mockup"), p ? (mockups ? t("chip.mockup_value", { n: mockups }) : t("chip.mockup_none")) : null, null, p && !mockups ? "warn" : null, p && !mockups ? () => this.ctx.navigate("/kurulum/mockuplar") : null),
+      mockupChip,
       chip("file", t("chip.template"), p ? template || t("chip.template_none") : null, null, p && !p.template ? "warn" : null, p && (!p.template || p.blockers.includes("template_invalid")) ? () => this.ctx.navigate("/kurulum/sablon") : null),
       chip(
         "link",
@@ -793,9 +798,35 @@ class DesignsPage {
         : t("ready.estimate_nq", { n: number(p.estimate_requests) }),
     );
     const templateTitle = (p.template && p.template.title) || t("chip.template_unnamed");
+    // Which mockups the drafts get: the same count as the chip, and the way to change it.
+    const mk = p.mockups;
+    if (mk.enabled) {
+      notes.push(
+        h(
+          "p",
+          { class: "dz-modal-mockups" },
+          icon("image", { size: 14 }),
+          h("span", { class: "dz-modal-mockups-text" }, mk.over_limit ? t("ready.mockups_over", { n: mk.enabled, on: mk.switched_on }) : t("ready.mockups_main", { name: mk.main || "" })),
+          h(
+            "a",
+            {
+              href: "/kurulum/mockuplar",
+              class: "dz-modal-link",
+              onClick: (e) => {
+                e.preventDefault();
+                m.close();
+                this.ctx.navigate("/kurulum/mockuplar");
+              },
+            },
+            t("ready.mockups_link"),
+            icon("arrow-right", { size: 12 }),
+          ),
+        ),
+      );
+    }
     const m = this.ctx.modal({
       title: t("ready.title", { n: p.runnable ?? p.count }),
-      subtitle: t("ready.sub", { mockups: p.mockups.enabled, template: templateTitle }),
+      subtitle: t("ready.sub", { n: mk.enabled, mockups: mk.enabled, template: templateTitle }),
       width: 470,
       class: "dz-ready",
       body: [...notes, estimate],

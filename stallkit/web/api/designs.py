@@ -211,7 +211,9 @@ def _history(ctx: AppContext, ws: Any) -> tuple[dict, str | None]:
 def upload_file(req: Request) -> dict[str, Any]:
     from PIL import Image
 
+    from ...drop import catalog
     from ...drop.workspace import IMAGE_SUFFIXES, PREVIEW_SUFFIXES
+    from .. import files
 
     ctx = _ctx(req)
     parts = _split_path(req.query.get("path", ""))
@@ -229,10 +231,17 @@ def upload_file(req: Request) -> dict[str, Any]:
     name = f"{Path(name).stem}{suffix}"
     try:
         with Image.open(io.BytesIO(data)) as image:
+            size = image.size
             image.verify()
-    except (OSError, ValueError, SyntaxError, Image.DecompressionBombError) as exc:
+    except Image.DecompressionBombError as exc:
+        raise files.too_many_pixels(name, *catalog.bomb_size(exc)) from exc
+    except (OSError, ValueError, SyntaxError) as exc:
         raise ApiError(422, "not_image", f"{name} cannot be read as an image ({exc}).",
                        name=name) from exc
+    # A small file can still hold a huge picture (13000x13000 PNG in 656 KB): every
+    # thumbnail and the draft run would then need gigabytes. Refused here, 422.
+    if catalog.too_many_pixels(size):
+        raise files.too_many_pixels(name, *size)
 
     ws = ctx.workspace()
     folder = None
@@ -377,8 +386,11 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
     ]
 
     infos = catalog.load(ws)
-    enabled = catalog.enabled_mockups(ws)
-    types = collections.Counter(infos[p.name].type for p in enabled if p.name in infos)
+    # The same rule as the Mockuplar page and the run itself (catalog.usage): switched-on
+    # mockups in the seller's order, at most 19; the first is the main image.
+    use = catalog.usage(ws, infos)
+    enabled = use["used"]
+    types = collections.Counter(infos[name].type for name in enabled if name in infos)
     template, template_problem = _template_info(ctx, ws)
 
     blockers: list[str] = []
@@ -427,6 +439,11 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
         "review": review,
         "mockups": {
             "enabled": len(enabled),
+            "used": len(enabled),
+            "switched_on": use["enabled"],
+            "over_limit": len(use["over_limit"]),
+            "max": use["max"],
+            "main": enabled[0] if enabled else None,
             "total": len(infos),
             "types": dict(types),
             "primary": types.most_common(1)[0][0] if types else None,

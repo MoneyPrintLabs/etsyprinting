@@ -37,6 +37,7 @@ from ... import listings as listings_mod
 from ...client import walk_taxonomy
 from ...config import MAX_LISTING_IMAGES, MAX_TAG_LEN, MAX_TAGS, MAX_TITLE_LEN
 from ...errors import EtsyApiError, ValidationError
+from .. import files
 from ..router import ApiError, Request, Response
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -62,7 +63,8 @@ EDIT_URL = "https://www.etsy.com/your/shops/me/listing-editor/edit/{id}"
 TAXONOMY_TTL = 30 * 24 * 3600
 IMPORT_TTL = 30 * 60
 MAX_CSV_BYTES = 5 * 1024 * 1024
-EXPORT_COLUMNS = listings_mod.LISTING_COLUMNS + ["url", "views", "num_favorers"]
+# ShopListing (OAS) has url and num_favorers but no view count, so there is no "views".
+EXPORT_COLUMNS = listings_mod.LISTING_COLUMNS + ["url", "num_favorers"]
 
 _lock = threading.Lock()
 _listing_cache: dict[tuple[Any, ...], tuple[float, list[dict[str, Any]], bool]] = {}
@@ -907,12 +909,50 @@ def _prune_imports() -> None:
         del _imports[min(_imports, key=lambda t: _imports[t]["at"])]
 
 
+def workspace_images(root: Path) -> listings_mod.ImageResolver:
+    """The `images` column of an uploaded CSV, confined to the workspace folder.
+
+    An uploaded CSV has no folder of its own and may come from anyone (a shared
+    "template"), so its image paths are not trusted the way the CLI trusts a CSV the
+    seller keeps next to their pictures. Each value must be a relative path inside the
+    workspace (for example `2-PRODUCTS/sunset.png`). An absolute path, a drive, a `~`,
+    a UNC `//server/share` path or a `..` is refused from the text alone, before
+    anything on disk (or on the network) is looked at, and a link that leads out of
+    the folder is refused too.
+    """
+
+    def refuse(value: str) -> ValidationError:
+        return ValidationError(
+            f"image {value!r}: images must be inside the stallkit folder, "
+            "written like 2-PRODUCTS/design.png"
+        )
+
+    def resolve(value: str) -> Path:
+        text = value.strip()
+        parts = text.replace("\\", "/").split("/")
+        if (
+            not text
+            or text.startswith(("/", "\\", "~"))  # absolute, UNC (\\server), home
+            or ":" in text  # a drive (C:\, C:x) or an alternate data stream
+            or "\x00" in text
+            or ".." in parts
+        ):
+            raise refuse(value)
+        target = files.resolve_inside(root, text)
+        if target is None:
+            raise refuse(value)
+        return target
+
+    return resolve
+
+
 def import_check(req: Request) -> dict[str, Any]:
     """Validate a CSV the way `listings push --dry-run` does. Nothing reaches Etsy."""
     ctx = _ctx(req)
     rows = _read_csv(req.body)
     base = ctx.workspace_root()
-    report = listings_mod.push(None, rows, base_dir=base, dry_run=True)
+    report = listings_mod.push(None, rows, base_dir=base, dry_run=True,
+                               image_resolver=workspace_images(base))
     results = [_result(r) for r in report.results]
     creates = sum(1 for r in results if r["action"] == "create" and r["status"] != "error")
     updates = sum(1 for r in results if r["action"] == "update" and r["status"] != "error")
@@ -948,7 +988,8 @@ def import_apply(req: Request) -> dict[str, Any]:
     if pending is None or pending["shop"] != ctx.shop_id:
         raise ApiError(410, "import_expired", "Check the file again before sending it.")
     rows, base = pending["rows"], Path(pending["base"])
-    check = listings_mod.push(None, rows, base_dir=base, dry_run=True)
+    resolver = workspace_images(base)
+    check = listings_mod.push(None, rows, base_dir=base, dry_run=True, image_resolver=resolver)
     if check.errors:
         raise ApiError(422, "import_invalid", "Some rows are invalid; nothing was sent.",
                        n=check.errors)
@@ -969,7 +1010,8 @@ def import_apply(req: Request) -> dict[str, Any]:
                 job.check_cancel()
 
         try:
-            report = listings_mod.push(ctx.client(), rows, base_dir=base, on_progress=progress)
+            report = listings_mod.push(ctx.client(), rows, base_dir=base, on_progress=progress,
+                                       image_resolver=resolver)
         finally:
             invalidate(ctx, STATES)
             ctx.changed("listings", source="listings")

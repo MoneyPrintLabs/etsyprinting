@@ -718,3 +718,87 @@ def test_display_preference(web):
         "display": "secondary"}
     assert load_ready(web)["display"] == "secondary"
     assert web.client.post("/api/profit/prefs", json={"display": "lira"}).status_code == 422
+
+
+# ================================================================== review fixes
+
+
+def test_a_refund_gives_back_its_tax_share_too():
+    # Items 20 + shipping 5, tax 2: the buyer paid 27. A refund pays back tax as well,
+    # so only its revenue share comes off revenue, and its tax share off the tax.
+    full = receipt(1, 1, [(1000001, "Tee", 20.0, 1)], shipping=5.0, tax=2.0, refunds=[27.0],
+                   status="partially refunded")
+    out = profit.summarise_receipts([full], "USD")
+    assert out["refunds"] == pytest.approx(25.0) and out["tax"] == pytest.approx(0.0)
+    month = profit.compute_month({**out, "month": "2026-08", "currency": "USD"}, {})
+    assert month["revenue"] == pytest.approx(0.0)  # was -2: the refunded tax came off revenue
+
+    half = receipt(2, 2, [(1000001, "Tee", 20.0, 1)], shipping=5.0, tax=2.0, refunds=[13.5])
+    out = profit.summarise_receipts([half], "USD")
+    assert out["refunds"] == pytest.approx(12.5) and out["tax"] == pytest.approx(1.0)
+
+    untaxed = receipt(3, 3, [(1000001, "Tee", 20.0, 1)], refunds=[5.0])
+    assert profit.summarise_receipts([untaxed], "USD")["refunds"] == pytest.approx(5.0)
+
+
+def test_a_fully_refunded_order_is_nothing_whatever_its_refunds_say():
+    gone = receipt(1, 1, [(1000001, "Tee", 20.0, 1)], shipping=5.0, tax=2.0,
+                   status="fully refunded")  # Etsy sent no refunds list
+    gone["gift_wrap_price"] = money(3.0)
+    out = profit.summarise_receipts([gone], "USD")
+    assert out["orders"] == 1
+    assert out["refunds"] == pytest.approx(28.0) and out["tax"] == pytest.approx(0.0)
+    month = profit.compute_month({**out, "month": "2026-08", "currency": "USD"}, {})
+    assert month["revenue"] == pytest.approx(0.0)
+    money_ = profit.receipt_money(gone)
+    assert money_["revenue"] == 0 and money_["refunded_tax"] == pytest.approx(2.0)
+
+
+def test_failed_refunds_and_over_refunds_are_bounded():
+    failed = receipt(1, 1, [(1000001, "Tee", 20.0, 1)], refunds=[20.0])
+    failed["refunds"][0]["status"] = "failed"
+    assert profit.receipt_money(failed)["revenue"] == pytest.approx(20.0)
+    over = receipt(2, 2, [(1000001, "Tee", 20.0, 1)], refunds=[50.0])
+    assert profit.receipt_money(over)["revenue"] == pytest.approx(0.0)
+    assert profit.receipt_money({"status": "canceled", "subtotal": money(9.0)})["revenue"] == 0
+
+
+class CountingClient(StubClient):
+    """Like Etsy: stops at max_items and remembers what was asked for."""
+
+    def __init__(self, receipts, ledger=None):
+        super().__init__(receipts, ledger)
+        self.asked: dict[str, int | None] = {}
+
+    def receipts(self, **filters):
+        self.asked["receipts"] = filters.get("max_items")
+        yield from self._receipts[:filters.get("max_items")]
+
+    def ledger_entries(self, start, end, *, max_items=None):
+        self.asked["ledger"] = max_items
+        yield from self._ledger[:max_items]
+
+
+def test_a_month_with_more_orders_than_can_be_read_says_so(monkeypatch):
+    monkeypatch.setattr(profit, "MAX_RECEIPTS", 2)
+    sales = [receipt(n, n, [(1000001, "Tee", 10.0, 1)]) for n in range(1, 4)]
+    client = CountingClient(sales, [entry("transaction", -130)])
+    raw = fetch(client)
+    assert client.asked["receipts"] == 3  # one more than the cap, to know it was cut
+    assert raw["orders"] == 2 and raw["orders_truncated"] is True
+    assert profit.compute_month(raw, {})["partial"] is True
+    whole = fetch(CountingClient(sales[:2], [entry("transaction", -130)]))
+    assert whole["orders_truncated"] is False and profit.compute_month(whole, {})["partial"] is False
+
+
+def test_a_ledger_of_exactly_the_cap_is_still_trusted(monkeypatch):
+    monkeypatch.setattr(profit, "MAX_LEDGER_ENTRIES", 3)
+    sale = [receipt(1, 1, [(1000001, "Tee", 20.0, 1)])]
+    client = CountingClient(sale, [entry("transaction", -100)] * 3)
+    out = fetch(client)
+    assert client.asked["ledger"] == 4
+    assert out["fees"]["source"] == "ledger" and out["fees"]["buckets"]["transaction"] == 3.0
+
+
+def test_month_files_of_the_old_formula_are_read_again():
+    assert profit.RAW_VERSION >= 2

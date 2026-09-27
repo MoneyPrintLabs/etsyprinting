@@ -272,3 +272,164 @@ def test_identity_is_looked_up_once_across_threads():
     for thread in threads:
         thread.join(10)
     assert lookups.count("/users/me") == 1 and lookups.count("/users/1/shops") == 1
+
+
+# --- review fixes: entities, pagination, the 401 re-send ---------------------------------------
+
+ESCAPED = {
+    "listing_id": 1000001,
+    "title": "Mom&#39;s &quot;Best&quot; Coffee Mug &amp; Gift",
+    "description": "A mug for Mom&#39;s coffee &amp; tea.\nDishwasher safe &lt;3",
+    "tags": ["mother&#39;s day", "mom &amp; dad", "plain tag"],
+    "materials": ["ceramic &amp; glaze"],
+    "style": ["Boho &amp; Chic"],
+    "price": {"amount": 1800, "divisor": 100, "currency_code": "USD"},
+}
+PLAIN = {
+    "title": "Mom's \"Best\" Coffee Mug & Gift",
+    "description": "A mug for Mom's coffee & tea.\nDishwasher safe <3",
+    "tags": ["mother's day", "mom & dad", "plain tag"],
+    "materials": ["ceramic & glaze"],
+    "style": ["Boho & Chic"],
+}
+
+
+def _plain(listing):
+    return {key: listing[key] for key in PLAIN}
+
+
+def test_listing_text_is_decoded_once_where_it_is_read():
+    import copy
+
+    handler, seen = recorder({
+        f"/shops/{SHOP}/listings": lambda r: {"count": 1, "results": [copy.deepcopy(ESCAPED)]},
+        "/listings/batch": lambda r: {"count": 1, "results": [copy.deepcopy(ESCAPED)]},
+        "/listings/1000001": lambda r: copy.deepcopy(ESCAPED),
+        "/listings/active": lambda r: {"count": 1, "results": [copy.deepcopy(ESCAPED)]},
+    })
+    client = make_client(handler)
+    assert _plain(next(client.listings_by_shop("active"))) == PLAIN
+    assert _plain(client.listings_batch([1000001])[0]) == PLAIN
+    assert _plain(client.listing(1000001)) == PLAIN
+    assert _plain(next(client.search_active_listings(keywords="mug"))) == PLAIN
+    # Decoded once: text that already reads "&amp;" after one decode stays that way.
+    twice = client_mod.unescape_listing({"title": "R&amp;amp;B"})
+    assert twice["title"] == "R&amp;B"
+    assert client_mod.unescape_listing(None) is None
+
+
+def test_writes_send_plain_text_and_their_answers_come_back_plain():
+    import copy
+
+    def answer(request):
+        return copy.deepcopy(ESCAPED)
+
+    handler, seen = recorder({
+        f"/shops/{SHOP}/listings/1000001": answer,
+        f"/shops/{SHOP}/listings": answer,
+    })
+    client = make_client(handler)
+    updated = client.update_listing(1000001, {"title": PLAIN["title"], "tags": PLAIN["tags"]})
+    created = client.create_draft_listing({"title": PLAIN["title"], "tags": PLAIN["tags"]})
+    for request in seen:
+        form = dict(urllib.parse.parse_qsl(request.content.decode()))
+        assert form["title"] == PLAIN["title"]
+        assert form["tags"] == "mother's day,mom & dad,plain tag"
+        assert "&#39;" not in request.content.decode() and "%26amp%3B" not in request.content.decode()
+    assert updated["title"] == created["title"] == PLAIN["title"]
+
+
+def test_receipt_text_is_decoded_where_it_is_read():
+    import copy
+
+    receipt = {
+        "receipt_id": 3000001, "name": "Example O&#39;Buyer", "city": "St. John&#39;s",
+        "transactions": [{"title": "Mom&#39;s Mug &amp; Gift", "variations": [
+            {"formatted_name": "Size", "formatted_value": "11&quot; x 14&quot;"}]}],
+    }
+    handler, _seen = recorder({
+        f"/shops/{SHOP}/receipts": lambda r: {"count": 1, "results": [copy.deepcopy(receipt)]},
+        f"/shops/{SHOP}/receipts/3000001": lambda r: copy.deepcopy(receipt),
+        f"/shops/{SHOP}/transactions": lambda r: {"count": 1,
+                                                  "results": copy.deepcopy(receipt["transactions"])},
+        f"/shops/{SHOP}/shipping-profiles": {"count": 1, "results": [
+            {"shipping_profile_id": 1, "title": "Mugs &amp; Cups"}]},
+    })
+    client = make_client(handler)
+    for got in (next(client.receipts()), client.receipt(3000001),
+                client.receipts_page(limit=10)["results"][0]):
+        assert got["name"] == "Example O'Buyer" and got["city"] == "St. John's"
+        tx = got["transactions"][0]
+        assert tx["title"] == "Mom's Mug & Gift"
+        assert tx["variations"][0]["formatted_value"] == "11\" x 14\""
+    assert next(client.shop_transactions())["title"] == "Mom's Mug & Gift"
+    assert client.receipts_page(limit=10)["count"] == 1
+    assert client.shipping_profiles()[0]["title"] == "Mugs & Cups"
+
+
+def _pages(total):
+    """A handler serving `total` records by limit/offset, like Etsy, counting requests."""
+    served = []
+
+    def handler(request):
+        q = query(request)
+        offset, limit = int(q["offset"]), int(q["limit"])
+        served.append(offset)
+        rows = [{"n": i} for i in range(offset, min(offset + limit, total))]
+        return httpx.Response(200, json={"count": total, "results": rows})
+
+    return handler, served
+
+
+def test_a_shops_own_collections_are_read_past_12000(monkeypatch):
+    monkeypatch.setattr(client_mod.RateLimiter, "acquire", lambda self: None)
+    handler, served = _pages(15_000)
+    client = make_client(handler)
+    assert len(list(client.receipts(max_items=20_000))) == 15_000
+    served.clear()
+    assert len(list(client.ledger_entries(946684800, 946684800 + 86400, max_items=20_000))) == 15_000
+    assert max(served) == 14_900
+    assert len(list(client.receipts(max_items=12_345))) == 12_345
+
+
+def test_only_the_marketplace_search_stops_at_its_window(monkeypatch):
+    monkeypatch.setattr(client_mod.RateLimiter, "acquire", lambda self: None)
+    handler, served = _pages(15_000)
+    client = make_client(handler)
+    found = list(client.search_active_listings(keywords="mug", max_items=20_000))
+    assert len(found) == client_mod.MAX_SEARCH_OFFSET and max(served) < client_mod.MAX_SEARCH_OFFSET
+
+
+def test_a_401_is_sent_again_with_the_new_token_even_under_one_attempt(monkeypatch):
+    def refresh(token, config):
+        return auth.Token("1.new", "1.refresh2", time.time() + 3600, token.scopes)
+
+    monkeypatch.setattr(client_mod.auth, "refresh", refresh)
+    sent = []
+
+    def handler(request):
+        sent.append(request.headers["authorization"])
+        if request.headers["authorization"] == "Bearer 1.old":
+            return httpx.Response(401, json={"error": "invalid_token"})
+        return httpx.Response(200, json={"count": 0, "results": []})
+
+    old = auth.Token("1.old", "1.refresh", time.time() + 3600, ())
+    client = make_client(handler, token=old)
+    with client.attempts(1):
+        assert client.shipping_profiles() == []
+    assert sent == ["Bearer 1.old", "Bearer 1.new"]
+
+
+def test_a_second_401_is_reconnect_not_offline(monkeypatch):
+    monkeypatch.setattr(client_mod.auth, "refresh",
+                        lambda token, config: auth.Token("1.new", "1.r", time.time() + 3600, ()))
+    sent = []
+
+    def handler(request):
+        sent.append(request.headers["authorization"])
+        return httpx.Response(401, json={"error": "invalid_token"})
+
+    client = make_client(handler, token=auth.Token("1.old", "1.r", time.time() + 3600, ()))
+    with client.attempts(1), pytest.raises(EtsyApiError) as error:
+        client.shipping_profiles()
+    assert error.value.status == 401 and len(sent) == 2

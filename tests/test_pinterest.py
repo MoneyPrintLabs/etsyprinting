@@ -410,3 +410,55 @@ def test_without_a_return_address_the_listener_shows_its_own_page():
     assert ok.status_code == 200 and "connected" in ok.text
     assert refused.status_code == 200 and "access_denied" in refused.text
     assert pin._Callback.result == {"error": "access_denied", "state": "s1"}
+
+
+def test_the_listener_ignores_an_answer_to_another_request():
+    """Review oauth-listener-forged-first-request: a forged request is refused, the real
+    answer still arrives, and nothing is sent on to the app for the forged one."""
+    server, base = _serve_callback("http://localhost:3000/oauth-done")
+    pin._Callback.expected_state = "s1"
+    try:
+        with httpx.Client(trust_env=False) as http:
+            forged = http.get(f"{base}/?code=FORGED&state=nope")
+            no_state = http.get(f"{base}/?code=FORGED")
+            refusal = http.get(f"{base}/?error=access_denied&state=nope")
+            assert pin._Callback.result == {}
+            real = http.get(f"{base}/?code=c1&state=s1")
+    finally:
+        server.shutdown()
+        server.server_close()
+        pin._Callback.return_url = None
+        pin._Callback.expected_state = None
+    for resp in (forged, no_state, refusal):
+        assert resp.status_code == 400 and "location" not in resp.headers
+        assert "FORGED" not in resp.text and "access_denied" not in resp.text
+    assert real.status_code == 302 and real.headers["location"] == "http://localhost:3000/oauth-done"
+    assert pin._Callback.result == {"code": "c1", "state": "s1"}
+
+
+def test_listening_for_the_code_waits_past_a_forged_answer():
+    import socket
+    import threading
+    import time
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    config = pin.PinterestConfig(app_id="a", app_secret="s", redirect_uri=f"http://localhost:{port}/")
+    answers = []
+
+    def browser():
+        with httpx.Client(trust_env=False) as http:
+            for _ in range(100):
+                try:
+                    answers.append(http.get(f"http://127.0.0.1:{port}/?code=FORGED&state=nope"))
+                    break
+                except httpx.ConnectError:
+                    time.sleep(0.05)
+            time.sleep(0.6)
+            answers.append(http.get(f"http://127.0.0.1:{port}/?code=real&state=mine"))
+
+    threading.Thread(target=browser, daemon=True).start()
+    assert pin._listen_for_code(config, "mine", timeout=15) == "real"
+    assert answers[0].status_code == 400 and answers[1].status_code == 200
+    assert pin._Callback.expected_state is None
