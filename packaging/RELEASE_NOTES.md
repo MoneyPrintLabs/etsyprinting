@@ -25,6 +25,12 @@ their order (`--mockups N` = the first N of them), and their `--path` may point 
 products folder. `listings pull` no longer writes the empty `views` column, and
 `seo suggest` shows plain text.
 
+**New versions announce themselves.** From this version on, stallkit checks GitHub once a
+day for a newer release and shows **Yeni sürüm · İndir** (*New version · Download*) in the
+top bar, with **Neler yeni?** (*What's new?*). Nothing about you or your shop is sent; you
+can turn it off under **Ayarlar**. The file you sell is never used as a listing photo:
+digital drafts show your mockups and a small preview.
+
 ## Download
 
 | Your computer | File |
@@ -102,6 +108,12 @@ ve **Ayarlar** bunu söylüyor. 0.2.0 zaten iç içe bir klasör açtıysa **Aya
 sırayla kullanıyor (`--mockups N` = bunların ilk N tanesi); `--path` ürün klasörünün
 içini gösterebiliyor. `listings pull` artık boş `views` sütununu yazmıyor, `seo suggest`
 düz metin gösteriyor.
+
+**Yeni sürümler artık kendini duyuruyor.** Bu sürümden itibaren stallkit günde bir kez
+GitHub'da yeni sürüm olup olmadığına bakar; varsa üst çubukta **Yeni sürüm · İndir** ve
+**Neler yeni?** görünür. Sizinle ya da mağazanızla ilgili hiçbir bilgi gönderilmez;
+**Ayarlar**'dan kapatabilirsiniz. Sattığınız dosya hiçbir zaman ilan fotoğrafı olarak
+yüklenmez: dijital taslaklarda mockup'larınız ve küçük bir önizleme görünür.
 
 ## İndir (Türkçe)
 

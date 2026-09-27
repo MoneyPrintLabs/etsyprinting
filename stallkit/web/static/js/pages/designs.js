@@ -1621,6 +1621,12 @@ class DesignsPage {
     if (phase === "done") {
       title = t("done.title", { n: c.created });
       sub = t("done.sub");
+      // Some designs failed: say so up front instead of a plain success tick.
+      if (c.errors) {
+        tone = "warning";
+        tileIcon = "alert";
+        sub = t("done.sub_errors", { n: c.errors });
+      }
       actions = [newBtn, viewBtn];
     } else if (phase === "checked") {
       tone = "info";
