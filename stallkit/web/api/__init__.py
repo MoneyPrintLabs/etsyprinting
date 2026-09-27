@@ -23,6 +23,7 @@ from . import (
     seo,
     settings,
     template,
+    updates,
 )
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -42,6 +43,7 @@ MODULES = (
     profit,
     dashboard,
     pinterest,
+    updates,
 )
 
 

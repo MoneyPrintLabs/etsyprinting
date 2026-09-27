@@ -1,5 +1,6 @@
-// Ayarlar (/ayarlar): language, hiding the shop name, quitting; the shops on this
-// computer; the products folder; the Etsy connection; the setup checklist; about.
+// Ayarlar (/ayarlar): language, hiding the shop name, the version and new-version
+// checks, quitting; the shops on this computer; the products folder; the Etsy
+// connection; the setup checklist; about.
 // Two columns of cards, in the same visual language as the setup pages.
 
 import { relative } from "../format.js";
@@ -10,11 +11,12 @@ const DOCTOR_ICON = { ok: "check", warn: "alert", missing: "x", unknown: "help" 
 const DOCTOR_TONE = { ok: "success", warn: "warning", missing: "danger", unknown: "muted" };
 const STATE_TONE = { connected: "success", reconnect: "warning", offline: "warning", error: "warning", bad_keys: "danger" };
 const SUBFOLDERS = ["mockups", "products", "drafts"];
+const RELEASE_URL = /^https:\/\/github\.com\//;
 
 export default {
   async mount(el, ctx) {
     const t = ctx.t;
-    const data = { session: ctx.session() || {}, settings: null, info: null, shops: null, doctor: null };
+    const data = { session: ctx.session() || {}, settings: null, info: null, shops: null, doctor: null, update: null };
     let editingFolder = false;
     let doctorRunning = false;
 
@@ -83,10 +85,81 @@ export default {
           { class: "st-rows" },
           row(t("general.language"), t("general.language_sub"), lang),
           row(t("general.anonymise"), t("general.anonymise_sub"), hide),
-          row(t("general.version"), null, h("span", { class: "mono st-version" }, data.session.version || "")),
+          row(t("general.version"), upd.line, h("div", { class: "st-update-ctrl" }, upd.version, upd.checkBtn)),
+          row(t("update.auto"), t("update.auto_sub"), upd.auto),
           row(t("general.quit"), t("general.quit_sub"), quitBtn),
         ),
       );
+      renderUpdate();
+    }
+
+    // ---- Sürüm: the new-version check (GET /api/update, pushed on "update")
+    const upd = {
+      line: h("span", { class: "st-update-line" }),
+      version: h("span", { class: "mono st-version" }),
+      checkBtn: button({ label: t("update.check"), icon: "refresh", size: "sm", autoLoading: true, onClick: () => checkUpdate() }),
+      auto: toggle({ checked: true, ariaLabel: t("update.auto"), onChange: (v) => setAutoUpdate(v) }),
+    };
+
+    function renderUpdate() {
+      const u = data.update;
+      upd.version.textContent = `v${(u && !(u instanceof Error) && u.current) || data.session.version || ""}`;
+      if (!u || u instanceof Error) {
+        mount(upd.line, u ? ctx.api.errorText(u, t) : "");
+        return;
+      }
+      upd.checkBtn.setDisabled(!!u.blocked);
+      upd.auto.update(!!u.auto);
+      upd.auto.disabled = !!u.blocked;
+      const parts = [];
+      const latest = u.latest;
+      if (u.blocked) parts.push(t("update.blocked"));
+      else if (u.available && latest && RELEASE_URL.test(latest.url || "")) {
+        const version = `v${latest.version}`;
+        parts.push(h("span", { class: "st-update-new" }, t("update.available", { version })));
+        parts.push(h("a", { href: latest.url, target: "_blank", rel: "noopener noreferrer", class: "st-ext" }, t("update.download"), icon("external", { size: 12 })));
+        parts.push(h("button", { type: "button", class: "st-link", onClick: () => ctx.showReleaseNotes(u) }, t("update.whats_new")));
+      } else if (u.checked_at) parts.push(t("update.up_to_date"));
+      if (!u.blocked) {
+        if (u.checked_at) parts.push(t("update.checked", { when: relative(u.checked_at) }));
+        else if (!u.error) parts.push(t("update.never"));
+        if (u.error) parts.push(h("span", { class: "st-update-err" }, t("update.last_failed", { reason: t(`update.error.${u.error}`) })));
+      }
+      mount(upd.line, parts.flatMap((p, i) => (i ? [" · ", p] : [p])));
+    }
+
+    async function loadUpdate() {
+      try {
+        data.update = await ctx.api.get("/api/update", null, { signal: ctx.signal });
+      } catch (err) {
+        if (ctx.api.isAbort(err)) return;
+        data.update = err;
+      }
+      renderUpdate();
+    }
+
+    async function checkUpdate() {
+      try {
+        const u = await ctx.api.post("/api/update/check", {}, { signal: ctx.signal });
+        data.update = u;
+        renderUpdate();
+        if (u.error) ctx.toast({ tone: "warning", title: t("update.toast_failed"), message: t(`update.error.${u.error}`) });
+        else if (u.available && u.latest) ctx.toast({ tone: "info", title: t("update.toast_new", { version: `v${u.latest.version}` }) });
+        else ctx.toast({ tone: "success", title: t("update.toast_current"), message: t("update.toast_current_msg", { version: `v${u.current}` }) });
+      } catch (err) {
+        if (ctx.api.isAbort(err)) return;
+        toastError(err);
+      }
+    }
+
+    async function setAutoUpdate(on) {
+      try {
+        data.update = await ctx.api.post("/api/update/auto", { enabled: on });
+        renderUpdate();
+      } catch (err) {
+        upd.auto.update(!on);
+        toastError(err);
+      }
     }
 
     async function quit() {
@@ -527,7 +600,13 @@ export default {
     renderDoctor();
     renderAbout();
     ctx.onStatus(() => renderEtsy());
-    await Promise.all([loadSettings(), loadInfo(), loadShops()]);
-    return () => {};
+    ctx.events.on("update", (u) => {
+      if (!u || typeof u !== "object") return;
+      data.update = u;
+      renderUpdate();
+    });
+    const clock = setInterval(renderUpdate, 60000); // "checked 5 min ago" keeps up
+    await Promise.all([loadSettings(), loadInfo(), loadShops(), loadUpdate()]);
+    return () => clearInterval(clock);
   },
 };

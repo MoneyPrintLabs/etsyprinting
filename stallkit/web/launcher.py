@@ -524,6 +524,7 @@ def _serve(
         print(f"stallkit is running at {url}", flush=True)
         print("Close the browser tab to stop it, or press Ctrl+C here.", flush=True)
         watchdog.start()
+        ctx.updates.start()  # a look for a newer release, ~10 s from now, then daily
         if open_browser:
             _open_browser(url)
         if server.companion is not None:

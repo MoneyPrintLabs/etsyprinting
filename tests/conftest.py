@@ -43,6 +43,10 @@ def isolate_environment(monkeypatch, tmp_path):
     for name in ETSY_VARS:
         monkeypatch.setenv(name, "")
         monkeypatch.delenv(name)
+    # No test asks GitHub for a newer release: a launch started by a test (or a
+    # subprocess of one) would otherwise look after 10 s. Tests of the checker
+    # delete this and give it a fake transport (tests/test_web_update.py).
+    monkeypatch.setenv("STALLKIT_NO_UPDATE_CHECK", "1")
 
     home = tmp_path / "stallkit-home"
     home.mkdir()

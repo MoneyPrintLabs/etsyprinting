@@ -477,6 +477,99 @@ a:hover {
 .page-actions:empty {
   display: none;
 }
+
+/* The new-version pill (top bar, before the bell) and its "What's new?" dialog. */
+.update-slot {
+  display: flex;
+  min-width: 0;
+}
+.update-pill {
+  display: inline-flex;
+  align-items: stretch;
+  height: 32px;
+  border-radius: 999px;
+  border: 1px solid var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--text-2);
+  font-size: 12.5px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.update-pill-main,
+.update-pill-notes,
+.update-pill-x {
+  display: inline-flex;
+  align-items: center;
+  transition: background 0.15s, color 0.15s;
+}
+.update-pill-main {
+  gap: 6px;
+  padding: 0 11px 0 12px;
+  color: var(--text);
+  font-weight: 500;
+}
+.update-pill-main .icon {
+  color: var(--accent-2);
+}
+.update-pill-version {
+  font-variant-numeric: tabular-nums;
+}
+.update-pill-sep {
+  color: var(--muted);
+}
+.update-pill-main b {
+  font-weight: 600;
+  color: var(--accent-2);
+}
+.update-pill-notes {
+  padding: 0 11px;
+  border-left: 1px solid rgba(124, 108, 246, 0.28);
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+.update-pill-x {
+  justify-content: center;
+  width: 30px;
+  border-left: 1px solid rgba(124, 108, 246, 0.28);
+  color: var(--muted);
+}
+.update-pill-main:hover,
+.update-pill-notes:hover,
+.update-pill-x:hover {
+  background: rgba(124, 108, 246, 0.12);
+  color: var(--text);
+  text-decoration: none;
+}
+.update-pill :focus-visible {
+  outline-offset: -2px;
+}
+.update-notes {
+  max-height: min(52vh, 420px);
+  overflow-y: auto;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.update-pill.is-compact .update-pill-label {
+  display: none; /* app.js: the page title would be cut otherwise */
+}
+@media (max-width: 1100px) {
+  .update-pill-label {
+    display: none;
+  }
+}
+@media (max-width: 860px) {
+  .update-pill-notes {
+    display: none;
+  }
+}
 .content {
   flex: 1;
   min-height: 0;

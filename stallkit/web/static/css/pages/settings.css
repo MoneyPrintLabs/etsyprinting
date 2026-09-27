@@ -65,6 +65,24 @@
 .page-settings .st-version {
   color: var(--text-2);
 }
+.page-settings .st-update-ctrl {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.page-settings .st-update-new {
+  color: var(--text);
+  font-weight: 600;
+}
+.page-settings .st-update-err {
+  color: var(--warning);
+}
+.page-settings .st-link {
+  color: var(--accent-2);
+}
+.page-settings .st-link:hover {
+  text-decoration: underline;
+}
 .page-settings .st-muted-note {
   font-size: 12.5px;
   line-height: 1.5;

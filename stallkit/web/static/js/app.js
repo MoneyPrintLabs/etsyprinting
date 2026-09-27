@@ -7,7 +7,7 @@
 import { api, errorText, isAbort, onNoSession } from "./api.js";
 import { events } from "./events.js";
 import * as i18n from "./i18n.js";
-import { relative } from "./format.js";
+import { date, relative } from "./format.js";
 import { icon, logoMark } from "./icons.js";
 import {
   badge,
@@ -93,6 +93,7 @@ const PAGE_STUCK_AFTER = 12000; // a page's files still not loaded: say why it m
 const state = {
   session: null,
   status: null,
+  update: null, // GET /api/update: is a newer stallkit out (the top-bar pill)
   notifications: [],
   unread: 0,
   current: null,
@@ -569,6 +570,7 @@ function makeCtx(cur) {
       return off;
     },
     session: () => state.session,
+    showReleaseNotes,
     refreshStatus,
     setLanguage,
     remount: (opts) => (state.current === cur ? remount(opts) : Promise.resolve(false)),
@@ -592,6 +594,7 @@ function setHeader(opts) {
   if ("actions" in opts) {
     mount(els.pageActions, opts.actions || []);
   }
+  fitUpdatePill();
 }
 
 function setActiveNav(page) {
@@ -961,8 +964,144 @@ async function onReconnect() {
     return;
   }
   loadNotifications();
+  loadUpdate();
   if (state.session.shop_id !== state.mountedShopId) queueShopChange();
   else renderShop();
+}
+
+// ------------------------------------------------------------------ new version (top-bar pill)
+//
+// The server looks at GitHub's latest release (about 10 s after start, then daily) and
+// pushes the result on the "update" topic. The pill links to the release page in a new
+// tab; "What's new?" shows the release notes as plain text (they come from the internet:
+// textContent only); the x hides it for that version.
+
+const RELEASE_URL = /^https:\/\/github\.com\//;
+
+async function loadUpdate() {
+  try {
+    setUpdate(await api.get("/api/update"));
+  } catch {
+    /* no pill; the next "update" event brings it */
+  }
+}
+
+function setUpdate(u) {
+  if (!u || typeof u !== "object" || state.stopped) return;
+  state.update = u;
+  renderUpdatePill();
+}
+
+function renderUpdatePill() {
+  const slot = els.updateSlot;
+  if (!slot) return;
+  const u = state.update;
+  const latest = u && u.latest;
+  if (!u || !u.pill || !latest || !RELEASE_URL.test(latest.url || "")) {
+    const hadFocus = slot.contains(document.activeElement);
+    mount(slot);
+    slot.hidden = true;
+    if (hadFocus && els.bell) els.bell.focus();
+    return;
+  }
+  const version = `v${latest.version}`;
+  slot.hidden = false;
+  mount(
+    slot,
+    h(
+      "div",
+      { class: "update-pill" },
+      h(
+        "a",
+        {
+          class: "update-pill-main",
+          href: latest.url,
+          target: "_blank",
+          rel: "noopener noreferrer",
+          title: t("update.pill_title", { version }),
+        },
+        icon("sparkles", { size: 14 }),
+        h("span", { class: "update-pill-label" }, t("update.pill")),
+        h("span", { class: "update-pill-version" }, version),
+        h("span", { class: "update-pill-sep", "aria-hidden": "true" }, "·"),
+        h("b", null, t("update.download")),
+      ),
+      h("button", { type: "button", class: "update-pill-notes", onClick: () => showReleaseNotes() }, t("update.whats_new")),
+      h(
+        "button",
+        { type: "button", class: "update-pill-x", title: t("update.dismiss"), "aria-label": t("update.dismiss"), onClick: dismissUpdate },
+        icon("x", { size: 13 }),
+      ),
+    ),
+  );
+  fitUpdatePill();
+}
+
+/**
+ * A page with several header controls (Kâr-Zarar) leaves little room at 1280 px: the
+ * pill drops its "New version" word rather than cut the page title. Run on every header
+ * change and whenever the title's box changes size (controls that fill in later, a
+ * resized window), one frame later so the observer never loops.
+ */
+let fitFrame = 0;
+function watchTitleWidth() {
+  if (typeof ResizeObserver !== "function" || !els.title) return;
+  new ResizeObserver(() => {
+    cancelAnimationFrame(fitFrame);
+    fitFrame = requestAnimationFrame(fitUpdatePill);
+  }).observe(els.title);
+}
+
+function fitUpdatePill() {
+  const pill = els.updateSlot && !els.updateSlot.hidden ? els.updateSlot.firstElementChild : null;
+  if (!pill || !els.title) return;
+  pill.classList.remove("is-compact");
+  if (els.title.scrollWidth > els.title.clientWidth + 1) pill.classList.add("is-compact");
+}
+
+/**
+ * "What's new?": the release notes as plain text in a scrolling box. `u` is an update
+ * state (GET /api/update); default: the shell's. Pages use it as ctx.showReleaseNotes(u).
+ */
+export function showReleaseNotes(u = state.update) {
+  const latest = u && u.latest;
+  if (!latest || !RELEASE_URL.test(latest.url || "")) return null;
+  const version = `v${latest.version}`;
+  const notes = h("div", { class: "update-notes", tabindex: "0", role: "document", "aria-label": t("update.notes_label") });
+  notes.textContent = latest.notes && latest.notes.trim() ? latest.notes : t("update.no_notes");
+  // A name that only repeats the version ("v0.3.1", "stallkit 0.3.1") is left out.
+  const bareName = (latest.name || "").replace(/^stallkit\s*/i, "").replace(/^v/i, "").trim();
+  const sub = [
+    latest.name && bareName !== latest.version ? latest.name : null,
+    latest.published_at ? t("update.released", { date: date(latest.published_at) }) : null,
+    t("update.yours", { version: `v${u.current}` }),
+  ].filter(Boolean);
+  const download = h(
+    "a",
+    { class: "btn btn-primary btn-md", href: latest.url, target: "_blank", rel: "noopener noreferrer" },
+    icon("download", { size: 16 }),
+    h("span", { class: "btn-label" }, t("update.open_page")),
+  );
+  return modal({
+    title: t("update.notes_title", { version }),
+    subtitle: sub.join(" · "),
+    body: notes,
+    width: 580,
+    class: "update-modal",
+    actions: [{ label: t("common.close"), variant: "secondary" }, download],
+  });
+}
+
+async function dismissUpdate() {
+  const u = state.update;
+  if (!u || !u.latest) return;
+  setUpdate({ ...u, dismissed: true, pill: false });
+  try {
+    setUpdate(await api.post("/api/update/dismiss", { version: u.latest.version }));
+  } catch (err) {
+    setUpdate(u);
+    toast({ tone: "danger", title: errorText(err) });
+  }
 }
 
 // ------------------------------------------------------------------ layout
@@ -1018,11 +1157,12 @@ function renderShell() {
   els.bell = iconButton({ icon: "bell", iconSize: 15, title: t("notifications.open"), onClick: toggleNotifications });
   els.bell.setAttribute("aria-haspopup", "dialog");
   els.bell.setAttribute("aria-expanded", "false");
+  els.updateSlot = h("div", { class: "update-slot", role: "status", hidden: true });
   const topbar = h(
     "header",
     { class: "topbar" },
     h("div", { class: "topbar-titles" }, els.title, els.subtitle),
-    h("div", { class: "topbar-actions" }, els.pageActions, els.bell),
+    h("div", { class: "topbar-actions" }, els.pageActions, els.updateSlot, els.bell),
   );
   els.banner = h("div", { class: "banner-slot", role: "status" });
   els.pageHost = h("div", { class: "page-host" });
@@ -1035,6 +1175,8 @@ function renderShell() {
   );
   updateBell();
   renderShop();
+  renderUpdatePill();
+  watchTitleWidth();
 }
 
 // ------------------------------------------------------------------ full-page states
@@ -1159,10 +1301,12 @@ async function boot() {
   events.on("status", setStatus);
   events.on("shop", () => queueShopChange());
   events.on("notification", onNotification);
+  events.on("update", setUpdate);
   events.on("connection", onConnection);
   events.on("reconnect", onReconnect);
   events.connect();
   loadNotifications();
+  loadUpdate();
   listenToOtherTabs();
 
   // This entry's position in the tab's history (kept across a reload).
