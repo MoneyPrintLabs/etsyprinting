@@ -27,7 +27,72 @@ stallkit seo keywords "ceramic mug"           # what actually ranks, and why
 
 ---
 
+## Kurmadan önce okuyun
+
+stallkit mağazanıza **kendi Etsy uygulamanız** üzerinden bağlanır. Etsy bunu her satıcıdan
+ister ve bir kez yapılır. Bu adımları sırayla yapın; çoğu kurulum hatası bir adım
+atlandığı için çıkar.
+
+1. **Açık bir Etsy mağazanız olsun.** stallkit var olan bir mağazayı yönetir.
+2. **Etsy uygulaması oluşturun:** <https://www.etsy.com/developers/register-seller-app>
+   (*Create a seller app*). Adında "Etsy" kelimesi **geçmesin**, Etsy bunu reddeder.
+   Developer Mode'u açmayın. Etsy hesap başına bir uygulamaya izin verir; zaten bir
+   uygulamanız varsa onu kullanın.
+3. **Onayı bekleyin.** Genelde birkaç dakika sürer. Onaylanmadan anahtarlar çalışmaz.
+4. **Callback adresini ekleyin. Bu adım en çok atlanan adımdır.**
+   <https://www.etsy.com/developers/your-apps> → uygulamanızın yanındaki **⋮** →
+   **Edit callback URLs** → şu adresi **birebir** ekleyip kaydedin:
+
+   ```
+   http://localhost:3003/oauth/redirect
+   ```
+
+   `https` değil `http`; `127.0.0.1` değil `localhost`; sonunda `/` yok. Bu menü
+   uygulama onaylandıktan sonra görünür.
+5. **Anahtarları kopyalayın:** aynı sayfadaki **Keystring** ve **Shared secret**. İkisi
+   birden gerekir, aynı uygulamadan ve boşluksuz kopyalayın.
+6. **stallkit'i indirip açın:** [en son sürüm](https://github.com/MoneyPrintLabs/etsyprinting/releases/latest).
+   Anahtarları yapıştırın, **Kaydet ve kontrol et**'e, sonra **Mağazamı bağla**'ya basın
+   ve Etsy'de izin verin. Bağlantı kayıtlı kalır; her açılışta tekrar gerekmez.
+
+### Sık karşılaşılan hatalar
+
+| Gördüğünüz | Sebep ve çözüm |
+|---|---|
+| Etsy: **"İstenen yönlendirme URL'sine izin verilmiyor"** (*The requested redirect URL is not permitted*) | 4. adım yapılmamış ya da adres farklı yazılmış. Adresi birebir ekleyin, sonra tekrar bağlanın. |
+| **"Edit callback URLs"** menüsü yok | Uygulama henüz onaylanmamış. Onayı bekleyin. |
+| **"Etsy bu anahtarları kabul etmedi"** | Keystring ve Shared secret aynı, onaylanmış uygulamadan ve boşluksuz kopyalanmalı. |
+| İzin verdikten sonra tarayıcı **"Bu siteye ulaşılamıyor"** (localhost:3003) diyor | İzin verirken stallkit açık olmalı (5 dakika bekler). stallkit'e dönüp tekrar bağlanın. 3003 portunu başka bir program kullanıyorsa kapatın. |
+| Windows **"kişisel bilgisayarınızı korudu"** diyor | Uygulama imzalı değil: **Ek bilgi → Yine de çalıştır**. |
+| macOS uygulamayı açmıyor | **Sistem Ayarları → Gizlilik ve Güvenlik → Yine de Aç**. |
+| Takip numarası yüklenmiyor (403) | Etsy, 2024'ten beri yeni API anahtarlarıyla takip numarası eklemeyi Türkiye dahil birçok ülkede kısıtlıyor. Takip numaralarını Etsy Mağaza Yöneticisi'nden girin. |
+
+## Read this before you install
+
+stallkit connects through **your own Etsy app** (Etsy requires one per seller; it is a
+one-time step). Most setup failures come from a skipped step:
+
+1. Have an open Etsy shop.
+2. Create an app at <https://www.etsy.com/developers/register-seller-app>. The name must
+   not contain "Etsy". Don't enable Developer Mode. One app per account: reuse it if you have one.
+3. Wait for approval (usually minutes).
+4. **Register the callback (the most skipped step):** <https://www.etsy.com/developers/your-apps>
+   → **⋮** next to your app → **Edit callback URLs** → add exactly
+   `http://localhost:3003/oauth/redirect` (http, localhost, no trailing slash). The menu
+   appears only after approval.
+5. Copy the **Keystring** and the **Shared secret** from the same app.
+6. [Download stallkit](https://github.com/MoneyPrintLabs/etsyprinting/releases/latest), paste
+   both keys, save, then **connect** and approve on Etsy. The connection is remembered.
+
+Etsy says *"The requested redirect URL is not permitted"*? Step 4 is missing or the address
+differs. More fixes: [Troubleshooting](#troubleshooting).
+
+---
+
 ## Contents
+
+- [Kurmadan önce okuyun](#kurmadan-önce-okuyun)
+- [Read this before you install](#read-this-before-you-install)
 
 - [Why this exists](#why-this-exists)
 - [Desktop app (no terminal)](#desktop-app-no-terminal)
@@ -800,8 +865,11 @@ or export it in your shell.
 **`Etsy does not accept IP addresses in a callback URL`** — use `localhost`, not
 `127.0.0.1`. Etsy requires a domain-name host; `localhost` qualifies, a bare IP does not.
 
-**Etsy shows "redirect_uri is not valid"** — the callback registered on your app does not
-match `ETSY_REDIRECT_URI` byte for byte. Compare them character by character, including
+**Etsy shows "The requested redirect URL is not permitted" (or "redirect_uri is not valid")**
+— the callback is not registered on your Etsy app, or it does not match
+`ETSY_REDIRECT_URI` byte for byte. Add `http://localhost:3003/oauth/redirect` under
+<https://www.etsy.com/developers/your-apps> → **⋮** → **Edit callback URLs** (the menu
+appears once the app is approved), then connect again. Compare them character by character, including
 the scheme, the port, any trailing slash, and the path.
 
 **`Cannot listen on 127.0.0.1:3003`** — something else holds that port. Pick another,
