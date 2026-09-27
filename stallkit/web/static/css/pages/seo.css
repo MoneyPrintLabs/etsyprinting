@@ -135,7 +135,6 @@
 }
 
 .seo-ring .score-num {
-  font-size: 25px !important;
   font-weight: 750;
 }
 .seo-ring.is-counting .score-arc {
@@ -551,9 +550,6 @@
 }
 .seo-fix-id {
   font-size: 12px;
-}
-.seo-fix-head .score-num {
-  font-size: 15px !important;
 }
 
 .seo-fix-sec {

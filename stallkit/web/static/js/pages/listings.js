@@ -52,34 +52,6 @@ function fittingRows() {
   return Math.max(8, Math.min(50, Math.floor(free / ROW_HEIGHT)));
 }
 
-/** Fetch a file from the API and hand it to the browser as a download. */
-async function download(ctx, path, params, fallbackName) {
-  const res = await fetch(ctx.api.url(path, params), {
-    credentials: "same-origin",
-    cache: "no-store",
-    headers: { "X-Stallkit": "1" },
-  });
-  if (!res.ok) {
-    let data = null;
-    try {
-      data = await res.json();
-    } catch {
-      data = null;
-    }
-    const e = (data && data.error) || {};
-    throw new ctx.api.ApiError(res.status, e.code, e.message, e.params);
-  }
-  const blob = await res.blob();
-  const disposition = res.headers.get("content-disposition") || "";
-  const m = /filename="([^"]+)"/.exec(disposition);
-  const href = URL.createObjectURL(blob);
-  const a = h("a", { href, download: (m && m[1]) || fallbackName, "data-external": "", hidden: true });
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(href), 10000);
-}
-
 export default {
   async mount(el, ctx) {
     const t = ctx.t;
@@ -525,14 +497,14 @@ export default {
             label: t("more.export", { tab: t(`tab.${st.tab}`) }),
             icon: "download",
             onClick: () =>
-              download(ctx, "/api/listings/export.csv", { tab: st.tab }, "listings.csv").catch((err) => ctx.toast({ tone: "danger", title: ctx.api.errorText(err, t) })),
+              ctx.api.download("/api/listings/export.csv", { params: { tab: st.tab }, filename: "listings.csv" }).catch((err) => ctx.toast({ tone: "danger", title: ctx.api.errorText(err, t) })),
           },
           { label: t("more.import"), icon: "upload", onClick: () => fileInput.click() },
           {
             label: t("more.template"),
             icon: "file",
             onClick: () =>
-              download(ctx, "/api/listings/template.csv", null, "listings-template.csv").catch((err) => ctx.toast({ tone: "danger", title: ctx.api.errorText(err, t) })),
+              ctx.api.download("/api/listings/template.csv", { filename: "listings-template.csv" }).catch((err) => ctx.toast({ tone: "danger", title: ctx.api.errorText(err, t) })),
           },
           { divider: true },
           { label: t("more.refresh"), icon: "refresh", onClick: () => load({ refresh: true }) },
@@ -655,6 +627,11 @@ export default {
     }
 
     ctx.events.on("job", (job) => {
+      // Tasarım Yükle made new drafts: show them (the server dropped its cache already).
+      if (job && job.kind === "designs" && ["done", "cancelled", "error"].includes(job.status) && !(job.params && job.params.dry_run)) {
+        load();
+        return;
+      }
       if (!job || (job.kind !== "publish" && job.kind !== "listings-import")) return;
       const kind = job.kind === "publish" ? "publish" : "import";
       const panel = st.jobs.get(job.id) || (job.status === "running" || job.status === "queued" ? watchJob(job, kind) : null);

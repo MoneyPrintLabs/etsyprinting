@@ -727,6 +727,14 @@
   margin-top: 2px;
   color: var(--warning);
 }
+.pf-fees-link {
+  color: var(--accent-2);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.pf-fees-link:hover {
+  text-decoration: underline;
+}
 
 /* ------------------------------------------------------------------ foot */
 

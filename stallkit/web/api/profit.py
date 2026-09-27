@@ -1088,9 +1088,12 @@ def _start_job(ctx: AppContext, shop_key: str, month: str, missing: list[str]) -
         job.progress(steps, steps, label=f"{month}|done|0")
         return {"months": missing}
 
+    # Only reads Etsy (and writes this app's own cache): the read lane, so the numbers
+    # do not wait behind a long Tasarım Yükle upload on the write lane.
     return ctx.jobs.start(
         JOB_KIND, "profit:job.title", work,
         params={"shop": shop, "month": month, "months": missing}, cancellable=True,
+        lane="read",
     )
 
 

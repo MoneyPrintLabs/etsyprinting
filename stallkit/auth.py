@@ -363,7 +363,8 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
             if key in params:
                 type(self).result[key] = params[key][0]
 
-        ok = "code" in params
+        ok = "code" in params and "error" not in params
+        # Only a success goes back to the app: an error keeps this listener's own page.
         if ok and self.return_url:
             self.send_response(302)
             self.send_header("Location", self.return_url)

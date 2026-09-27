@@ -610,22 +610,27 @@ export function searchInput(opts = {}) {
 /**
  * table({columns:[{key,label,width,align,render(row,i),class,headerClass}], rows, rowKey="id",
  *        selectable, selected:Set, onSelectionChange(Set), onRowClick(row, event), empty,
- *        loading, rowClass(row), class})
+ *        loading, rowClass(row), class, checkWidth=48})
  * -> {el, update(rows?, selected?), setLoading(bool), selected (Set)}
  * update(null) shows skeleton rows. Shift+click selects a range. Rows are focusable
  * (Enter = click) when onRowClick is given.
+ * selectable: true, or a predicate selectable(row, i) -> bool: rows it refuses get no
+ * checkbox and are left out of "select all". checkWidth: the checkbox column in px.
  */
 export function table(opts = {}) {
   const {
     columns = [],
     rowKey = "id",
-    selectable = false,
+    selectable: selectableOpt = false,
     onSelectionChange,
     onRowClick,
     empty,
     rowClass,
     skeletonRows = 6,
+    checkWidth = 48,
   } = opts;
+  const selectable = !!selectableOpt;
+  const canSelect = typeof selectableOpt === "function" ? (row, i) => !!selectableOpt(row, i) : () => true;
   let rows = opts.rows || [];
   let sel = opts.selected instanceof Set ? opts.selected : new Set(opts.selected || []);
   let loading = !!opts.loading;
@@ -640,8 +645,11 @@ export function table(opts = {}) {
     ? checkbox({
         ariaLabel: ct("table.select_all"),
         onChange: (checked) => {
-          if (checked) rows.forEach((r, i) => sel.add(keyOf(r, i)));
-          else rows.forEach((r, i) => sel.delete(keyOf(r, i)));
+          rows.forEach((r, i) => {
+            if (!canSelect(r, i)) return;
+            if (checked) sel.add(keyOf(r, i));
+            else sel.delete(keyOf(r, i));
+          });
           renderBody();
           notify();
         },
@@ -651,7 +659,7 @@ export function table(opts = {}) {
   const colgroup = h(
     "colgroup",
     null,
-    selectable ? h("col", { style: { width: 48 } }) : null,
+    selectable ? h("col", { style: { width: checkWidth } }) : null,
     columns.map((c) => h("col", { style: c.width ? { width: typeof c.width === "number" ? `${c.width}px` : c.width } : null })),
   );
   const thead = h(
@@ -677,7 +685,10 @@ export function table(opts = {}) {
 
   function updateHeadCheck() {
     if (!headCheck) return;
-    const keys = rows.map((r, i) => keyOf(r, i));
+    const keys = [];
+    rows.forEach((r, i) => {
+      if (canSelect(r, i)) keys.push(keyOf(r, i));
+    });
     const n = keys.filter((k) => sel.has(k)).length;
     headCheck.checked = n > 0 && n === keys.length;
     headCheck.indeterminate = n > 0 && n < keys.length;
@@ -726,7 +737,9 @@ export function table(opts = {}) {
           dataset: { index: String(i) },
           "aria-selected": selectable ? (isSel ? "true" : "false") : undefined,
         });
-        if (selectable) {
+        if (selectable && !canSelect(row, i)) {
+          tr.appendChild(h("td", { class: "tbl-check is-off", dataset: { noRowClick: "1" } }));
+        } else if (selectable) {
           const cb = checkbox({
             checked: isSel,
             ariaLabel: ct("table.select_row"),
@@ -734,6 +747,7 @@ export function table(opts = {}) {
               if (e && e.shiftKey && lastIndex !== null && lastIndex !== i) {
                 const [a, b] = lastIndex < i ? [lastIndex, i] : [i, lastIndex];
                 for (let j = a; j <= b; j += 1) {
+                  if (!canSelect(rows[j], j)) continue;
                   const kk = keyOf(rows[j], j);
                   if (checked) sel.add(kk);
                   else sel.delete(kk);
@@ -811,8 +825,28 @@ export function table(opts = {}) {
 
 /**
  * pagination({page, pages, onChange}) -> Node (with .update(page, pages)).
- * Pages are 1-based. Renders ‹ 1 2 3 … 7 ›.
+ * Pages are 1-based. Renders ‹ 1 2 3 … 7 › as in the video (t250, t280): every number
+ * up to 5 pages; beyond that the first and last page, the current one with its
+ * neighbours, and "…" for each run of 2 or more hidden pages.
  */
+/** The page numbers pagination() shows: numbers, and null for "…". */
+export function pageNumbers(cur, total) {
+  if (total <= 5) return Array.from({ length: Math.max(1, total) }, (_, i) => i + 1);
+  const set = new Set([1, total, cur - 1, cur, cur + 1]);
+  if (cur <= 2) [2, 3].forEach((x) => set.add(x));
+  if (cur >= total - 1) [total - 1, total - 2].forEach((x) => set.add(x));
+  const sorted = [...set].filter((x) => x >= 1 && x <= total).sort((a, b) => a - b);
+  const out = [];
+  let prev = 0;
+  for (const n of sorted) {
+    if (n - prev === 2) out.push(n - 1); // a lone hidden page is shown, not replaced by "…"
+    else if (n - prev > 2) out.push(null);
+    out.push(n);
+    prev = n;
+  }
+  return out;
+}
+
 export function pagination({ page = 1, pages = 1, onChange } = {}) {
   const el = h("nav", { class: "pagination", "aria-label": ct("pagination.label") });
   let cur = page;
@@ -828,19 +862,7 @@ export function pagination({ page = 1, pages = 1, onChange } = {}) {
   }
 
   function numbers() {
-    if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
-    const set = new Set([1, total, cur - 1, cur, cur + 1]);
-    if (cur <= 3) [2, 3, 4].forEach((x) => set.add(x));
-    if (cur >= total - 2) [total - 1, total - 2, total - 3].forEach((x) => set.add(x));
-    const sorted = [...set].filter((x) => x >= 1 && x <= total).sort((a, b) => a - b);
-    const out = [];
-    let prev = 0;
-    for (const n of sorted) {
-      if (n - prev > 1) out.push(null);
-      out.push(n);
-      prev = n;
-    }
-    return out;
+    return pageNumbers(cur, total);
   }
 
   function render() {
@@ -854,7 +876,7 @@ export function pagination({ page = 1, pages = 1, onChange } = {}) {
           disabled: cur <= 1,
           onClick: () => go(cur - 1),
         },
-        icon("arrow-left", { size: 14 }),
+        icon("chevron-left", { size: 15 }),
       ),
     ];
     for (const n of numbers()) {
@@ -884,7 +906,7 @@ export function pagination({ page = 1, pages = 1, onChange } = {}) {
           disabled: cur >= total,
           onClick: () => go(cur + 1),
         },
-        icon("arrow-right", { size: 14 }),
+        icon("chevron-right", { size: 15 }),
       ),
     );
     mount(el, kids);
@@ -948,10 +970,11 @@ function scoreTone(score) {
 }
 
 /**
- * scoreRing({score, size=56, stroke}) - 0..100 ring (>=80 success, >=60 warning, else danger).
+ * scoreRing({score, size=56, stroke, fontSize}) - 0..100 ring (>=80 success, >=60 warning,
+ * else danger). fontSize (px) sets the number's size (default: a third of the ring).
  * score null -> empty ring with "–". Node gets .update(score).
  */
-export function scoreRing({ score, size = 56, stroke } = {}) {
+export function scoreRing({ score, size = 56, stroke, fontSize } = {}) {
   const sw = stroke || Math.max(3, Math.round(size / 13));
   const r = (size - sw) / 2;
   const c = 2 * Math.PI * r;
@@ -967,12 +990,14 @@ export function scoreRing({ score, size = 56, stroke } = {}) {
     transform: `rotate(-90 ${size / 2} ${size / 2})`,
   });
   const inner = svg("circle", { cx: size / 2, cy: size / 2, r: r - sw / 2, class: "score-fill" });
-  const label = h("span", { class: "score-num num", style: { fontSize: Math.round(size * 0.32) } });
+  const label = h("span", { class: "score-num num", style: { fontSize: fontSize || Math.round(size * 0.32) } });
   el.append(svg("svg", { width: size, height: size, viewBox: `0 0 ${size} ${size}`, "aria-hidden": "true" }, inner, track, arc), label);
   el.update = (value) => {
     const has = value !== null && value !== undefined && !Number.isNaN(Number(value));
     const v = has ? Math.max(0, Math.min(100, Math.round(Number(value)))) : null;
-    el.className = cx("score-ring", `tone-${scoreTone(v)}`);
+    // Only the tone changes: classes a page added (e.g. "seo-ring") stay.
+    for (const c of [...el.classList]) if (c.startsWith("tone-")) el.classList.remove(c);
+    el.classList.add("score-ring", `tone-${scoreTone(v)}`);
     arc.setAttribute("stroke-dashoffset", String(has ? c * (1 - v / 100) : c));
     arc.style.opacity = has && v > 0 ? "1" : "0";
     label.textContent = has ? String(v) : "–";
@@ -1175,10 +1200,11 @@ export function closeModals() {
 }
 
 /**
- * confirm({title, message, confirmLabel, cancelLabel, danger, icon}) -> Promise<bool>
- * Danger confirmations start with focus on Cancel.
+ * confirm({title, message, body, confirmLabel, cancelLabel, danger, icon, width=440, class})
+ *  -> Promise<bool>. Danger confirmations start with focus on Cancel. `width` (px) makes
+ * room for a list in `body` (e.g. the orders and tracking numbers about to be sent).
  */
-export function confirm({ title, message, confirmLabel, cancelLabel, danger = false, icon: ic, body } = {}) {
+export function confirm({ title, message, confirmLabel, cancelLabel, danger = false, icon: ic, body, width = 440, class: klass } = {}) {
   return new Promise((resolve) => {
     let result = false;
     const cancelBtn = button({ label: cancelLabel || ct("common.cancel"), variant: "secondary", onClick: () => m.close() });
@@ -1196,8 +1222,8 @@ export function confirm({ title, message, confirmLabel, cancelLabel, danger = fa
       title,
       body: [message ? h("p", { class: "modal-msg" }, toNodes(message)) : null, body || null],
       actions: [cancelBtn, okBtn],
-      width: 440,
-      class: danger ? "modal-danger" : undefined,
+      width,
+      class: cx(danger && "modal-danger", klass) || undefined,
       onClose: () => resolve(result),
     });
   });

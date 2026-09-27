@@ -774,7 +774,22 @@ export default {
             );
           }),
         ),
-        estimated ? h("p", { class: "pf-fees-note" }, icon("info", { size: 13 }), h("span", null, feeReason(f), " ", t("fees.basis"))) : null,
+        estimated
+          ? h(
+              "p",
+              { class: "pf-fees-note" },
+              icon("info", { size: 13 }),
+              h(
+                "span",
+                null,
+                feeReason(f),
+                " ",
+                t("fees.basis"),
+                // No permission to read the ledger: the connect page asks Etsy for it again.
+                f.reason === "scope" ? [" ", h("a", { class: "pf-fees-link", href: "/kurulum/magaza?scope=transactions_r" }, t("fees.grant"))] : null,
+              ),
+            )
+          : null,
       );
     }
 

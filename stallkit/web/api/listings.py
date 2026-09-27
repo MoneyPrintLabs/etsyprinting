@@ -56,7 +56,8 @@ MAX_NAV_IDS = 1000
 PER_PAGE_DEFAULT = 8
 READ_ATTEMPTS = 2
 # Jobs whose end means the shop's listings changed.
-LISTING_JOB_KINDS = frozenset({"designs", "seo", "seo-fix", "publish", "listings-import"})
+# Jobs whose end makes the cached listings stale (the kinds their modules start).
+LISTING_JOB_KINDS = frozenset({"designs", "publish", "listings-import"})
 EDIT_URL = "https://www.etsy.com/your/shops/me/listing-editor/edit/{id}"
 TAXONOMY_TTL = 30 * 24 * 3600
 IMPORT_TTL = 30 * 60
@@ -73,6 +74,8 @@ _alpha_cache: dict[tuple[str, float], bool | None] = {}
 
 
 def register(r: Router, ctx: AppContext) -> None:
+    # Another area wrote listings (an SEO fix, new drafts): drop this shop's cache.
+    ctx.on_change("listings", lambda c: invalidate(c), name="listings")
     r.get("/api/listings", list_listings)
     r.get("/api/listings/export.csv", export_csv)
     r.get("/api/listings/template.csv", template_csv)
@@ -708,6 +711,7 @@ def edit_listing(req: Request) -> dict[str, Any]:
         merged.update({k: v for k, v in updated.items() if v is not None})
     merged["images"] = _images(listing)
     _remember(ctx, client, merged)
+    ctx.changed("listings", source="listings")  # the SEO audit, the dashboard, ...
     return _detail(ctx, client, merged)
 
 
@@ -743,6 +747,7 @@ def publish_one(req: Request) -> dict[str, Any]:
         raise ApiError(422, "publish_refused", exc.message, reason=_etsy_reason(exc),
                        hint=exc.hint(), status=exc.status) from exc
     invalidate(ctx, ("draft", "active", "inactive", "expired", "sold_out"))
+    ctx.changed("listings", source="listings")
     merged = dict(listing)
     merged["state"] = "active"
     if isinstance(updated, dict):
@@ -801,6 +806,7 @@ def publish_many(req: Request) -> dict[str, Any]:
                 job.progress(n, len(ids), label=str(listing_id))
         finally:
             invalidate(ctx, STATES)
+            ctx.changed("listings", source="listings")
         tone = "success" if not failed else "warning" if ok else "danger"
         key = "notify.published" if not failed else "notify.publish_partial"
         ctx.notify("listings", key, {"n": ok, "ok": ok, "failed": failed}, tone=tone,
@@ -966,6 +972,7 @@ def import_apply(req: Request) -> dict[str, Any]:
             report = listings_mod.push(ctx.client(), rows, base_dir=base, on_progress=progress)
         finally:
             invalidate(ctx, STATES)
+            ctx.changed("listings", source="listings")
         summary = {"created": report.created, "updated": report.updated,
                    "partial": report.partial, "errors": report.errors,
                    "aborted": report.aborted, "reason": report.aborted_reason}

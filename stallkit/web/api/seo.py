@@ -67,6 +67,8 @@ CSV_COLUMNS = ["listing_id", "score", "grade", "title", "url", "issue_count", "i
 
 
 def register(r: Router, ctx: AppContext) -> None:
+    # A listing edited, published or created elsewhere: the next audit reads Etsy again.
+    ctx.on_change("listings", forget, name="seo")
     r.get("/api/seo/audit", audit)
     r.get("/api/seo/research", research)
     r.post("/api/seo/fix/{id:int}", fix)
@@ -597,6 +599,7 @@ def fix(req: Request) -> dict[str, Any]:
     listing = {**(before or {}), **(updated if isinstance(updated, dict) else {})}
     listing.setdefault("listing_id", listing_id)
     _replace_cached(ctx, listing)
+    ctx.changed("listings", source="seo")  # the listings table, the dashboard, ...
     item = audit_item(listing)
     return {
         "item": item,

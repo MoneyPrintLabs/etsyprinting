@@ -70,11 +70,10 @@ export default {
     const nav = readNav();
     const pos = nav ? nav.ids.indexOf(id) : -1;
     if (nav && pos >= 0 && nav.ids.length > 1) {
-      const go = async (delta) => {
+      const go = (delta) => {
         const next = nav.ids[pos + delta];
         if (next === undefined) return;
-        if (!(await leaveOk())) return;
-        ctx.navigate(`/ilanlar/${next}`);
+        ctx.navigate(`/ilanlar/${next}`); // the leave guard asks about unsaved edits
       };
       ctx.setHeader({
         actions: [
@@ -119,13 +118,10 @@ export default {
     }
     setData(data);
 
-    const onBeforeUnload = (e) => {
-      if (isDirty()) {
-        e.preventDefault();
-        e.returnValue = "";
-      }
-    };
-    window.addEventListener("beforeunload", onBeforeUnload);
+    // Unsaved edits: the app asks this guard before any in-app navigation (the arrows,
+    // the sidebar, Back), a shop switch or a language change; syncDirty() keeps the
+    // app's flag current, so a reload or closing the tab asks as well.
+    ctx.onBeforeLeave(() => leaveOk());
     const onKey = (e) => {
       if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey) return;
       const tag = (e.target && e.target.tagName) || "";
@@ -137,7 +133,6 @@ export default {
     };
     document.addEventListener("keydown", onKey);
     return () => {
-      window.removeEventListener("beforeunload", onBeforeUnload);
       document.removeEventListener("keydown", onKey);
     };
 
@@ -695,6 +690,7 @@ export default {
 
     function syncDirty() {
       const dirty = isDirty();
+      ctx.setDirty(dirty);
       if (st.actionsEl) st.actionsEl.classList.toggle("is-dirty", dirty);
       if (st.saveBtn) {
         st.saveBtn.hidden = !dirty;

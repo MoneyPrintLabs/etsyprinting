@@ -267,7 +267,8 @@ class _Callback(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
         type(self).result = params
-        if "code" in params and self.return_url:
+        # Only a success goes back to the app: an error keeps the page below.
+        if "code" in params and "error" not in params and self.return_url:
             self.send_response(302)
             self.send_header("Location", self.return_url)
             self.send_header("Content-Length", "0")

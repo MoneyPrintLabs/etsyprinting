@@ -1167,23 +1167,29 @@ export default {
 
     // ------------------------------------------------------------------ live updates
     const reloadQueue = debounce(() => loadQueue(), 300);
+    const settledConnects = new Set(); // job ids already handled (event and poll may both see one)
+    function onConnectJob(job) {
+      if (FINISHED.has(job.status)) {
+        if (settledConnects.has(job.id)) return;
+        settledConnects.add(job.id);
+        const wasMine = S.connect && S.connect.jobId === job.id;
+        S.connect = null;
+        closePopup();
+        if (job.status === "done") {
+          ctx.toast({ tone: "success", title: t("connect.done") });
+        } else if (job.status === "error" && wasMine) {
+          ctx.toast({ tone: "danger", title: t("connect.failed"), message: errText(job.error || {}), timeout: 9000 });
+        }
+        S.mode = S.mode === "ready" && job.status === "done" ? null : S.mode; // rebuild the account part
+        loadStatus();
+      } else if (S.connect && S.connect.jobId === job.id) {
+        refreshConnect();
+      }
+    }
     ctx.events.on("job", (job) => {
       if (!job || job.kind !== "pinterest") return;
       if (job.title_key === CONNECT_TITLE) {
-        if (FINISHED.has(job.status)) {
-          const wasMine = S.connect && S.connect.jobId === job.id;
-          S.connect = null;
-          closePopup();
-          if (job.status === "done") {
-            ctx.toast({ tone: "success", title: t("connect.done") });
-          } else if (job.status === "error" && wasMine) {
-            ctx.toast({ tone: "danger", title: t("connect.failed"), message: errText(job.error || {}), timeout: 9000 });
-          }
-          S.mode = S.mode === "ready" && job.status === "done" ? null : S.mode; // rebuild the account part
-          loadStatus();
-        } else if (S.connect && S.connect.jobId === job.id) {
-          refreshConnect();
-        }
+        onConnectJob(job);
         return;
       }
       if (job.title_key === POST_TITLE) {
@@ -1210,6 +1216,21 @@ export default {
       if (ev.type === "phase" && S.connect && S.connect.jobId === ev.job_id) {
         S.connect.phase = ev.data.phase;
         refreshConnect();
+      }
+    });
+    // The consent tab reached /oauth-done (app.js relays it; that tab has no session and
+    // makes no API call). The job's own event follows; ask now in case it was missed.
+    ctx.events.on("oauth-done", async (msg) => {
+      if (!msg || msg.service !== "pinterest" || !S.connect || !S.connect.jobId) return;
+      const jobId = S.connect.jobId;
+      S.connect.phase = "exchanging";
+      refreshConnect();
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      try {
+        const job = await ctx.api.get(`/api/jobs/${encodeURIComponent(jobId)}`, null, { signal: ctx.signal });
+        if (job && ctx.isActive()) onConnectJob(job);
+      } catch {
+        /* the job event arrives anyway */
       }
     });
 

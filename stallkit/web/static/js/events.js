@@ -6,6 +6,7 @@
 // a page subscribes to). Client-side topics:
 //   "connection" {connected: bool}  - stream opened / lost
 //   "reconnect"  {}                 - stream is back after a drop (status was refetched)
+//   "oauth-done" {service}          - a consent tab reached /oauth-done (app.js relays it)
 // On every reconnect /api/status is fetched again and delivered on "status".
 
 import { api } from "./api.js";
@@ -167,7 +168,7 @@ class EventClient {
 }
 
 function isLocalTopic(topic) {
-  return topic === "connection" || topic === "reconnect";
+  return topic === "connection" || topic === "reconnect" || topic === "oauth-done";
 }
 
 export const events = new EventClient();

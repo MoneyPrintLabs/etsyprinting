@@ -167,7 +167,8 @@
     "month_dat.9": "Eylül'e",
     "month_dat.10": "Ekim'e",
     "month_dat.11": "Kasım'a",
-    "month_dat.12": "Aralık'a"
+    "month_dat.12": "Aralık'a",
+    "fees.grant": "İzni ver →"
   },
   "en": {
     "title": "Profit & loss",
@@ -337,6 +338,7 @@
     "month_dat.9": "September",
     "month_dat.10": "October",
     "month_dat.11": "November",
-    "month_dat.12": "December"
+    "month_dat.12": "December",
+    "fees.grant": "Grant access →"
   }
 }

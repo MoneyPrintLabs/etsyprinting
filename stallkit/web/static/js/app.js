@@ -44,9 +44,14 @@ export const ROUTES = [
   { path: "/kurulum/mockuplar/:name", page: "mockups" },
   { path: "/kurulum/sablon", page: "template" },
   { path: "/kurulum/magaza", page: "connect" },
-  { path: "/oauth-done", page: "connect", nav: "connect" },
   { path: "/ayarlar", page: "settings" },
 ];
+
+// The consent tab (Etsy or Pinterest -> the local listener -> here) lands on this path.
+// It is drawn before and without /api/session: the session cookie is SameSite=Strict,
+// so a navigation that started on another site arrives without it.
+export const OAUTH_DONE_PATH = "/oauth-done";
+const CHANNEL = "stallkit";
 
 const NAV = [
   {
@@ -96,6 +101,7 @@ const state = {
   lostTimer: null,
   showLost: false,
   stopped: false,
+  guarding: null, // the Promise of a leave-guard question in progress
 };
 const statusListeners = new Set();
 const els = { nav: new Map() };
@@ -133,21 +139,74 @@ function matchRoute(path) {
   return null;
 }
 
-/** navigate(path, {replace}) - client-side navigation (same origin only). */
-export function navigate(path, { replace = false } = {}) {
-  if (state.stopped) return;
+// ------------------------------------------------------------------ leave guards
+//
+// A page with unsaved edits registers ctx.onBeforeLeave(fn): fn() returns true (fine to
+// leave), false (stay), or a Promise of either - usually a confirm dialog. The app asks
+// every guard of the mounted page before an in-app navigation, a shop switch, a language
+// change, a remount the page asked for, and quitting. ctx.setDirty(bool) is the page's
+// synchronous flag: it makes closing or reloading the tab ask the browser's own question
+// ("beforeunload"), and the Back button ask the guards.
+
+/** Ask the mounted page's guards; resolves true when it may be left. */
+export function canLeave() {
+  const cur = state.current;
+  if (!cur || !cur.guards.length) return Promise.resolve(true);
+  if (state.guarding) return state.guarding.then(() => false); // one question at a time
+  state.guarding = (async () => {
+    for (const fn of [...cur.guards]) {
+      let ok = true;
+      try {
+        ok = await fn();
+      } catch (err) {
+        console.error("[app] leave guard failed", err);
+        ok = true; // a broken guard must not trap the user on the page
+      }
+      if (ok === false) return false;
+    }
+    if (state.current === cur) cur.dirty = false; // answered: no second browser prompt
+    return true;
+  })().finally(() => {
+    state.guarding = null;
+  });
+  return state.guarding;
+}
+
+/**
+ * navigate(path, {replace, force}) - client-side navigation (same origin only).
+ * Resolves false when a leave guard kept the user on the page. force skips the guards.
+ */
+export async function navigate(path, { replace = false, force = false } = {}) {
+  if (state.stopped) return false;
   const url = new URL(path, location.origin);
   if (url.origin !== location.origin) {
     window.open(url.href, "_blank", "noopener");
-    return;
+    return true;
   }
   const target = url.pathname + url.search + url.hash;
   const now = location.pathname + location.search + location.hash;
   if (target === now && !replace) {
     if (els.content) els.content.scrollTop = 0;
-    return;
+    return true;
   }
+  const samePage = url.pathname + url.search === location.pathname + location.search;
+  if (!force && !samePage && !(await canLeave())) return false;
+  if (state.stopped) return false;
   history[replace ? "replaceState" : "pushState"]({}, "", target);
+  await route();
+  return true;
+}
+
+/** Back / Forward: a dirty page is asked first; staying puts its address back. */
+async function onPopState() {
+  if (state.stopped) return;
+  const target = location.pathname + location.search + location.hash;
+  const cur = state.current;
+  if (cur && cur.dirty && cur.url && target !== cur.url) {
+    history.pushState({}, "", cur.url); // the address of the page still on screen
+    if (!(await canLeave())) return;
+    history.replaceState({}, "", target);
+  }
   route();
 }
 
@@ -180,6 +239,11 @@ async function route() {
     history.replaceState({}, "", target);
     return route();
   }
+  if (path === OAUTH_DONE_PATH) {
+    // Reached from inside the app (Back into an old consent tab's history): not a page.
+    history.replaceState({}, "", "/kurulum/magaza");
+    return route();
+  }
   const m = matchRoute(path);
   if (!m) {
     history.replaceState({}, "", "/panel");
@@ -189,8 +253,11 @@ async function route() {
   return mountPage(m.route, m.params, query);
 }
 
-function remount() {
-  return route();
+/** Mount the current route again. force skips the leave guards (the shop already changed). */
+async function remount({ force = false } = {}) {
+  if (!force && !(await canLeave())) return false;
+  await route();
+  return true;
 }
 
 // ------------------------------------------------------------------ page mounting
@@ -295,6 +362,9 @@ async function mountPage(routeDef, params, query) {
     controller: new AbortController(),
     subs: [],
     cleanup: null,
+    guards: [],
+    dirty: false,
+    url: location.pathname + location.search + location.hash,
   };
   state.current = cur;
   state.mountedShopId = state.session ? state.session.shop_id : null;
@@ -366,7 +436,28 @@ function makeCtx(cur) {
       const qs = sp.toString();
       history[replace ? "replaceState" : "pushState"]({}, "", location.pathname + (qs ? `?${qs}` : ""));
       cur.query = Object.fromEntries(sp);
+      cur.url = location.pathname + location.search + location.hash;
     },
+    /** fn() -> true (may leave) | false (stay) | Promise of either. Removed on unmount. */
+    onBeforeLeave(fn) {
+      if (typeof fn !== "function") return () => {};
+      cur.guards.push(fn);
+      const off = () => {
+        const i = cur.guards.indexOf(fn);
+        if (i >= 0) cur.guards.splice(i, 1);
+      };
+      cur.subs.push(off);
+      return off;
+    },
+    /** The page has unsaved edits: closing or reloading the tab asks first. */
+    setDirty(value) {
+      if (state.current === cur) cur.dirty = !!value;
+    },
+    get dirty() {
+      return cur.dirty;
+    },
+    canLeave: () => (state.current === cur ? canLeave() : Promise.resolve(true)),
+    quit: () => quitApp(),
     toast,
     confirm,
     modal,
@@ -380,9 +471,7 @@ function makeCtx(cur) {
     session: () => state.session,
     refreshStatus,
     setLanguage,
-    remount: () => {
-      if (state.current === cur) remount();
-    },
+    remount: (opts) => (state.current === cur ? remount(opts) : Promise.resolve(false)),
     isActive: () => state.current === cur,
   };
 }
@@ -436,10 +525,12 @@ async function refreshStatus(force = false) {
   return s;
 }
 
-/** Save the UI language and reload the app in it. */
+/** Save the UI language and reload the app in it (after the page's leave guards agree). */
 async function setLanguage(lang) {
+  if (!(await canLeave())) return false;
   await api.post("/api/prefs", { language: lang });
   location.reload();
+  return true;
 }
 
 function shopLabel(shop, index) {
@@ -531,7 +622,8 @@ async function applyShopChange() {
     /* status arrives by SSE anyway */
   }
   loadNotifications();
-  if (state.session.shop_id !== state.mountedShopId) await remount();
+  // The shop has already changed on the server: the page is reopened for it, asked or not.
+  if (state.session.shop_id !== state.mountedShopId) await remount({ force: true });
   else renderShop();
 }
 
@@ -542,6 +634,7 @@ function queueShopChange() {
 
 async function switchShop(id) {
   if (!state.session || id === state.session.shop_id) return;
+  if (!(await canLeave())) return;
   try {
     await api.post("/api/shops/switch", { id });
   } catch (err) {
@@ -552,6 +645,7 @@ async function switchShop(id) {
 }
 
 async function addShop() {
+  if (!(await canLeave())) return;
   try {
     await api.post("/api/shops/add", {});
   } catch (err) {
@@ -565,7 +659,7 @@ async function addShop() {
     /* ignore */
   }
   loadNotifications();
-  navigate("/kurulum/magaza");
+  navigate("/kurulum/magaza", { force: true });
   toast({ tone: "success", title: t("shop.added"), message: t("shop.added_msg") });
 }
 
@@ -592,9 +686,16 @@ function openShopMenu() {
   menu(els.shopCard, items, { placement: "top-start", width: Math.max(230, els.shopCard.offsetWidth) });
 }
 
-async function quitApp() {
+/**
+ * Quit the app: the page's leave guards, a confirm, POST /api/quit (a running task asks
+ * again before forcing), then the "stallkit kapatıldı" page. Resolves true once stopped.
+ * Pages use it as ctx.quit().
+ */
+export async function quitApp() {
+  if (state.stopped) return true;
+  if (!(await canLeave())) return false;
   const ok = await confirm({ title: t("quit.title"), message: t("quit.message"), confirmLabel: t("quit.confirm"), danger: true, icon: "power" });
-  if (!ok) return;
+  if (!ok) return false;
   try {
     await api.post("/api/quit", {});
   } catch (err) {
@@ -606,22 +707,23 @@ async function quitApp() {
         danger: true,
         icon: "power",
       });
-      if (!force) return;
+      if (!force) return false;
       try {
         await api.post("/api/quit", { force: true });
       } catch (err2) {
         if (err2.code !== "network") {
           toast({ tone: "danger", title: errorText(err2) });
-          return;
+          return false;
         }
       }
     } else if (err.code !== "network") {
       // A network error here usually means the server shut down before answering.
       toast({ tone: "danger", title: errorText(err) });
-      return;
+      return false;
     }
   }
   showQuitPage();
+  return true;
 }
 
 // ------------------------------------------------------------------ notifications
@@ -855,6 +957,59 @@ function showQuitPage() {
   fullPage(h("p", { class: "fullpage-msg" }, t("fullpage.quit")));
 }
 
+/**
+ * The consent tab's last stop. The local listener only sends the browser here when
+ * Etsy or Pinterest handed over a code, so the answer is "connected"; the finishing
+ * steps (token, shop) are shown by the app's own tab, which is told through a
+ * BroadcastChannel and also follows the job over its event stream. No API call: this
+ * tab usually has no session cookie (SameSite=Strict after a cross-site redirect).
+ */
+async function showOAuthDone() {
+  await i18n.loadNamespace("common"); // a static file: no session needed
+  const params = new URLSearchParams(location.search);
+  const service = params.get("service") === "pinterest" ? "pinterest" : "etsy";
+  document.title = "stallkit";
+  fullPage(h("p", { class: "fullpage-title", role: "status" }, t("fullpage.oauth_done")));
+  try {
+    const channel = new BroadcastChannel(CHANNEL);
+    channel.postMessage({ type: "oauth-done", service, at: Date.now() });
+    setTimeout(() => channel.close(), 2000);
+  } catch {
+    /* an old browser: the app's tab still learns it from its event stream */
+  }
+  // Only a tab a script opened may close itself; otherwise the message stays.
+  setTimeout(() => {
+    try {
+      window.close();
+    } catch {
+      /* ignore */
+    }
+  }, 1000);
+}
+
+/** Messages from the app's other tabs (the consent tab above). */
+function listenToOtherTabs() {
+  let channel;
+  try {
+    channel = new BroadcastChannel(CHANNEL);
+  } catch {
+    return;
+  }
+  channel.onmessage = (e) => {
+    const msg = e && e.data;
+    if (!msg || typeof msg !== "object" || state.stopped) return;
+    if (msg.type === "oauth-done") {
+      // Pages that wait for a connection re-check at once (see connect.js, pinterest.js).
+      events.emit("oauth-done", { service: msg.service === "pinterest" ? "pinterest" : "etsy" });
+      if (msg.service !== "pinterest") {
+        setTimeout(() => {
+          if (!state.stopped) refreshStatus(false).catch(() => {});
+        }, 1500);
+      }
+    }
+  };
+}
+
 function showUnreachable() {
   document.title = "stallkit";
   fullPage(
@@ -868,6 +1023,10 @@ function showUnreachable() {
 
 async function boot() {
   root = document.getElementById("app");
+  if (currentPath() === OAUTH_DONE_PATH) {
+    await showOAuthDone();
+    return;
+  }
   onNoSession(showNoSession);
   await i18n.loadNamespace("common");
 
@@ -898,8 +1057,14 @@ async function boot() {
   events.on("reconnect", onReconnect);
   events.connect();
   loadNotifications();
+  listenToOtherTabs();
 
-  window.addEventListener("popstate", () => route());
+  window.addEventListener("popstate", () => onPopState());
+  window.addEventListener("beforeunload", (e) => {
+    if (state.stopped || !state.current || !state.current.dirty) return;
+    e.preventDefault();
+    e.returnValue = ""; // the browser shows its own "leave site?" question
+  });
   document.addEventListener("click", interceptLinks);
   // A file dropped outside a dropzone must not make the browser open it (and leave the app).
   for (const type of ["dragover", "drop"]) {
@@ -919,4 +1084,4 @@ boot().catch((err) => {
 });
 
 // Exposed for debugging from the browser console only.
-export const _debug = { state, navigate, remount, refreshStatus, setHeader };
+export const _debug = { state, navigate, remount, refreshStatus, setHeader, canLeave };

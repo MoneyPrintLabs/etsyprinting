@@ -13,7 +13,8 @@ const STEP_ICON = { account: "user", shop: "link", mockups: "image", designs: "u
 const STEP_LINK = { account: "/kurulum/magaza", shop: "/kurulum/magaza", mockups: "/kurulum/mockuplar", designs: "/tasarim-yukle" };
 const NOTE_ICON = { success: "check", warning: "alert", danger: "alert-circle", info: "info" };
 // Jobs whose end changes the numbers on this page.
-const STAT_JOBS = new Set(["designs", "listings", "seo", "orders", "drop"]);
+// Job kinds (as the server starts them) whose end changes the numbers on the tiles.
+const STAT_JOBS = new Set(["designs", "publish", "listings-import", "orders"]);
 
 export default {
   async mount(el, ctx) {
@@ -188,8 +189,8 @@ export default {
     // ------------------------------------------------------------------ stat tiles
     function buildStatTiles() {
       const defs = [
-        { id: "active", icon: "list", tone: "accent", href: "/ilanlar?state=active" },
-        { id: "draft", icon: "file", tone: "neutral", href: "/ilanlar?state=draft" },
+        { id: "active", icon: "list", tone: "accent", href: "/ilanlar?tab=active" },
+        { id: "draft", icon: "file", tone: "neutral", href: "/ilanlar?tab=draft" },
         { id: "to_ship", icon: "truck", tone: "warning", href: "/siparisler" },
         { id: "seo", icon: "search", tone: "info", href: "/seo" },
         { id: "revenue", icon: "dollar", tone: "success", href: "/kar-zarar" },

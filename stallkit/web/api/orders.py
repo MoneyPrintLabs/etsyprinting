@@ -98,6 +98,7 @@ _COUNTRY = re.compile(r"^[A-Z]{2}$")
 
 def register(r: Router, ctx: AppContext) -> None:
     api = OrdersApi(ctx)
+    ctx.on_change("orders", lambda c: api._invalidate(), name="orders")
     r.get("/api/orders", api.list_orders)
     r.get("/api/orders/summary", api.summary)
     r.get("/api/orders/carriers", api.carriers)
@@ -771,6 +772,8 @@ class OrdersApi:
                     country: str) -> None:
         ctx = self.ctx
         self._invalidate()
+        if counts.get("sent"):
+            ctx.changed("orders", source="orders")  # the dashboard's "to ship" number
         changes: dict[str, Any] = {}
         if stopped == "tracking_restricted":
             changes["tracking_restricted"] = True

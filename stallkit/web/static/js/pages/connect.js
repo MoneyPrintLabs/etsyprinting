@@ -1,6 +1,7 @@
 // Mağaza Bağlantısı (/kurulum/magaza): the Etsy app keys, connecting the shop, the
-// connection's status. Also the landing page of the consent tab (/oauth-done): Etsy
-// sends that tab to the callback listener, which sends it here.
+// connection's status. The consent tab's landing page (/oauth-done) is drawn by app.js
+// without any API call (that tab has no session cookie); it tells this tab through a
+// BroadcastChannel, relayed as the local event "oauth-done", and this page re-checks.
 //
 // The left card follows the setup: keys missing or refused -> how to create the app and
 // the key form; keys fine -> "Etsy mağazanızı bağlayın" (frame t160); connected -> the
@@ -21,7 +22,6 @@ import {
   progressBar,
   sectionTitle,
   skeleton,
-  spinner,
   stepper,
   textInput,
 } from "../ui.js";
@@ -49,7 +49,6 @@ const TERMINAL = new Set(["done", "error", "cancelled"]);
 
 export default {
   async mount(el, ctx) {
-    if (ctx.path === "/oauth-done") return mountDone(el, ctx);
     return mountConnect(el, ctx);
   },
 };
@@ -449,8 +448,19 @@ async function mountConnect(el, ctx) {
     );
     const result = h("div", { class: "cx-result", role: "status" });
     const save = button({ label: t("keys.save"), variant: "primary", size: "lg", icon: "check", type: "submit" });
+    for (const input of [key, secret]) input.addEventListener("input", () => ctx.setDirty(typedKeys()));
     return { key, secret, cb, keyField, secretField, cbField, adv, result, save };
   }
+
+  /** Keys typed into the form but not saved yet (lost when the page is left). */
+  function typedKeys() {
+    if (!form || !form.key.isConnected) return false;
+    return [form.key, form.secret].some((input) => String(input.value || "").trim() !== "");
+  }
+  ctx.onBeforeLeave(() => {
+    if (!typedKeys()) return true;
+    return ctx.confirm({ title: t("common:leave.title"), message: t("common:leave.message"), confirmLabel: t("common:leave.confirm"), danger: true });
+  });
 
   function renderKeyResult() {
     if (!form) return;
@@ -539,6 +549,7 @@ async function mountConnect(el, ctx) {
       const res = await ctx.api.post("/api/connect/keys", body, { signal: ctx.signal });
       form.key.value = "";
       form.secret.value = ""; // the secret never stays in the page
+      ctx.setDirty(false);
       s.keyResult = res;
       if (res.status) s.status = res.status;
       if (res.check === "ok") {
@@ -851,18 +862,20 @@ async function mountConnect(el, ctx) {
       updateLive();
     }, 900);
     // Events can be missed (a reconnecting stream); ask now and then as well.
-    pollTimer = setInterval(async () => {
-      const conn = s.conn;
-      if (!conn || !conn.jobId) return;
-      try {
-        const job = await ctx.api.get(`/api/jobs/${encodeURIComponent(conn.jobId)}`, null, { signal: ctx.signal });
-        if (s.conn !== conn) return;
-        if (job.state && job.state.phase) advance(job.state.phase);
-        if (TERMINAL.has(job.status)) finish(job);
-      } catch {
-        /* next time */
-      }
-    }, 2500);
+    pollTimer = setInterval(pollJob, 2500);
+  }
+
+  async function pollJob() {
+    const conn = s.conn;
+    if (!conn || !conn.jobId) return;
+    try {
+      const job = await ctx.api.get(`/api/jobs/${encodeURIComponent(conn.jobId)}`, null, { signal: ctx.signal });
+      if (s.conn !== conn) return;
+      if (job.state && job.state.phase) advance(job.state.phase);
+      if (TERMINAL.has(job.status)) finish(job);
+    } catch {
+      /* next time */
+    }
   }
 
   function stopTimers() {
@@ -880,6 +893,16 @@ async function mountConnect(el, ctx) {
   ctx.events.on("job", (job) => {
     if (!job || job.kind !== "connect" || !s.conn || job.id !== s.conn.jobId) return;
     if (TERMINAL.has(job.status)) finish(job);
+  });
+  // The consent tab reached /oauth-done (told by app.js): Etsy handed over a code.
+  ctx.events.on("oauth-done", (msg) => {
+    if (!msg || msg.service !== "etsy") return;
+    if (s.conn) {
+      advance("code_received");
+      pollJob();
+    } else {
+      loadInfo();
+    }
   });
 
   // ---- data
@@ -935,86 +958,3 @@ async function mountConnect(el, ctx) {
   return () => stopTimers();
 }
 
-// ------------------------------------------------------------------ /oauth-done
-
-async function mountDone(el, ctx) {
-  const t = ctx.t;
-  const box = h("div", { class: "cx-done-box", role: "status" });
-  el.append(h("div", { class: "cx-done" }, box));
-  let pollTimer = null;
-  let closeTimer = null;
-  let giveUpTimer = null;
-  let finished = false;
-  let jobId = null;
-
-  const back = () => button({ label: t("done.back"), variant: "secondary", onClick: () => ctx.navigate("/kurulum/magaza") });
-
-  function show(tone, title, message, action) {
-    const glyph =
-      tone === "working"
-        ? spinner({ size: 26, tone: "accent" })
-        : icon(tone === "success" ? "check" : tone === "danger" ? "x" : "info", { size: 26, strokeWidth: 2.4 });
-    mount(
-      box,
-      h("span", { class: cx("cx-done-tile", `tone-${tone === "working" ? "accent" : tone}`) }, glyph),
-      h("h2", { class: "cx-done-title" }, title),
-      message ? h("p", { class: "cx-done-msg" }, message) : null,
-      action ? h("div", { class: "cx-done-actions" }, action) : null,
-    );
-  }
-
-  function settle(job) {
-    if (finished) return;
-    finished = true;
-    clearInterval(pollTimer);
-    clearTimeout(giveUpTimer);
-    const st = ctx.status();
-    if ((job && job.status === "done") || (!job && st && st.state === "connected")) {
-      const shop = (job && job.result && job.result.shop_name) || (st && st.shop && st.shop.name);
-      show("success", t("done.ok"), shop ? t("done.ok_shop", { shop }) : null, back());
-      // Only a tab a script opened may close itself; otherwise the message stays.
-      closeTimer = setTimeout(() => {
-        try {
-          window.close();
-        } catch {
-          /* ignore */
-        }
-      }, 1000);
-    } else if (job && job.status === "error") {
-      show("danger", t("done.failed"), ctx.api.errorText(job.error || {}, t), back());
-    } else {
-      show("info", t("done.none"), null, back());
-    }
-  }
-
-  async function check() {
-    try {
-      const jobs = await ctx.api.get("/api/jobs", { kind: "connect" }, { signal: ctx.signal });
-      const job = Array.isArray(jobs) ? jobs[0] : null;
-      if (!job) {
-        settle(null);
-        return;
-      }
-      jobId = job.id;
-      if (TERMINAL.has(job.status)) settle(job);
-    } catch (err) {
-      if (ctx.api.isAbort(err)) return;
-      /* try again on the next tick */
-    }
-  }
-
-  show("working", t("done.working"), t("done.working_sub"));
-  ctx.events.on("job", (job) => {
-    if (job && job.kind === "connect" && (!jobId || job.id === jobId) && TERMINAL.has(job.status)) settle(job);
-  });
-  await check();
-  if (!finished) {
-    pollTimer = setInterval(check, 1500);
-    giveUpTimer = setTimeout(() => settle(null), 90000);
-  }
-  return () => {
-    clearInterval(pollTimer);
-    clearTimeout(closeTimer);
-    clearTimeout(giveUpTimer);
-  };
-}

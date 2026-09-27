@@ -212,7 +212,22 @@ export default {
     });
     ctx.setHeader({ actions: [stopBtn, csvBtn, sendBtn] });
 
+    /** Tracking numbers typed on this page that are neither sent nor being sent. */
+    function unsentCount() {
+      let n = 0;
+      for (const id of S.edits.keys()) {
+        if (!trackingFor(id) || inFlight(id)) continue;
+        const r = S.results.get(id);
+        if (r && r.status === "ok") continue;
+        const row = S.known.get(id);
+        if (row && row.status !== "unshipped") continue;
+        n += 1;
+      }
+      return n;
+    }
+
     function syncSend() {
+      ctx.setDirty(unsentCount() > 0);
       if (S.job) {
         const p = S.job.progress || {};
         sendBtn.setLabel(t("send.progress", { done: p.done || 0, total: p.total || S.jobIds.length || "?" }));
@@ -377,7 +392,15 @@ export default {
         "div",
         { class: "o-product", title: titles },
         thumb({ src: first.thumb, size: 36, icon: "box", alt: "" }),
-        h("div", { class: "o-cell" }, h("span", { class: "o-title ellipsis" }, shortTitle(first.title)), sub),
+        h(
+          "div",
+          { class: "o-cell" },
+          // The listing's page in the app (İlanlar detail), when Etsy says which listing.
+          Number.isInteger(first.listing_id) && first.listing_id > 0
+            ? h("a", { class: "o-title o-title-link ellipsis", href: `/ilanlar/${first.listing_id}` }, shortTitle(first.title))
+            : h("span", { class: "o-title ellipsis" }, shortTitle(first.title)),
+          sub,
+        ),
       );
     }
 
@@ -570,7 +593,10 @@ export default {
       ],
       rows: [],
       rowKey: "receipt_id",
-      selectable: true,
+      // Only a waiting order can be ticked (for sending), and one sent from this page
+      // keeps its tick (t280); t280's narrower check column.
+      selectable: (row) => row.status === "unshipped" || S.results.has(row.receipt_id),
+      checkWidth: 42,
       selected: S.selected,
       skeletonRows: S.perPage,
       empty: emptyHost,
@@ -835,6 +861,14 @@ export default {
       }
     }
 
+    // Typed numbers live only on this page: leaving (a link, Back, a shop switch, a
+    // language change) asks first, and syncSend() keeps the reload/close prompt current.
+    ctx.onBeforeLeave(() => {
+      const n = unsentCount();
+      if (!n) return true;
+      return ctx.confirm({ title: t("common:leave.title"), message: t("leave.unsent", { n }), confirmLabel: t("common:leave.confirm"), danger: true });
+    });
+
     ctx.events.on("job", (job) => {
       if (!job || job.kind !== "orders") return;
       if (S.job && job.id === S.job.id) {
@@ -943,28 +977,7 @@ export default {
 
     /** ctx.confirm, wide enough for the list of orders and tracking numbers. */
     function confirmSend(n, body) {
-      return new Promise((resolve) => {
-        let ok = false;
-        ctx.modal({
-          title: t("confirm.title"),
-          body,
-          width: 540,
-          class: "o-confirm",
-          actions: [
-            { label: t("common.cancel"), variant: "secondary", onClick: ({ close }) => close() },
-            {
-              label: t("confirm.ok", { n }),
-              variant: "primary",
-              icon: "send",
-              onClick: ({ close }) => {
-                ok = true;
-                close();
-              },
-            },
-          ],
-          onClose: () => resolve(ok),
-        });
-      });
+      return ctx.confirm({ title: t("confirm.title"), body, width: 540, class: "o-confirm", confirmLabel: t("confirm.ok", { n }), icon: "send" });
     }
 
     async function stopJob() {
@@ -1008,14 +1021,13 @@ export default {
         };
       }
       try {
-        const text = await ctx.api.post("/api/orders/export.csv", { tab: S.tab, edits }, { signal: ctx.signal });
-        const blob = new Blob(["﻿", typeof text === "string" ? text : ""], { type: "text/csv;charset=utf-8" });
-        const href = URL.createObjectURL(blob);
-        const a = h("a", { href, download: `${t("csv.filename")}-${S.tab}-${today()}.csv`, hidden: true });
-        document.body.append(a);
-        a.click();
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(href), 2000);
+        // The server names the file (and writes the BOM Excel needs for Turkish letters).
+        await ctx.api.download("/api/orders/export.csv", {
+          method: "POST",
+          body: { tab: S.tab, edits },
+          filename: `${t("csv.filename")}-${S.tab}-${today()}.csv`,
+          signal: ctx.signal,
+        });
         ctx.toast({ tone: "success", title: t("csv.exported") });
       } catch (err) {
         if (!ctx.api.isAbort(err)) ctx.toast({ tone: "danger", title: ctx.api.errorText(err, t) });

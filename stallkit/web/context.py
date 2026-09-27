@@ -16,6 +16,8 @@ Phase-2 handlers receive it as `req.ctx` (and as `ctx` in `register(r, ctx)`):
     ctx.anonymise("Real Shop Name")      # "Mağaza 1" / "Shop 1" when the hide-names pref is on
     ctx.language                         # "tr" | "en"
     ctx.reset_client()                   # after saving keys, connecting or disconnecting
+    ctx.on_change("listings", forget, name="seo")    # a cache that must drop stale data
+    ctx.changed("listings", source="seo")            # after writing listings to Etsy
 
 Which shop is open is process-wide state (os.environ, see desktop.settings.use_shop).
 `shop_lock` makes that safe: every API handler and every job holds it for reading,
@@ -34,7 +36,7 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .. import __version__, shops
 from ..config import Config, home_dir
@@ -62,6 +64,8 @@ SWITCH_WAIT = 10.0
 NOTIFICATIONS_FILE = "notifications.json"
 KEEP_NOTIFICATIONS = 50
 TONES = ("info", "success", "warning", "danger")
+# What pages cache from Etsy, by topic: a write in one area tells the caches of others.
+CHANGE_TOPICS = ("listings", "orders")
 
 
 class ShopLock:
@@ -175,6 +179,8 @@ class AppContext:
         self._first_check = threading.Event()
         self._soon_timer: threading.Timer | None = None
         self._notify_lock = threading.Lock()
+        self._change_lock = threading.Lock()
+        self._on_change: dict[str, list[tuple[str, Callable[[AppContext], Any]]]] = {}
         self.closed = False
         self._system_language: str | None = None
         self._open_saved_shop()
@@ -599,6 +605,36 @@ class AppContext:
         except OSError:
             log.warning("could not read the workspace for the status")
         return facts
+
+    # --- cross-page caches -------------------------------------------------------------------
+
+    def on_change(self, topic: str, fn: Callable[[AppContext], Any], *, name: str = "") -> None:
+        """Call `fn(ctx)` whenever the open shop's `topic` data changes on Etsy.
+
+        Areas that cache Etsy data register here in their register(r, ctx), e.g. the
+        SEO audit: ctx.on_change("listings", seo.forget, name="seo"). `name` lets the
+        area that made the change skip its own handler (it updated its cache itself).
+        """
+        if topic not in CHANGE_TOPICS:
+            raise ValueError(f"unknown change topic {topic!r}")
+        with self._change_lock:
+            self._on_change.setdefault(topic, []).append((name, fn))
+
+    def changed(self, topic: str, *, source: str = "") -> None:
+        """The open shop's `topic` data changed (a listing edited, drafts created,
+        tracking sent): every cache registered for it forgets what it holds, except
+        the one named `source`. Never raises."""
+        if topic not in CHANGE_TOPICS:
+            raise ValueError(f"unknown change topic {topic!r}")
+        with self._change_lock:
+            handlers = list(self._on_change.get(topic, ()))
+        for name, fn in handlers:
+            if source and name == source:
+                continue
+            try:
+                fn(self)
+            except Exception:  # noqa: BLE001 — a cache must not break the write it follows
+                log.exception("the %s cache of %r could not be dropped", topic, name or fn)
 
     # --- notifications -------------------------------------------------------------------------
 

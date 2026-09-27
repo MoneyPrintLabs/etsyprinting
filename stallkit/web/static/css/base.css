@@ -1128,9 +1128,10 @@ button.notif-item:hover {
   font-size: 11.5px;
   font-weight: 650;
 }
+/* t250 / t280: the active tab's count is a solid violet pill */
 .tab.is-active .tab-count {
-  background: var(--accent-soft);
-  color: var(--accent-2);
+  background: var(--accent);
+  color: #fff;
 }
 .tabs-sm .tab {
   height: 28px;

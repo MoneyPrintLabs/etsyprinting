@@ -71,6 +71,12 @@ class PinState:
 
 def register(r: Router, ctx: AppContext) -> None:
     state = PinState()
+
+    def forget_listings(c: AppContext) -> None:
+        with state.lock:
+            state.listings.pop(c.shop_id, None)
+
+    ctx.on_change("listings", forget_listings, name="pinterest")
     r.get("/api/pinterest/status", partial(get_status, state=state))
     r.post("/api/pinterest/keys", partial(save_keys, state=state))
     r.post("/api/pinterest/connect", partial(connect, state=state))

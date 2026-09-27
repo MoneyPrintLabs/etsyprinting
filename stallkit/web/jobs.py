@@ -1,4 +1,4 @@
-"""Long work runs as a Job on one worker thread, strictly one at a time.
+"""Long work runs as a Job on a worker thread, strictly one at a time per lane.
 
     def work(job: Job) -> dict:
         items = load_items()
@@ -16,7 +16,13 @@
 Anything `work` raises becomes the job's `error` ({code, message, params}, mapped
 like an API error). A job holds the shop read lock while it runs, so the open
 shop cannot change underneath it, and the shop switch is refused while any job is
-queued or running.
+queued or running, in any lane.
+
+Lanes: "write" (the default) is for anything that changes the shop or the workspace:
+those jobs run strictly one after another. "read" has its own worker for work that
+only reads (the Kâr-Zarar numbers), so it does not wait behind a long upload:
+
+    ctx.jobs.start("profit", "profit:job.title", work, lane="read")
 """
 
 from __future__ import annotations
@@ -35,6 +41,8 @@ log = logging.getLogger("stallkit.web")
 
 QUEUED, RUNNING, DONE, ERROR, CANCELLED = "queued", "running", "done", "error", "cancelled"
 ACTIVE = (QUEUED, RUNNING)
+WRITE, READ = "write", "read"
+LANES = (WRITE, READ)
 KEEP_JOBS = 50
 KEEP_LOG_LINES = 500
 # At most five `job` progress events per second per job; the latest always arrives.
@@ -62,8 +70,10 @@ class Job:
         params: dict[str, Any] | None = None,
         cancellable: bool = True,
         refresh_status: bool = False,
+        lane: str = WRITE,
     ) -> None:
         self.runner = runner
+        self.lane = lane
         self.id = uuid.uuid4().hex[:12]
         self.kind = kind
         self.title_key = title_key
@@ -167,6 +177,7 @@ class Job:
                 "title_key": self.title_key,
                 "params": self.params,
                 "status": self.status,
+                "lane": self.lane,
                 "cancellable": self.cancellable,
                 "progress": {"done": self.done_count, "total": self.total, "label": self.label},
                 "created_at": self.created_at,
@@ -186,17 +197,25 @@ class Job:
 
 
 class JobRunner:
-    """Runs jobs one at a time, in the order they were started."""
+    """Runs jobs one at a time per lane, in the order they were started."""
 
     def __init__(self, ctx: AppContext | None = None, *, keep: int = KEEP_JOBS) -> None:
         self.ctx = ctx
         self.keep = keep
         self._jobs: collections.OrderedDict[str, Job] = collections.OrderedDict()
-        self._queue: collections.deque[Job] = collections.deque()
+        self._queues: dict[str, collections.deque[Job]] = {
+            lane: collections.deque() for lane in LANES
+        }
         self._cond = threading.Condition()
         self._stopping = False
-        self._thread = threading.Thread(target=self._run, name="stallkit-jobs", daemon=True)
-        self._thread.start()
+        self._threads = [
+            threading.Thread(
+                target=self._run, args=(lane,), name=f"stallkit-jobs-{lane}", daemon=True
+            )
+            for lane in LANES
+        ]
+        for thread in self._threads:
+            thread.start()
 
     # --- publishing ---------------------------------------------------------------
 
@@ -221,18 +240,25 @@ class JobRunner:
         params: dict[str, Any] | None = None,
         cancellable: bool = True,
         refresh_status: bool = False,
+        lane: str = WRITE,
     ) -> Job:
         """Queue `fn(job)`; returns the Job at once. refresh_status re-checks the shop
-        status when it ends (use it for work that changes the shop or the setup)."""
+        status when it ends (use it for work that changes the shop or the setup).
+
+        lane="write" (default): strictly one after another with every other write job.
+        lane="read": work that only reads, on its own worker, beside a write job.
+        """
+        if lane not in LANES:
+            raise ValueError(f"unknown job lane {lane!r}")
         job = Job(
             self, kind, title_key, fn,
-            params=params, cancellable=cancellable, refresh_status=refresh_status,
+            params=params, cancellable=cancellable, refresh_status=refresh_status, lane=lane,
         )
         with self._cond:
             if self._stopping:
                 raise RuntimeError("the job runner has stopped")
             self._jobs[job.id] = job
-            self._queue.append(job)
+            self._queues[lane].append(job)
             self._trim()
             self._cond.notify_all()
         self.publish(job)
@@ -242,18 +268,26 @@ class JobRunner:
         with self._cond:
             return self._jobs.get(job_id)
 
-    def list(self, kind: str | None = None, active: bool = False) -> list[Job]:
+    def list(
+        self, kind: str | None = None, active: bool = False, lane: str | None = None
+    ) -> list[Job]:
         """Newest first."""
         with self._cond:
             jobs = list(self._jobs.values())
         jobs.reverse()
-        return [j for j in jobs if (kind is None or j.kind == kind) and (not active or j.active)]
+        return [
+            j for j in jobs
+            if (kind is None or j.kind == kind)
+            and (not active or j.active)
+            and (lane is None or j.lane == lane)
+        ]
 
-    def active(self) -> list[Job]:
-        return self.list(active=True)
+    def active(self, lane: str | None = None) -> list[Job]:
+        return self.list(active=True, lane=lane)
 
-    def busy(self) -> bool:
-        return bool(self.active())
+    def busy(self, lane: str | None = None) -> bool:
+        """True while a job is queued or running: in `lane`, or in any lane (None)."""
+        return bool(self.active(lane))
 
     def cancel(self, job_id: str) -> Job | None:
         """Ask a job to stop. A queued job is cancelled at once; a running one when it
@@ -264,7 +298,7 @@ class JobRunner:
             if job is None:
                 return None
             if job.status == QUEUED:
-                self._queue.remove(job)
+                self._queues[job.lane].remove(job)
                 job._cancel.set()
                 job.status = CANCELLED
                 job.finished_at = _now()
@@ -280,22 +314,25 @@ class JobRunner:
         return job
 
     def stop(self, timeout: float = 5.0) -> None:
-        """Cancel everything and let the worker end (server shutdown)."""
+        """Cancel everything and let the workers end (server shutdown)."""
         with self._cond:
             self._stopping = True
-            queued = list(self._queue)
-            self._queue.clear()
-            for job in queued:
-                job._cancel.set()
-                job.status = CANCELLED
-                job.finished_at = _now()
-                job._finished.set()
+            for queue in self._queues.values():
+                queued = list(queue)
+                queue.clear()
+                for job in queued:
+                    job._cancel.set()
+                    job.status = CANCELLED
+                    job.finished_at = _now()
+                    job._finished.set()
             for job in self._jobs.values():
                 job._cancel.set()
             self._cond.notify_all()
-        self._thread.join(timeout)
+        deadline = time.monotonic() + timeout
+        for thread in self._threads:
+            thread.join(max(0.0, deadline - time.monotonic()))
 
-    # --- the worker -------------------------------------------------------------------
+    # --- the workers ------------------------------------------------------------------
 
     def _trim(self) -> None:
         """Keep the last `keep` jobs; active ones are never dropped."""
@@ -305,14 +342,15 @@ class JobRunner:
         for job_id in [jid for jid, j in self._jobs.items() if not j.active][:excess]:
             del self._jobs[job_id]
 
-    def _run(self) -> None:
+    def _run(self, lane: str) -> None:
+        queue = self._queues[lane]
         while True:
             with self._cond:
-                while not self._queue and not self._stopping:
+                while not queue and not self._stopping:
                     self._cond.wait()
-                if self._stopping and not self._queue:
+                if self._stopping and not queue:
                     return
-                job = self._queue.popleft()
+                job = queue.popleft()
                 job.status = RUNNING
                 job.started_at = _now()
             self.publish(job)

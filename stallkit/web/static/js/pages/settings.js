@@ -2,7 +2,6 @@
 // computer; the products folder; the Etsy connection; the setup checklist; about.
 // Two columns of cards, in the same visual language as the setup pages.
 
-import { events } from "../events.js";
 import { relative } from "../format.js";
 import { icon, logoMark } from "../icons.js";
 import { badge, button, card, cx, field, h, infoNote, mount, select, skeleton, textInput, toggle } from "../ui.js";
@@ -91,43 +90,8 @@ export default {
     }
 
     async function quit() {
-      const ok = await ctx.confirm({ title: t("quit.title"), message: t("quit.message"), confirmLabel: t("quit.confirm"), danger: true, icon: "power" });
-      if (!ok) return;
-      try {
-        await ctx.api.post("/api/quit", {});
-      } catch (err) {
-        if (err.code === "busy") {
-          const force = await ctx.confirm({
-            title: t("quit.busy_title"),
-            message: t("quit.busy_message"),
-            confirmLabel: t("quit.force"),
-            danger: true,
-            icon: "power",
-          });
-          if (!force) return;
-          try {
-            await ctx.api.post("/api/quit", { force: true });
-          } catch (err2) {
-            if (err2.code !== "network") {
-              toastError(err2);
-              return;
-            }
-          }
-        } else if (err.code !== "network") {
-          // "network" here usually means the server stopped before it answered.
-          toastError(err);
-          return;
-        }
-      }
-      showStopped();
-    }
-
-    function showStopped() {
-      events.close();
-      document.title = "stallkit";
-      const root = document.getElementById("app");
-      if (!root) return;
-      mount(root, h("div", { class: "fullpage" }, h("div", { class: "fullpage-box" }, logoMark({ size: 48 }), h("p", { class: "fullpage-msg" }, t("fullpage.quit")))));
+      // The app's own flow: confirm, quit (a running task asks again), the stopped page.
+      await ctx.quit();
     }
 
     // ---- Mağazalar

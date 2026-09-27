@@ -604,47 +604,6 @@
   flex: none;
 }
 
-/* ---- /oauth-done */
-.page-connect .cx-done {
-  display: grid;
-  place-items: center;
-  min-height: calc(100vh - 220px);
-}
-.page-connect .cx-done-box {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  max-width: 440px;
-  padding: 40px 36px;
-  text-align: center;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-}
-.page-connect .cx-done-tile {
-  display: grid;
-  place-items: center;
-  width: 58px;
-  height: 58px;
-  margin-bottom: 6px;
-  border-radius: 16px;
-  color: var(--tone);
-  background: var(--tone-soft);
-}
-.page-connect .cx-done-title {
-  font-size: 18px;
-  font-weight: 650;
-}
-.page-connect .cx-done-msg {
-  font-size: 13.5px;
-  color: var(--text-2);
-  line-height: 1.55;
-}
-.page-connect .cx-done-actions {
-  margin-top: 12px;
-}
-
 /* ---- narrower windows */
 @media (max-width: 1440px) {
   .page-connect .cx-diagram {

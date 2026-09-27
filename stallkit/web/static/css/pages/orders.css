@@ -22,11 +22,6 @@
 .page-orders .o-bar .tab {
   white-space: nowrap;
 }
-/* t280: the active tab's count is a solid violet pill */
-.page-orders .o-bar .tab.is-active .tab-count {
-  background: var(--accent);
-  color: #fff;
-}
 .page-orders .o-country {
   color: var(--muted);
   font-weight: 550;
@@ -83,10 +78,6 @@
 .page-orders .o-table .tbl th {
   height: 44px;
   background: var(--panel);
-}
-/* A narrower checkbox column than the default 48px, as in the video. */
-.page-orders .o-table .tbl colgroup col:first-child {
-  width: 42px !important;
 }
 .page-orders .o-table .tbl .tbl-check {
   padding-left: 18px;
@@ -148,6 +139,14 @@
 .page-orders .o-title {
   color: var(--text);
   font-weight: 550;
+}
+.page-orders .o-title-link {
+  display: block;
+}
+.page-orders .o-title-link:hover {
+  color: var(--accent-2);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 .page-orders .o-variant {
   display: flex;
@@ -330,23 +329,6 @@
 .page-orders .o-range b {
   color: var(--text);
   font-weight: 650;
-}
-/* ‹ 1 2 3 › : chevrons instead of the default arrows */
-.page-orders .o-foot .page-arrow > svg {
-  display: none;
-}
-.page-orders .o-foot .page-arrow::before {
-  content: "";
-  width: 7px;
-  height: 7px;
-  margin-left: 3px;
-  border: solid currentColor;
-  border-width: 0 0 1.7px 1.7px;
-  transform: rotate(45deg);
-}
-.page-orders .o-foot .page-arrow:last-child::before {
-  margin-left: -3px;
-  transform: rotate(-135deg);
 }
 .page-orders .o-empty .empty {
   padding: 40px 16px;

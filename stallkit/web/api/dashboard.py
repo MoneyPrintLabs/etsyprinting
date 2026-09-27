@@ -54,6 +54,12 @@ class StatsCache:
             self._items[(shop_id, name)] = (now, value)
         return dict(value, cached_at=round(now, 3))
 
+    def forget(self, shop_id: str, names: tuple[str, ...]) -> None:
+        """Drop some of a shop's stats (the data behind them changed)."""
+        with self._lock:
+            for name in names:
+                self._items.pop((shop_id, name), None)
+
     def last(self, shop_id: str) -> dict[str, dict[str, Any]]:
         """Whatever is cached for the shop, however old (for the fast endpoint)."""
         with self._lock:
@@ -64,6 +70,10 @@ class StatsCache:
 
 def register(r: Router, ctx: AppContext) -> None:
     cache = StatsCache()
+    ctx.on_change("listings", lambda c: cache.forget(c.shop_id, ("active", "draft", "seo")),
+                  name="dashboard")
+    ctx.on_change("orders", lambda c: cache.forget(c.shop_id, ("to_ship", "revenue")),
+                  name="dashboard")
     r.get("/api/dashboard", lambda req: overview(req, cache))
     r.get("/api/dashboard/stats", lambda req: stats(req, cache))
 

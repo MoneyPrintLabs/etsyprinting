@@ -105,7 +105,9 @@
     "load_error": "Siparişler yüklenemedi",
     "errors.invalid_csv": "CSV'de receipt_id ve tracking_code sütunları olmalı.",
     "errors.missing_scope": "Etsy bağlantınızda kargo izni yok. Mağaza Bağlantısı sayfasından yeniden bağlanın.",
-    "errors.not_waiting": "Bu sipariş artık kargo beklemiyor, gönderilmedi."
+    "errors.not_waiting": "Bu sipariş artık kargo beklemiyor, gönderilmedi.",
+    "leave.unsent": "{n} siparişin takip numarası yazıldı ama gönderilmedi. Sayfadan çıkarsanız bu numaralar kaybolur.",
+    "leave.unsent_one": "{n} siparişin takip numarası yazıldı ama gönderilmedi. Sayfadan çıkarsanız bu numara kaybolur."
   },
   "en": {
     "title": "Orders",
@@ -213,6 +215,8 @@
     "load_error": "Could not load the orders",
     "errors.invalid_csv": "The CSV needs receipt_id and tracking_code columns.",
     "errors.missing_scope": "Your Etsy connection has no permission for tracking. Reconnect on the Shop Connection page.",
-    "errors.not_waiting": "This order no longer waits for shipment, so it was not sent."
+    "errors.not_waiting": "This order no longer waits for shipment, so it was not sent.",
+    "leave.unsent": "Tracking numbers for {n} orders are typed but not sent. They are lost if you leave this page.",
+    "leave.unsent_one": "A tracking number for {n} order is typed but not sent. It is lost if you leave this page."
   }
 }

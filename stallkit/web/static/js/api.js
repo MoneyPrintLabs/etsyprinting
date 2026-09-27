@@ -5,6 +5,7 @@
 //   api.post("/api/shops/switch", {id: "2"})
 //   api.upload("/api/designs/upload", file, {query: {name: file.name}, onProgress})
 //   <img src={api.url("/api/files/thumb", {path, w: 160})}>
+//   await api.download("/api/seo/export.csv", {params: {state}, filename: "seo.csv"})
 //
 // Paths may be written "/api/x" or just "x" (-> "/api/x"). Every request sends the
 // session cookie (same-origin) and the header "X-Stallkit: 1". Non-2xx answers throw
@@ -176,6 +177,73 @@ export function upload(path, file, opts = {}) {
   });
 }
 
+/** The file name in a Content-Disposition header ("" when there is none). */
+export function dispositionName(header) {
+  if (!header) return "";
+  const star = /filename\*\s*=\s*utf-8''([^;]+)/i.exec(header);
+  if (star) {
+    try {
+      return cleanName(decodeURIComponent(star[1].trim().replace(/^"|"$/g, "")));
+    } catch {
+      /* fall back to the plain form */
+    }
+  }
+  const plain = /filename\s*=\s*"([^"]*)"/i.exec(header) || /filename\s*=\s*([^;]+)/i.exec(header);
+  return plain ? cleanName(plain[1].trim()) : "";
+}
+
+function cleanName(name) {
+  return String(name || "").replace(/[\\/:*?"<>|\u0000-\u001f]+/g, "_").trim();
+}
+
+/** Hand a Blob to the browser as a download named `name`. */
+export function saveBlob(blob, name) {
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = cleanName(name) || "download";
+  a.hidden = true;
+  a.dataset.external = ""; // not an app route: the router leaves it alone
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 10000);
+}
+
+/**
+ * Download a file the API makes (a CSV export): fetched with the session and the
+ * X-Stallkit header, then saved under the server's file name (Content-Disposition),
+ * else `filename`. An error answer throws ApiError like any other call, so the page
+ * can show a toast instead of the browser saving an error as a file.
+ * opts: {params, method="GET", body (JSON), filename, signal}. Resolves with the name.
+ */
+export async function download(path, { params, method = "GET", body, filename = "download", signal } = {}) {
+  const init = { method, credentials: "same-origin", cache: "no-store", headers: { "X-Stallkit": "1" }, signal };
+  if (body !== undefined && body !== null) {
+    init.body = JSON.stringify(body);
+    init.headers["Content-Type"] = "application/json";
+  } else if (method !== "GET" && method !== "HEAD") {
+    init.body = "{}";
+    init.headers["Content-Type"] = "application/json";
+  }
+  let res;
+  let blob;
+  try {
+    res = await fetch(url(path, params), init);
+    if (!res.ok) {
+      const text = await res.text();
+      throw toApiError(res.status, parseBody(text, res.headers.get("content-type")), res.statusText);
+    }
+    blob = await res.blob();
+  } catch (err) {
+    if (err instanceof ApiError || (err && err.name === "AbortError")) throw err;
+    throw new ApiError(0, "network", (err && err.message) || "network error");
+  }
+  const name = dispositionName(res.headers.get("content-disposition")) || filename;
+  saveBlob(blob, name);
+  return name;
+}
+
 /**
  * The text to show for an error: common.json "errors.<code>" (params + {message, status}
  * are interpolated), else the error's own message. AbortError -> "".
@@ -215,6 +283,8 @@ export const api = {
   patch: (path, body, opts) => request("PATCH", path, { ...(opts || {}), body }),
   del: (path, body, opts) => request("DELETE", path, { ...(opts || {}), body }),
   upload,
+  download,
+  saveBlob,
   url,
   errorText,
   isAbort,

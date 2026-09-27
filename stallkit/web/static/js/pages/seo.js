@@ -28,6 +28,7 @@ import { percent, list as listText, lower } from "../format.js";
 
 const PAGE = 40; // cards rendered at once; "N ilan daha göster" adds the next page
 const RING = 72;
+const RING_FONT = 25; // the number inside the ring, as measured in t260
 const MAX_TAGS = 13;
 const MAX_TAG_LEN = 20;
 const CHIP_LIMIT = 3;
@@ -84,14 +85,26 @@ export default {
 
     // ------------------------------------------------------------ header actions
 
+    // Downloaded through api.download: an error (no connection, offline) becomes a
+    // toast instead of a saved file holding the error.
     const exportLink = h(
-      "a",
+      "button",
       {
+        type: "button",
         class: "btn btn-secondary btn-md btn-icon seo-export",
         title: t("export"),
         "aria-label": t("export"),
-        download: "",
-        href: ctx.api.url("/api/seo/export.csv", { state: state.tab }),
+        onClick: async () => {
+          if (exportLink.disabled) return;
+          exportLink.disabled = true;
+          try {
+            await ctx.api.download("/api/seo/export.csv", { params: { state: state.tab }, filename: `seo-${state.tab}.csv`, signal: ctx.signal });
+          } catch (err) {
+            if (!ctx.api.isAbort(err)) ctx.toast({ tone: "danger", title: ctx.api.errorText(err, t) });
+          } finally {
+            exportLink.disabled = false;
+          }
+        },
       },
       icon("download", { size: 16 }),
     );
@@ -326,7 +339,7 @@ export default {
     }
 
     function itemView(item, index, animate) {
-      const ring = scoreRing({ score: animate ? 0 : item.score, size: RING, stroke: 7 });
+      const ring = scoreRing({ score: animate ? 0 : item.score, size: RING, stroke: 7, fontSize: RING_FONT });
       ring.classList.add("seo-ring");
       const actionSlot = h("div", { class: "seo-item-action" });
       const chipsEl = h(
@@ -382,7 +395,7 @@ export default {
       return h(
         "div",
         { class: "seo-item is-skeleton", "aria-hidden": "true" },
-        scoreRing({ score: null, size: RING, stroke: 7 }),
+        scoreRing({ score: null, size: RING, stroke: 7, fontSize: RING_FONT }),
         h(
           "div",
           { class: "seo-item-main" },
@@ -540,7 +553,6 @@ export default {
     function renderAudit(animate) {
       renderSub();
       tabsCtl.update(tabItems(), state.tab);
-      exportLink.href = ctx.api.url("/api/seo/export.csv", { state: state.tab });
       exportLink.hidden = !!state.setup;
       toolbar.hidden = !!state.setup;
       renderShopButton();
@@ -1092,7 +1104,7 @@ export default {
         );
       }
 
-      const headRing = scoreRing({ score: item.score, size: 44 });
+      const headRing = scoreRing({ score: item.score, size: 44, fontSize: 15 });
       const body = h(
         "div",
         { class: "seo-fix" },

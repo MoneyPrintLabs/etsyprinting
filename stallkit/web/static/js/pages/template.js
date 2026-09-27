@@ -3,7 +3,7 @@
 // paged here). Right: the seven fields that would be copied, with their names resolved.
 // Saving writes product.json in the products folder; nothing on Etsy changes.
 
-import { badge, button, card, cx, h, infoNote, mount, searchInput, svg, thumb } from "../ui.js";
+import { badge, button, card, cx, h, infoNote, mount, searchInput, thumb } from "../ui.js";
 import { icon } from "../icons.js";
 import { lower, money, number, relative } from "../format.js";
 
@@ -11,6 +11,7 @@ const FIRST_PAGE = 20;
 const MORE_PAGE = 20;
 const FIELDS = ["price", "shipping", "category", "who_made", "when_made", "processing", "returns"];
 const FIELD_ICON = {
+  price: "coins",
   shipping: "truck",
   category: "grid",
   who_made: "user",
@@ -19,32 +20,8 @@ const FIELD_ICON = {
   returns: "refresh",
 };
 
-// The price row has two stacked coins in the video; icons.js has no such icon, so it
-// is drawn here in the same style (24 grid, 1.8 stroke, currentColor).
-function coinsIcon(size) {
-  return svg(
-    "svg",
-    {
-      viewBox: "0 0 24 24",
-      width: size,
-      height: size,
-      fill: "none",
-      stroke: "currentColor",
-      "stroke-width": 1.8,
-      "stroke-linecap": "round",
-      "stroke-linejoin": "round",
-      class: "icon icon-coins",
-      "aria-hidden": "true",
-      focusable: "false",
-    },
-    svg("ellipse", { cx: 9.5, cy: 9, rx: 6.2, ry: 4.6 }),
-    svg("path", { d: "M3.3 9h12.4" }),
-    svg("path", { d: "M15.57 9.97A6.2 4.6 0 1 1 8.44 13.53" }),
-  );
-}
-
 function fieldIcon(key) {
-  return key === "price" ? coinsIcon(15) : icon(FIELD_ICON[key], { size: 15 });
+  return icon(FIELD_ICON[key], { size: 15 });
 }
 const STATE_TONE = { active: "success", draft: "muted", inactive: "muted", sold_out: "warning", expired: "warning" };
 // A pasted Etsy listing link, or a bare listing number (the old window's "listing number" field).

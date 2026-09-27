@@ -732,6 +732,9 @@ def _start(ctx: AppContext, dry_run: bool) -> dict[str, Any]:
                 raise ApiError(409, "locked", str(exc)) from exc
             except stream.TemplateGone as exc:
                 raise ApiError(409, "template_gone", str(exc)) from exc
+            finally:
+                if not dry_run:  # drafts may have been created, even by a failed run
+                    ctx.changed("listings", source="designs")
         except Exception as exc:
             from ..errors import describe
 

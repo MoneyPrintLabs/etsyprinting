@@ -81,6 +81,7 @@ FIELD_KEYS = (
 
 def register(r: Router, ctx: AppContext) -> None:
     api = TemplateApi(ctx)
+    ctx.on_change("listings", lambda c: api.forget_listings(), name="template")
     r.get("/api/template", api.current)
     r.get("/api/template/listings", api.listings)
     r.get("/api/template/preview/{listing_id:int}", api.preview)
@@ -195,6 +196,15 @@ class TemplateApi:
         self._taxonomy_at = 0.0
 
     # --- caches -----------------------------------------------------------------
+
+    def forget_listings(self) -> None:
+        """The shop's listings changed (published, created): read them again next time."""
+        with self._lock:
+            caches = list(self._caches.values())
+        for cache in caches:
+            # No cache.lock: a fetch in progress may hold it for seconds. The next read
+            # sees the listings as stale and fetches them again.
+            cache.fetched_at = 0.0
 
     def _cache(self, client: Any) -> _ClientCache:
         # Keyed by the client object: the context makes a new one whenever the shop,

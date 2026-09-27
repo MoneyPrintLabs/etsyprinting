@@ -933,27 +933,15 @@ async function mountEditor(el, ctx, name) {
   if (design) setDesign(design, { remember: false });
   else renderDesignRow();
 
-  // ---- guards against losing unsaved work
-  const onBeforeUnload = (e) => {
-    if (!isDirty()) return;
-    e.preventDefault();
-    e.returnValue = "";
-  };
-  window.addEventListener("beforeunload", onBeforeUnload);
-  cleanups.push(() => window.removeEventListener("beforeunload", onBeforeUnload));
-  const linkGuard = (e) => {
-    if (!isDirty() || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-    const a = e.target && e.target.closest ? e.target.closest("a[href]") : null;
-    if (!a || (a.target && a.target !== "_self") || a.dataset.external !== undefined || a.hasAttribute("download")) return;
-    const url = new URL(a.href, location.href);
-    if (url.origin !== location.origin || url.pathname.startsWith("/api/")) return;
-    if (url.pathname === location.pathname) return;
-    e.preventDefault();
-    e.stopPropagation();
-    leave(url.pathname + url.search);
-  };
-  document.addEventListener("click", linkGuard, true);
-  cleanups.push(() => document.removeEventListener("click", linkGuard, true));
+  // ---- guards against losing unsaved work: the app asks before any in-app navigation
+  // (library, sidebar, header, Back), a shop switch or a language change; setDirty makes
+  // a reload or closing the tab ask as well.
+  ctx.onBeforeLeave(async () => {
+    if (!isDirty()) return true;
+    const ok = await ctx.confirm({ title: t("editor.unsaved_title"), message: t("editor.unsaved_msg"), confirmLabel: t("editor.leave"), danger: true });
+    if (ok) saved = { ...area }; // nothing left to guard
+    return ok;
+  });
 
   // ---- pointer editing
   art.addEventListener("pointerdown", (e) => {
@@ -1166,6 +1154,7 @@ async function mountEditor(el, ctx, name) {
 
   function updateState() {
     const dirty = isDirty();
+    ctx.setDirty(dirty);
     let st;
     if (dirty) st = badge({ text: t("editor.unsaved"), tone: "warning", dot: true });
     else if (source === "own") st = badge({ text: t("editor.set"), tone: "success", icon: "check" });
@@ -1467,13 +1456,8 @@ async function mountEditor(el, ctx, name) {
     renderSame();
   }
 
-  async function leave(path) {
-    if (isDirty()) {
-      const ok = await ctx.confirm({ title: t("editor.unsaved_title"), message: t("editor.unsaved_msg"), confirmLabel: t("editor.leave"), danger: true });
-      if (!ok) return;
-      saved = { ...area }; // nothing left to guard
-    }
-    ctx.navigate(path);
+  function leave(path) {
+    ctx.navigate(path); // the leave guard above asks when there are unsaved changes
   }
 
   function uploadHere(files) {
