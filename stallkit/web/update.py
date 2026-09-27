@@ -38,7 +38,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 log = logging.getLogger("stallkit.web")
 
-REPO = "MoneyPrintLabs/etsyprinting"
+REPO = "MoneyPrintLabs/stallkit"
 # GitHub answers a renamed repository with a redirect, which is followed.
 LATEST_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
 RELEASES_PAGE = f"https://github.com/{REPO}/releases/latest"

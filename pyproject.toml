@@ -47,9 +47,9 @@ dev = ["pytest>=8.0", "ruff>=0.5"]
 heic = ["pillow-heif>=0.16"]
 
 [project.urls]
-Homepage = "https://github.com/MoneyPrintLabs/etsyprinting"
-Issues = "https://github.com/MoneyPrintLabs/etsyprinting/issues"
-Changelog = "https://github.com/MoneyPrintLabs/etsyprinting/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/MoneyPrintLabs/stallkit"
+Issues = "https://github.com/MoneyPrintLabs/stallkit/issues"
+Changelog = "https://github.com/MoneyPrintLabs/stallkit/blob/main/CHANGELOG.md"
 
 [project.scripts]
 stallkit = "stallkit.cli:main"
