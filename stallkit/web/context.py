@@ -18,6 +18,7 @@ Phase-2 handlers receive it as `req.ctx` (and as `ctx` in `register(r, ctx)`):
     ctx.reset_client()                   # after saving keys, connecting or disconnecting
     ctx.on_change("listings", forget, name="seo")    # a cache that must drop stale data
     ctx.changed("listings", source="seo")            # after writing listings to Etsy
+    ctx.updates.state()                  # is a newer stallkit out? (web/update.py)
 
 Which shop is open is process-wide state (os.environ, see desktop.settings.use_shop).
 `shop_lock` makes that safe: every API handler and every job holds it for reading,
@@ -52,6 +53,7 @@ from . import i18n
 from .events import EventHub
 from .jobs import JobRunner
 from .router import ApiError
+from .update import UpdateChecker
 
 log = logging.getLogger("stallkit.web")
 
@@ -199,6 +201,8 @@ class AppContext:
         self._on_change: dict[str, list[tuple[str, Callable[[AppContext], Any]]]] = {}
         self.closed = False
         self._system_language: str | None = None
+        # Looks for a newer release once the launcher calls updates.start().
+        self.updates = UpdateChecker(self)
         self._open_saved_shop()
         if check_status:
             self.set_status_soon(0.0)
@@ -781,6 +785,7 @@ class AppContext:
     def close(self) -> None:
         """Stop the job worker, end every event stream, close the Etsy clients."""
         self.closed = True
+        self.updates.close()
         with self._status_lock:
             if self._soon_timer is not None:
                 self._soon_timer.cancel()

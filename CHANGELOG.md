@@ -79,6 +79,15 @@ The screens from the video, all in Turkish and English:
   shops, the products folder, the ten-step setup checklist, and quitting.
 - **Across the app:** a notification bell, long tasks that keep running when you move
   between screens, and a question before you leave a page with unsaved edits.
+- **New-version notice.** About 10 seconds after it starts and then once a day, the app
+  asks GitHub for the latest release: one GET to `api.github.com` with a
+  `stallkit/<version>` User-Agent, and nothing else is sent. A newer version shows as a
+  small pill in the top bar, "Yeni sürüm v0.3.1 · İndir", which opens the release page,
+  with **Neler yeni?** for the release notes; the × hides it for that version. It is
+  announced once in the bell. **Ayarlar** shows the version, when it last checked, a
+  **Şimdi kontrol et** button and a toggle for the daily check;
+  `STALLKIT_NO_UPDATE_CHECK=1` turns every check off. A failed check (offline, GitHub's
+  rate limit) is only a line in the log.
 - **Etsy's trademark notice** is shown on every screen.
 - **Digital products.** A template listing of type `download` (or `both`) makes drafts of
   that type, in the app and with `drop run` / `drop auto`. After its images each draft gets

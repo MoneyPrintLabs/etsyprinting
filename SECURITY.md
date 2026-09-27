@@ -29,6 +29,7 @@ Everything lives in the shop's home folder. The first shop's home is `~/.stallki
 | Pinterest token (optional) | `pinterest_token.json` in the shop's home | `0600` |
 | Pinterest Pin queue (optional) | `pinterest-queue.json` in the shop's home | default |
 | The running app's port and session token | `~/.stallkit/web.json`, removed when the app stops | `0600` |
+| The last update check: the latest release seen, its notes, when it was checked, which version was announced or hidden (not a secret) | `~/.stallkit/update.json` | `0600` |
 
 The app and `stallkit init` write the `.env` for you. Real environment variables win
 over it. For the first shop, the command line also reads a `.env` in the current
@@ -51,8 +52,11 @@ stallkit itself makes network requests to these hosts only:
 | `api.etsy.com` | Etsy's OAuth token endpoint (the address Etsy's OAuth guide gives) |
 | `api.pinterest.com` (`api-sandbox.pinterest.com` for a sandbox app) | Pinterest's API, only after you set up Pinterest |
 | `www.tcmb.gov.tr` | `kurlar/today.xml`, the Central Bank of Turkey's public exchange-rate file, for the TRY amounts on **Kâr-Zarar**. A plain GET at most once a day; nothing is sent. |
+| `api.github.com` | `/repos/MoneyPrintLabs/etsyprinting/releases/latest`, to see whether a newer stallkit is out. A plain GET about 10 seconds after the app starts and then at most once a day (an hour later after a failed try). Nothing is sent but the request itself with a `User-Agent: stallkit/<version>` header: no identifier, no cookie, nothing about you or your shop. Off with **Ayarlar → Yeni sürümleri denetle** (the automatic check) or `STALLKIT_NO_UPDATE_CHECK=1` (every check). |
 
-Nothing else. There is no telemetry, no update check and no account with this project.
+Nothing else. There is no telemetry and no account with this project. The update check
+reads a public GitHub page; its answer is treated as untrusted: the release notes are
+shown as plain text, and the download link only ever points at `github.com`.
 The consent pages (`www.etsy.com/oauth/connect`, `www.pinterest.com/oauth/`) open in
 your browser; stallkit does not call them. The pages of the app show listing photos
 straight from Etsy's image servers (and board covers from Pinterest); your browser

@@ -325,8 +325,16 @@ The app's log is `~/.stallkit/logs/web-<date>.log`.
   with, and requests from other websites are refused.
 - **No account, no telemetry.** Nothing about you or your shop is sent to this project.
 - **Who it talks to:** Etsy's official API (your listing photos load from Etsy's image
-  servers); Pinterest only if you connect it; and the Central Bank of Turkey's public
-  exchange-rate file (at most once a day) so **Kâr-Zarar** can show TRY amounts.
+  servers); Pinterest only if you connect it; the Central Bank of Turkey's public
+  exchange-rate file (at most once a day) so **Kâr-Zarar** can show TRY amounts; and
+  GitHub, to see whether a new version is out.
+- **New versions.** About 10 seconds after it starts, and then once a day, the app asks
+  GitHub (`api.github.com`) for the latest stallkit release. Nothing is sent but the
+  request itself, with a `stallkit/<version>` User-Agent. A newer version shows as a small
+  pill at the top ("New version v0.3.1 · Download", with **What's new?**) and once in the
+  bell; the × hides it for that version. **Ayarlar** shows your version, when it last
+  checked and a **Check now** button. Turn the daily check off there, or set
+  `STALLKIT_NO_UPDATE_CHECK=1` to stop every check.
 - Your Etsy password is never seen by stallkit; you approve access on Etsy's own page.
   The keys and the sign-in are stored in `~/.stallkit` and shown only in part.
 - It does not scrape Etsy. Every number comes from the official API, and it does not
@@ -646,7 +654,16 @@ ortam değişkenini ayarlayın. Uygulamanın kaydı `~/.stallkit/logs/web-<tarih
 - **Üyelik yok, izleme yok.** Sizinle ya da mağazanızla ilgili hiçbir bilgi bu projeye gönderilmez.
 - **Kiminle konuşur:** Etsy'nin resmi API'si (ilan fotoğraflarınız Etsy'nin görsel
   sunucularından yüklenir); yalnızca bağlarsanız Pinterest; **Kâr-Zarar** TL tutarlarını
-  gösterebilsin diye günde en fazla bir kez TCMB'nin herkese açık kur dosyası.
+  gösterebilsin diye günde en fazla bir kez TCMB'nin herkese açık kur dosyası; yeni sürüm
+  çıkıp çıkmadığını görmek için GitHub.
+- **Yeni sürümler.** Uygulama açıldıktan yaklaşık 10 saniye sonra ve sonra günde bir kez
+  GitHub'a (`api.github.com`) stallkit'in son sürümünü sorar. İsteğin kendisinden başka
+  hiçbir şey gönderilmez (yalnızca `stallkit/<sürüm>` User-Agent başlığı). Yeni bir sürüm
+  üstte küçük bir etiket olarak (“Yeni sürüm v0.3.1 · İndir”, yanında **Neler yeni?**) ve
+  bir kez de bildirimlerde görünür; × o sürüm için gizler. **Ayarlar** sürümünüzü, son
+  kontrolün ne zaman yapıldığını ve **Şimdi kontrol et** düğmesini gösterir. Günlük
+  denetimi oradan kapatabilir, `STALLKIT_NO_UPDATE_CHECK=1` ile tüm denetimleri
+  durdurabilirsiniz.
 - Etsy şifrenizi stallkit hiç görmez; izni Etsy'nin kendi sayfasında verirsiniz.
   Anahtarlar ve oturum `~/.stallkit` içinde saklanır, yalnızca bir kısmı gösterilir.
 - Etsy'den veri kazımaz (scraping yok). Her sayı resmi API'den gelir; Etsy'nin
