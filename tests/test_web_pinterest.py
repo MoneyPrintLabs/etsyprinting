@@ -6,6 +6,7 @@ Pinterest itself is a MockTransport; nothing here reaches the network.
 from __future__ import annotations
 
 import json
+import os
 import socket
 import time
 import urllib.parse
@@ -202,6 +203,19 @@ def _start_connect(web):
     return data, query
 
 
+def _bind_like_a_listener(port):
+    """Fail if something still listens on `port`.
+
+    On Linux and macOS an answered connection leaves the port in TIME_WAIT, so bind the
+    way a listener does (SO_REUSEADDR still refuses a port that is listening). On Windows
+    that option would allow binding over a live listener, so it is left off there.
+    """
+    with socket.socket() as probe:
+        if os.name != "nt":
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        probe.bind(("127.0.0.1", port))
+
+
 def test_the_whole_consent_flow(web, keys, monkeypatch):
     seen = {}
 
@@ -235,8 +249,7 @@ def test_the_whole_consent_flow(web, keys, monkeypatch):
     notes = web.client.get("/api/notifications").json()["items"]
     assert notes[0]["ns"] == "pinterest" and notes[0]["key"] == "notify.connected"
     # The listener has let go of the port.
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", keys))
+    _bind_like_a_listener(keys)
 
 
 def test_refusing_on_pinterest_ends_the_job(web, keys):
@@ -265,8 +278,7 @@ def test_cancel_closes_the_listener(web, keys):
     web.client.post(f"/api/jobs/{data['job']['id']}/cancel")
     job = wait_for_job(web, data["job"]["id"])
     assert job["status"] == "cancelled"
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", keys))
+    _bind_like_a_listener(keys)
     # A new attempt can start again.
     again = web.client.post("/api/pinterest/connect").json()
     web.client.post(f"/api/jobs/{again['job']['id']}/cancel")
