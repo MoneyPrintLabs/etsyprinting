@@ -43,8 +43,8 @@ The downloaded app needs nothing else: see [README → Download and first
 run](README.md#download-and-first-run). From source, with Python 3.9–3.13:
 
 ```bash
-git clone https://github.com/MoneyPrintLabs/etsyprinting.git
-cd etsyprinting
+git clone https://github.com/MoneyPrintLabs/stallkit.git
+cd stallkit
 python -m venv .venv
 source .venv/bin/activate       # Windows: .venv\Scripts\activate
 pip install -e .

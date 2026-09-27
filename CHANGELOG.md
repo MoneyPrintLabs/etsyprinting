@@ -330,7 +330,7 @@ Recorded here and in the code so nobody has to re-derive them:
 - There is no idempotency key, so non-idempotent writes are never retried on a timeout
   or a 5xx — a repeat would mean a duplicate listing, or a second email to a buyer.
 
-[Unreleased]: https://github.com/MoneyPrintLabs/etsyprinting/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/MoneyPrintLabs/etsyprinting/releases/tag/v0.3.0
-[0.2.0]: https://github.com/MoneyPrintLabs/etsyprinting/releases/tag/v0.2.0
-[0.1.0]: https://github.com/MoneyPrintLabs/etsyprinting/releases/tag/v0.1.0
+[Unreleased]: https://github.com/MoneyPrintLabs/stallkit/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/MoneyPrintLabs/stallkit/releases/tag/v0.3.0
+[0.2.0]: https://github.com/MoneyPrintLabs/stallkit/releases/tag/v0.2.0
+[0.1.0]: https://github.com/MoneyPrintLabs/stallkit/releases/tag/v0.1.0

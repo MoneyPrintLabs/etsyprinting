@@ -8,7 +8,7 @@ reach. This page states exactly what it does with your credentials and data.
 ## Reporting a vulnerability
 
 Please report privately through
-[GitHub's private vulnerability reporting](https://github.com/MoneyPrintLabs/etsyprinting/security/advisories/new)
+[GitHub's private vulnerability reporting](https://github.com/MoneyPrintLabs/stallkit/security/advisories/new)
 rather than opening a public issue.
 
 Include what you did, what happened, and what you expected. A proof of concept helps.
@@ -52,7 +52,7 @@ stallkit itself makes network requests to these hosts only:
 | `api.etsy.com` | Etsy's OAuth token endpoint (the address Etsy's OAuth guide gives) |
 | `api.pinterest.com` (`api-sandbox.pinterest.com` for a sandbox app) | Pinterest's API, only after you set up Pinterest |
 | `www.tcmb.gov.tr` | `kurlar/today.xml`, the Central Bank of Turkey's public exchange-rate file, for the TRY amounts on **Kâr-Zarar**. A plain GET at most once a day; nothing is sent. |
-| `api.github.com` | `/repos/MoneyPrintLabs/etsyprinting/releases/latest`, to see whether a newer stallkit is out. A plain GET about 10 seconds after the app starts and then at most once a day (an hour later after a failed try). Nothing is sent but the request itself with a `User-Agent: stallkit/<version>` header: no identifier, no cookie, nothing about you or your shop. Off with **Ayarlar → Yeni sürümleri denetle** (the automatic check) or `STALLKIT_NO_UPDATE_CHECK=1` (every check). |
+| `api.github.com` | `/repos/MoneyPrintLabs/stallkit/releases/latest`, to see whether a newer stallkit is out. A plain GET about 10 seconds after the app starts and then at most once a day (an hour later after a failed try). Nothing is sent but the request itself with a `User-Agent: stallkit/<version>` header: no identifier, no cookie, nothing about you or your shop. Off with **Ayarlar → Yeni sürümleri denetle** (the automatic check) or `STALLKIT_NO_UPDATE_CHECK=1` (every check). |
 
 Nothing else. There is no telemetry and no account with this project. The update check
 reads a public GitHub page; its answer is treated as untrusted: the release notes are
