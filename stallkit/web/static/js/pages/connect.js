@@ -395,7 +395,10 @@ async function mountConnect(el, ctx) {
   }
 
   // ---- the callback address: copy it, where it goes on Etsy, Etsy's rules
-  function callbackGuide({ compact = false } = {}) {
+  // dense (the question before the first Bağlan): the same facts in fewer lines, so the
+  // question and the button fit on screen - no "Etsy'de" label, the rules as one line
+  // of small chips, the approval note in its short form.
+  function callbackGuide({ compact = false, dense = false } = {}) {
     const uri = callbackUri();
     const parts = callbackParts(uri);
     const copy = copyField({ value: uri, ariaLabel: t("cb.title") });
@@ -408,13 +411,13 @@ async function mountConnect(el, ctx) {
     ];
     return h(
       "div",
-      { class: cx("cx-cb", compact && "is-compact") },
-      compact ? null : h("div", { class: "cx-cb-head" }, h("b", null, t("cb.title")), h("span", null, t("cb.sub"))),
+      { class: cx("cx-cb", (compact || dense) && "is-compact", dense && "is-dense") },
+      compact || dense ? null : h("div", { class: "cx-cb-head" }, h("b", null, t("cb.title")), h("span", null, t("cb.sub"))),
       copy,
       h(
         "div",
         { class: "cx-cb-where" },
-        h("span", { class: "cx-cb-label" }, t("cb.path_label")),
+        dense ? null : h("span", { class: "cx-cb-label" }, t("cb.path_label")),
         h(
           "ol",
           { class: "cx-cb-path" },
@@ -425,11 +428,15 @@ async function mountConnect(el, ctx) {
         ),
       ),
       h(
-        "ul",
-        { class: "cx-cb-rules", "aria-label": t("cb.rules_label") },
-        rules.map(([ok, text]) => h("li", { class: cx("cx-cb-rule", !ok && "is-bad") }, icon(ok ? "check" : "x", { size: 12, strokeWidth: 2.4 }), h("span", null, text))),
+        "div",
+        { class: "cx-cb-foot" },
+        h(
+          "ul",
+          { class: "cx-cb-rules", "aria-label": t("cb.rules_label") },
+          rules.map(([ok, text]) => h("li", { class: cx("cx-cb-rule", !ok && "is-bad") }, icon(ok ? "check" : "x", { size: 12, strokeWidth: 2.4 }), h("span", null, text))),
+        ),
+        h("p", { class: "cx-cb-note" }, icon("info", { size: 13 }), h("span", null, t(dense ? "cb.approval_short" : "cb.approval"))),
       ),
-      h("p", { class: "cx-cb-note" }, icon("info", { size: 13 }), h("span", null, t("cb.approval"))),
     );
   }
 
@@ -518,11 +525,12 @@ async function mountConnect(el, ctx) {
     return [];
   }
 
+  // "Etsy accepts these keys" is the toast's to say (saveKeys): a note here as well said
+  // it twice and pushed Bağlan below the fold. Only what the toast does not say stays.
   function keyResultNotes() {
     const r = s.keyResult;
     if (!r) return [];
     const out = [];
-    if (r.check === "ok") out.push(infoNote({ icon: "check-circle", tone: "success", text: t("keys.result.ok") }));
     if (r.token_cleared) out.push(infoNote({ icon: "alert", tone: "warning", text: t("keys.token_cleared") }));
     return out;
   }
@@ -778,6 +786,10 @@ async function mountConnect(el, ctx) {
     }
   }
 
+  function actionFirst() {
+    return !connecting() && (!!s.gateOpen || state() === "reconnect");
+  }
+
   // connect: the t160 card, plus the callback question, the pre-flight and the help
   function connectView() {
     const info = s.info || {};
@@ -792,9 +804,16 @@ async function mountConnect(el, ctx) {
       scopes.push(s.extra);
       extra.push(s.extra);
     }
-    kids.push(sectionTitle(t("connect.perms")), permList(t, permissionRows(t, scopes, extra)), safeNote(t));
-    if (s.gateOpen && !connecting()) kids.push(gateBox());
-    kids.push(connectRow());
+    const perms = [sectionTitle(t("connect.perms")), permList(t, permissionRows(t, scopes, extra)), safeNote(t)];
+    if (actionFirst()) {
+      // A shop's first connect (the callback question) or a reconnect (the note above):
+      // the button comes before the permissions, so it is on screen without scrolling
+      // (1280x720 included).
+      if (s.gateOpen) kids.push(gateBox());
+      kids.push(connectRow(), ...perms);
+    } else {
+      kids.push(...perms, connectRow());
+    }
     live.trouble = h("div", { class: "cx-trouble-slot" });
     kids.push(live.trouble);
     renderProblems();
@@ -818,7 +837,7 @@ async function mountConnect(el, ctx) {
         h("span", { class: "cx-gate-icon", "aria-hidden": "true" }, icon("help", { size: 17 })),
         h("div", { class: "cx-gate-text" }, h("h3", { class: "cx-gate-title", id: "cx-gate-title" }, t("gate.title")), h("p", null, t("gate.lead"))),
       ),
-      callbackGuide({ compact: true }),
+      callbackGuide({ dense: true }),
       h("div", { class: "cx-gate-foot" }, box, h("span", { class: "spacer" }), skip),
     );
   }
@@ -1393,7 +1412,7 @@ async function mountConnect(el, ctx) {
         const scroller = el.closest(".content");
         if (scroller) scroller.scrollTop = 0;
       }
-      main.className = cx("card", "cx-main", `is-${mode}`);
+      main.className = cx("card", "cx-main", `is-${mode}`, mode === "connect" && actionFirst() && "action-first");
       grid.className = cx("cx-grid", `mode-${mode}`);
     }
     renderSide();

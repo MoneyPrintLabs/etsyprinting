@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import threading
 
 import httpx
 import pytest
@@ -348,6 +349,36 @@ def test_ship_job_sends_and_reports_each_row(web):
     assert web.ctx.shop_prefs()["last_carrier"]["TR"] in ("UPS", "USPS")
     notes = web.client.get("/api/notifications").json()["items"]
     assert notes[0]["key"] == "notify.shipped" and notes[0]["params"] == {"n": 2}
+
+
+def test_a_ship_job_waiting_behind_another_write_job_can_be_found_again(web):
+    # Write jobs run one at a time: a send waits behind a long Tasarım Yükle run. A page
+    # that comes back meanwhile finds the job in /api/jobs with its count (params.n, the
+    # "Gönderiliyor 0/n" label); the rows come from what the page remembers until the job
+    # runs, then from state.queue (orders.js resumeJob / restoreQueue).
+    receipts = [make_receipt(1), make_receipt(2)]
+    fake, _store = setup_orders(web, receipts)
+    for n in (1, 2):
+        fake.add("POST", f"{RECEIPTS}/{3000000 + n}/tracking", shipment_answer)
+    release = threading.Event()
+    blocker = web.ctx.jobs.start("designs", "designs:job.title", lambda job: release.wait(10),
+                                 refresh_status=False)
+    try:
+        rows = [{"receipt_id": 3000001, "carrier_name": "UPS", "tracking_code": "1ZEXAMPLE01"},
+                {"receipt_id": 3000002, "carrier_name": "USPS", "tracking_code": "9400EXAMPLE02"}]
+        job = web.client.post("/api/orders/ship",
+                              json={"rows": rows, "country": "TR", "confirm": True}).json()
+        listed = web.client.get("/api/jobs", params={"kind": "orders"}).json()
+        assert [j["id"] for j in listed] == [job["id"]]
+        waiting = web.client.get(f"/api/jobs/{job['id']}").json()
+        assert waiting["status"] == "queued" and waiting["params"] == {"n": 2}
+    finally:
+        release.set()
+    assert wait_for_job(web, blocker.id)["status"] == "done"
+    done = wait_for_job(web, job["id"])
+    assert done["status"] == "done"
+    assert [(q["receipt_id"], q["tracking_code"]) for q in done["state"]["queue"]] == [
+        (3000001, "1ZEXAMPLE01"), (3000002, "9400EXAMPLE02")]
 
 
 def test_tracking_restricted_stops_after_the_first_refusal(web):

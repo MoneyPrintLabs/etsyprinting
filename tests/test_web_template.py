@@ -473,3 +473,28 @@ def test_plain_text_is_not_decoded_a_second_time(web):
     connected(web, [listing(1000004, "R&amp;amp;B Poster")])
     items = web.client.get("/api/template/listings").json()["items"]
     assert items[0]["title"] == "R&amp;B Poster"
+    # Saved, product.json is marked plain, so reading it back does not decode it again.
+    assert web.client.post("/api/template", json={"listing_id": 1000004}).status_code == 200
+    data = json.loads(web.ctx.workspace().template_path.read_text(encoding="utf-8"))
+    assert data["plain_text"] is True and data["source_title"] == "R&amp;B Poster"
+    assert template_mod.Template.from_dict(data).source_title == "R&amp;B Poster"
+    assert web.client.get("/api/template").json()["template"]["title"] == "R&amp;B Poster"
+
+
+def test_a_product_json_saved_before_the_fix_reads_as_plain_text(web):
+    # product.json written by 0.2.0 holds Etsy's escaped text and no plain_text mark.
+    # The page and every draft built from it (Template.from_dict) see plain text.
+    connected(web)
+    web.ctx.workspace().write_template({
+        "source_listing_id": 1000001,
+        "source_title": "Mom&#39;s &quot;Best&quot; Shirt &amp; Gift",
+        "fields": {"taxonomy_id": 482, "shipping_profile_id": 501, "price": 24.9},
+        "materials": ["cotton &amp; linen"],
+        "description": "Soft &amp; light. Mom&#39;s favourite.",
+        "tags": ["mother&#39;s day"],
+    })
+    summary = web.client.get("/api/template").json()["template"]
+    assert summary["title"] == 'Mom\'s "Best" Shirt & Gift'
+    template = template_mod.Template.from_dict(web.ctx.workspace().read_template())
+    assert template.description == "Soft & light. Mom's favourite."
+    assert template.tags == ["mother's day"] and template.materials == ["cotton & linen"]

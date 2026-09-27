@@ -465,3 +465,155 @@ def test_a_template_listing_gone_from_etsy_stops_before_the_plan(studio):
         _run(ws, template, Gone(ws), on_event=events)
     assert events.items == []
     assert not (ws.root / ".auto-upload.lock").exists()
+
+
+# --- failure paths (test-gaps) -----------------------------------------------------------------
+
+
+def test_an_image_that_fails_after_the_create_leaves_a_partial_draft_on_record(studio):
+    ws, template = studio
+    _artwork(ws.products / "retro-mountain-sunset.png")
+    _artwork(ws.products / "ocean-waves.png")
+
+    class ThirdImageFails(Client):
+        def upload_listing_image(self, listing_id, image, *, rank):
+            if listing_id == 1000001 and rank == 2:
+                raise EtsyApiError(400, "bad image", method="POST", path="/images")
+            return super().upload_listing_image(listing_id, image, rank=rank)
+
+    events = Events()
+    report = _run(ws, template, ThirdImageFails(ws), on_event=events)
+    by_name = {item.name: item for item in report.items}
+    partial = by_name["ocean-waves.png"]
+    assert partial.status == stream.PARTIAL and partial.listing_id == 1000001
+    assert partial.steps["draft"] == "warn" and partial.images_uploaded == 1
+    assert "partial" in [w.code for w in partial.warnings]
+    entry = _history(ws)[SHOP]["ocean-waves.png"]
+    assert entry["status"] == "partial" and entry["listing_id"] == 1000001
+    assert entry["images_uploaded"] == 1
+    assert by_name["retro-mountain-sunset.png"].status == stream.OK, "the next one still goes"
+    again = _run(ws, template, Client(ws))
+    assert again.items == [] and any("ocean-waves.png" in n for n in again.needs_review)
+
+
+def test_a_busy_history_file_does_not_stop_the_run(studio, monkeypatch):
+    # Windows: a reader (antivirus, OneDrive, the app's own status check) holds the
+    # file open, and os.replace answers "Access denied" now and then.
+    ws, template = studio
+    for name in ("a-retro-sunset.png", "b-ocean-waves.png"):
+        _artwork(ws.products / name)
+    monkeypatch.setattr(automation, "REPLACE_FIRST_PAUSE", 0.001)
+    real = automation.os.replace
+    calls = {"n": 0}
+
+    def sometimes_busy(src, dst):
+        calls["n"] += 1
+        if calls["n"] % 3 == 0:
+            raise PermissionError(13, "Access denied")
+        return real(src, dst)
+
+    monkeypatch.setattr(automation.os, "replace", sometimes_busy)
+    report = _run(ws, template, Client(ws))
+    assert [item.status for item in report.items] == [stream.OK, stream.OK]
+    assert {e["status"] for e in _history(ws)[SHOP].values()} == {"ok"}
+
+
+def test_the_lock_removed_mid_run_ends_the_run_normally(studio):
+    ws, template = studio
+    _artwork(ws.products / "retro-mountain-sunset.png")
+    lock = ws.root / ".auto-upload.lock"
+
+    class Unlocking(Client):
+        def create_draft_listing(self, fields):
+            if lock.exists():
+                lock.unlink()
+            return super().create_draft_listing(fields)
+
+    report = _run(ws, template, Unlocking(ws))
+    assert report.items[0].status == stream.OK and report.finished_at is not None
+
+
+def test_a_design_too_large_to_decode_fails_only_that_product(studio):
+    ws, template = studio
+    Image.new("1", (13000, 13000)).save(ws.products / "huge-mountain-poster.png")
+    _artwork(ws.products / "retro-mountain-sunset.png")
+    client = Client(ws)
+    with pytest.warns(Image.DecompressionBombWarning):
+        report = _run(ws, template, client)
+    by_name = {item.name: item for item in report.items}
+    huge = by_name["huge-mountain-poster.png"]
+    assert huge.status == stream.FAILED and huge.error.code == "too_many_pixels"
+    assert huge.error.params["width"] == 13000 and huge.steps["mockup"] == "error"
+    assert by_name["retro-mountain-sunset.png"].status == stream.OK
+    assert len(client.creates) == 1
+
+
+def test_a_finished_photo_over_etsys_limit_goes_up_smaller(studio, monkeypatch):
+    from stallkit.drop import pipeline
+
+    ws, template = studio
+    photo = ws.products / "ocean-waves-photo.jpg"
+    Image.effect_noise((500, 500), 90).convert("RGB").save(photo, quality=98)
+    monkeypatch.setattr(pipeline, "MAX_IMAGE_BYTES", photo.stat().st_size // 3)
+    client = Client(ws)
+    report = _run(ws, template, client)
+    item = report.items[0]
+    assert item.status == stream.OK and item.mode == "as_is"
+    shrunk = [w for w in item.warnings if w.step == "mockup"]
+    assert [w.code for w in shrunk] == ["shrunk"]
+    assert shrunk[0].params["name"] == "ocean-waves-photo.jpg"
+    assert [name for _id, name, _rank in client.images] == ["ocean-waves-photo-jpg-etsy.jpg"]
+
+
+def test_a_title_etsy_would_refuse_is_cleaned_and_said_so(studio, monkeypatch):
+    from stallkit.drop import generate
+
+    ws, template = studio
+    _artwork(ws.products / "retro-mountain-sunset.png")
+    monkeypatch.setattr(generate, "build_title",
+                        lambda seed, market: "Salt & Pepper & Co, $5 Mug \U0001f338")
+    client = Client(ws)
+    report = _run(ws, template, client)
+    item = report.items[0]
+    assert item.status == stream.OK and item.steps["title"] == "warn"
+    assert "title_cleaned" in [w.code for w in item.warnings]
+    assert client.creates[0]["title"] == "Salt & Pepper and Co, 5 Mug"
+
+
+def test_a_title_with_nothing_etsy_accepts_fails_that_product(studio, monkeypatch):
+    from stallkit.drop import generate
+
+    ws, template = studio
+    _artwork(ws.products / "retro-mountain-sunset.png")
+    monkeypatch.setattr(generate, "build_title", lambda seed, market: "\U0001f338\U0001f338")
+    client = Client(ws)
+    report = _run(ws, template, client)
+    item = report.items[0]
+    assert item.status == stream.FAILED and item.error.code == "invalid_title"
+    assert item.steps["title"] == "error" and client.creates == []
+
+
+def test_the_flat_design_is_marked_apart_from_the_mockups(studio):
+    ws, template = studio
+    _artwork(ws.products / "retro-mountain-sunset.png")
+    events = Events()
+    report = _run(ws, template, Client(ws), on_event=events)
+    item = report.items[0]
+    assert item.flat is not None and item.flat == item.images[-1]
+    outcome = events.outcome("retro-mountain-sunset.png")
+    assert outcome["flat"].endswith("--flat.jpg") and outcome["flat"] in outcome["images"]
+    assert stream.item_summary(item, ws.root)["flat"] == outcome["flat"]
+
+
+@pytest.mark.parametrize("junk", ["Adsız tasarım (3).png", "Untitled design (4).png",
+                                  "image (1).png", "IMG_4432.png"])
+def test_a_canva_or_camera_default_name_never_becomes_a_draft(studio, junk):
+    ws, template = studio
+    _artwork(ws.products / junk)
+    _artwork(ws.products / "retro-mountain-sunset.png")
+    client = Client(ws)
+    report = _run(ws, template, client)
+    by_name = {item.name: item for item in report.items}
+    assert by_name[junk].status == stream.FAILED and by_name[junk].error.code == "junk_name"
+    assert by_name["retro-mountain-sunset.png"].status == stream.OK
+    assert len(client.creates) == 1 and junk not in _history(ws)[SHOP]

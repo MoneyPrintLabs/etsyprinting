@@ -18,7 +18,6 @@ import collections
 import io
 import json
 import logging
-import os
 import re
 import shutil
 import threading
@@ -131,27 +130,53 @@ def _entry_ci(folder: Path, name: str) -> Path | None:
     return None
 
 
-def _claim_folder(products: Path, folder: str, batch: str) -> str:
+def _same_file(folder: Path, name: str, data: bytes) -> str | None:
+    """The name of a file in `folder` holding exactly `data` (the same name tried first)."""
+    first = _entry_ci(folder, name)
+    candidates = [first] if first is not None else []
+    try:
+        candidates += sorted(entry for entry in folder.iterdir() if entry != first)
+    except OSError:
+        pass
+    for entry in candidates:
+        try:
+            if (entry.is_file() and entry.stat().st_size == len(data)
+                    and entry.read_bytes() == data):
+                return entry.name
+        except OSError:
+            continue
+    return None
+
+
+def _claim_folder(products: Path, folder: str, batch: str, name: str, data: bytes) -> str:
     """The product folder an upload batch writes `folder` into.
 
-    Within one batch every file of a dropped folder lands in the same place. A folder
-    that already exists from before gets a new name (`-2`), so a new product is never
-    merged into an old one — which the history would then skip as already uploaded.
+    Within one batch every file of a dropped folder lands in the same place. When a
+    folder of that name exists from before, the batch's first file decides:
+    - it is byte for byte a photo already in that folder: the same product dropped
+      again (or an interrupted upload being finished), so it is that folder — never a
+      `-2` copy that would become a second, identical draft;
+    - otherwise it is a new product with the same folder name, and it gets a new name
+      (`-2`), so it is never merged into an old one the history would skip.
     """
     key = (str(products), batch, folder.casefold())
     with _claims_lock:
         if batch and key in _claims:
             return _claims[key]
-        name, number = folder, 1
-        while batch and _entry_ci(products, name) is not None:
-            number += 1
-            name = f"{folder}-{number}"
-        (products / name).mkdir(parents=True, exist_ok=True)
+        existing = _entry_ci(products, folder) if batch else None
+        if existing is not None and existing.is_dir() and _same_file(existing, name, data):
+            claimed = existing.name
+        else:
+            claimed, number = folder, 1
+            while batch and _entry_ci(products, claimed) is not None:
+                number += 1
+                claimed = f"{folder}-{number}"
+            (products / claimed).mkdir(parents=True, exist_ok=True)
         if batch:
-            _claims[key] = name
+            _claims[key] = claimed
             while len(_claims) > _KEEP_CLAIMS:
                 _claims.popitem(last=False)
-        return name
+        return claimed
 
 
 def _save_unique(folder: Path, name: str, data: bytes) -> tuple[str, bool]:
@@ -183,6 +208,21 @@ def _save_unique(folder: Path, name: str, data: bytes) -> tuple[str, bool]:
             number += 1
             continue
         return candidate, False
+
+
+def _decode_all(image: Any) -> None:
+    """Read the whole picture, so a file cut short by a half-finished copy is refused now.
+
+    Image.verify() checks a PNG's chunks but does nothing for a JPEG, which then passed
+    the upload, showed as ready and failed the check step on every run. A JPEG is
+    decoded at 1/8 scale: every byte is still read, at a fraction of the memory.
+    """
+    if image.format == "PNG":
+        image.verify()
+        return
+    if image.format == "JPEG":
+        image.draft("RGB", (max(1, image.width // 8), max(1, image.height // 8)))
+    image.load()
 
 
 # --- history ---------------------------------------------------------------------------------
@@ -229,30 +269,51 @@ def upload_file(req: Request) -> dict[str, Any]:
         raise ApiError(422, "not_image", f"{name} is not a PNG, JPG or other image file.",
                        name=name)
     name = f"{Path(name).stem}{suffix}"
+    size: tuple[int, int] = (0, 0)
     try:
         with Image.open(io.BytesIO(data)) as image:
             size = image.size
-            image.verify()
+            # A small file can still hold a huge picture (13000x13000 PNG in 656 KB):
+            # every thumbnail and the draft run would then need gigabytes. Refused
+            # here, 422, before anything is decoded.
+            if catalog.too_many_pixels(size):
+                raise files.too_many_pixels(name, *size)
+            _decode_all(image)
     except Image.DecompressionBombError as exc:
         raise files.too_many_pixels(name, *catalog.bomb_size(exc)) from exc
+    except MemoryError as exc:
+        raise files.too_many_pixels(name, *size) from exc
     except (OSError, ValueError, SyntaxError) as exc:
         raise ApiError(422, "not_image", f"{name} cannot be read as an image ({exc}).",
                        name=name) from exc
-    # A small file can still hold a huge picture (13000x13000 PNG in 656 KB): every
-    # thumbnail and the draft run would then need gigabytes. Refused here, 422.
-    if catalog.too_many_pixels(size):
-        raise files.too_many_pixels(name, *size)
 
     ws = ctx.workspace()
+    history, _problem = _history(ctx, ws)
+    known_names = {n.casefold() for n in history}
     folder = None
     if len(parts) == 2:
         batch = re.sub(r"[^A-Za-z0-9_-]", "", req.query.get("batch", ""))[:64]
-        folder = _claim_folder(ws.products, _safe_segment(parts[0], "product"), batch)
+        folder = _claim_folder(ws.products, _safe_segment(parts[0], "product"), batch, name,
+                               data)
     target = ws.products / folder if folder else ws.products
+    if folder and folder.casefold() in known_names:
+        # A product folder that already became a draft: a photo it has is a duplicate,
+        # and a new one is not added — the history skips this product for good, so the
+        # photo would never reach Etsy and only confuse what the folder holds.
+        same = _same_file(target, name, data)
+        return {
+            "name": folder,
+            "file": same or name,
+            "folder": folder,
+            "path": _rel(ws, target / (same or name)) if same else "",
+            "duplicate": same is not None,
+            "known": True,
+            "ignored": None,
+            "size": len(data),
+        }
     saved, duplicate = _save_unique(target, name, data)
     product = folder or saved
-    history, _problem = _history(ctx, ws)
-    known = product.casefold() in {n.casefold() for n in history}
+    known = product.casefold() in known_names
     ignored = None
     if not folder and any(Path(saved).stem.endswith(s) for s in PREVIEW_SUFFIXES):
         ignored = "preview_name"
@@ -314,10 +375,12 @@ def _template_info(ctx: AppContext, ws: Any) -> tuple[dict[str, Any] | None, str
     if not ws.template_path.is_file():
         return None, "template"
     try:
-        template = Template.from_dict(ws.read_template())
+        raw = ws.read_template()
+        template = Template.from_dict(raw)
     except ValidationError as exc:
         return {"title": None, "invalid": str(exc)}, "template_invalid"
     fields = template.fields
+    has_variations = raw.get("has_variations") if isinstance(raw, dict) else None
     info: dict[str, Any] = {
         "title": template.source_title or None,
         "source_listing_id": template.source_listing_id,
@@ -326,6 +389,8 @@ def _template_info(ctx: AppContext, ws: Any) -> tuple[dict[str, Any] | None, str
         "description": bool(template.description.strip()),
         "shipping_profile": bool(fields.get("shipping_profile_id")),
         "tags": len(template.tags),
+        # Saved by Şablon İlan; None for a template captured before it was (unknown).
+        "has_variations": has_variations if isinstance(has_variations, bool) else None,
         "invalid": None,
     }
     try:
@@ -334,6 +399,22 @@ def _template_info(ctx: AppContext, ws: Any) -> tuple[dict[str, Any] | None, str
         info["invalid"] = str(exc)
         return info, "template_invalid"
     return info, None
+
+
+def _review_problem(entry: dict[str, Any]) -> str:
+    """What the review list says about a history entry that is not "ok" (a code).
+
+    partial:   the draft exists, an image or its variations are missing;
+    drafted:   Etsy created the draft (it has an id), how far it got is unknown;
+    uncertain: the create went out and no answer came back: a draft may exist.
+    A run in the app drops an entry whose create Etsy provably refused, so an entry
+    without an id is one whose answer never came.
+    """
+    if entry.get("status") == "partial":
+        return "partial"
+    if entry.get("listing_id"):
+        return "drafted"
+    return "uncertain"
 
 
 def _pending_info(ctx: AppContext) -> dict[str, Any]:
@@ -380,7 +461,7 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
     already_done, _ = automation.known_products(history, names)
     review = [
         {"name": name, "status": entry.get("status"), "listing_id": entry.get("listing_id"),
-         "message": entry.get("message") or ""}
+         "problem": _review_problem(entry), "message": entry.get("message") or ""}
         for name, entry in history.items()
         if name.casefold() in names and entry.get("status") != "ok"
     ]
@@ -401,9 +482,10 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
         blockers.append(template_problem)
     if history_problem:
         blockers.append(history_problem)
+    lock = automation.lock_info(ws.root)
     if _active_job(ctx) is not None:
         blockers.append("running")
-    elif automation.lock_path(ws.root).exists():
+    elif lock is not None:
         blockers.append("locked")
     runnable = sum(1 for item in items if not item["junk_reason"] and not item["too_many"])
     if not items:
@@ -420,15 +502,27 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
     if template and not template.get("shipping_profile"):
         warnings.append("no_shipping_profile")
     images_each = len(enabled) + 1
-    estimate = pipeline.estimate_requests(len(items), len(concepts), images_each)
+    # Only what will run, with each product's own image count: a folder's photos, one
+    # upload for a JPEG (a finished photo, never composited), mockups + the flat design
+    # for anything that may be transparent artwork (an upper bound; opaque ones take 1).
+    run_items = [item for item in items if not item["junk_reason"] and not item["too_many"]]
+    images_total = sum(
+        item["files"] if item["kind"] == "folder"
+        else 1 if Path(item["name"]).suffix.lower() in (".jpg", ".jpeg")
+        else images_each
+        for item in run_items
+    )
+    estimate = pipeline.estimate_requests(
+        len(run_items),
+        len({item["concept"] for item in run_items}),
+        images=images_total,
+        has_variations=bool(template and template.get("has_variations") is not False),
+        template_inventory=bool(template and template.get("source_listing_id")),
+    )
     quota = status.get("quota_remaining")
     if isinstance(quota, int) and estimate > quota:
         warnings.append("quota")
-    lock = automation.lock_path(ws.root)
-    try:
-        locked_at = int(lock.stat().st_mtime) if lock.exists() else None
-    except OSError:
-        locked_at = None
+    locked_at = int(lock["since"]) if lock and lock["since"] else None
 
     shop = status.get("shop") or {}
     return {
@@ -460,6 +554,8 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
         "concepts": len(concepts),
         "images_each": images_each,
         "locked_at": locked_at,
+        "lock": None if lock is None else {"pid": lock["pid"], "alive": lock["alive"],
+                                           "stale": lock["stale"]},
         "concurrency": CONCURRENCY,
     }
 
@@ -496,6 +592,7 @@ def _new_item(data: dict[str, Any]) -> dict[str, Any]:
         "title": "",
         "tags": [],
         "images": [],
+        "flat": None,
         "listing_id": None,
         "images_uploaded": 0,
         "images_total": 0,
@@ -583,8 +680,8 @@ class _Tracker:
             if not isinstance(index, int) or not 0 <= index < len(self.items):
                 return
             item = self.items[index]
-            for key in ("images", "mode", "title", "tags", "listing_id", "images_uploaded",
-                        "images_total", "sampled"):
+            for key in ("images", "flat", "mode", "title", "tags", "listing_id",
+                        "images_uploaded", "images_total", "sampled"):
                 if key in data and data[key] is not None:
                     item[key] = list(data[key]) if isinstance(data[key], list) else data[key]
             if step in STEPS:
@@ -619,7 +716,10 @@ class _Tracker:
                 label = self.items[current]["name"] if current is not None else item["name"]
                 self.job.progress(self.state["done"], self.state["total"], label=label)
             self.job.emit("item", item=_copy_item(item), state=self.counts())
-            self.publish_state(force=final and self.state["done"] >= self.state["total"])
+            # A product's outcome is always in the copied state at once: a page that
+            # reloads between two events must not show a finished product as still
+            # running (it would until the next copy, up to STATE_INTERVAL later).
+            self.publish_state(force=final)
 
     def abort(self) -> None:
         """The run broke off: nothing still waiting will happen now."""
@@ -669,6 +769,8 @@ class _Tracker:
 
 
 def _write_last_run(ws: Any, job: Job, tracker: _Tracker, summary: dict[str, Any]) -> None:
+    from ...drop import automation
+
     data = {
         "version": 1,
         "job_id": job.id,
@@ -682,7 +784,8 @@ def _write_last_run(ws: Any, job: Job, tracker: _Tracker, summary: dict[str, Any
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-        os.replace(tmp, path)
+        # Retried while a reader (GET /api/designs/last, a virus scan) has it open.
+        automation.replace_file(tmp, path)
     except OSError:
         log.warning("could not save %s", path)
 
@@ -776,10 +879,13 @@ def _start(ctx: AppContext, dry_run: bool) -> dict[str, Any]:
 
 
 def last_run(req: Request) -> dict[str, Any]:
+    from ...drop import automation
+
     ctx = _ctx(req)
     path = ctx.workspace().drafts / LAST_RUN_FILE
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        text = automation.read_text(path)
+        data = json.loads(text) if text is not None else None
     except (OSError, ValueError):
         return {"run": None}
     return {"run": data if isinstance(data, dict) else None}
@@ -817,8 +923,12 @@ def forget(req: Request) -> dict[str, Any]:
             key = next((k for k in section if k.casefold() == name.casefold()), None)
             if key is None:
                 raise ApiError(404, "not_found", "That product has no recorded attempt.")
-            if section[key].get("status") == "ok":
-                raise ApiError(409, "already_drafted", "That product already has a draft.")
+            entry = section[key]
+            # "ok" is a finished draft; a listing id means Etsy created one, however far
+            # it got. Forgetting either would make a second draft of the same design.
+            if entry.get("status") == "ok" or entry.get("listing_id"):
+                raise ApiError(409, "already_drafted", "That product already has a draft.",
+                               listing_id=entry.get("listing_id"))
             del section[key]
             state[shop] = section
             automation.save_history(path, state)
@@ -829,7 +939,12 @@ def forget(req: Request) -> dict[str, Any]:
 
 
 def unlock(req: Request) -> dict[str, Any]:
-    """Remove the upload lock a crashed run left behind (the seller confirms)."""
+    """Remove the upload lock a crashed run left behind (the seller confirms).
+
+    A lock whose process still runs on this computer (a `drop auto` in a terminal,
+    another stallkit) is refused with 409 lock_active unless {"force": true}: the
+    process id may since belong to another program, so the seller can still decide.
+    """
     from ...drop import automation
 
     ctx = _ctx(req)
@@ -838,7 +953,12 @@ def unlock(req: Request) -> dict[str, Any]:
         raise ApiError(400, "confirm_required", "Removing the lock needs {\"confirm\": true}.")
     if _active_job(ctx) is not None:
         raise ApiError(409, "busy", "A batch is running in this app right now.")
-    path = automation.lock_path(ctx.workspace().root)
+    root = ctx.workspace().root
+    info = automation.lock_info(root)
+    if info is not None and info["alive"] and body.get("force") is not True:
+        raise ApiError(409, "lock_active", "The process that holds the lock is still running.",
+                       pid=info["pid"])
+    path = automation.lock_path(root)
     try:
         path.unlink()
     except FileNotFoundError:

@@ -88,6 +88,7 @@ const STATE_TONE = {
   error: "warning",
 };
 const NOTIF_ICON = { success: "check-circle", warning: "alert", danger: "alert-circle", info: "info" };
+const PAGE_STUCK_AFTER = 12000; // a page's files still not loaded: say why it may be
 
 const state = {
   session: null,
@@ -102,6 +103,8 @@ const state = {
   showLost: false,
   stopped: false,
   guarding: null, // the Promise of a leave-guard question in progress
+  histIdx: 0, // the position of the shown page in this tab's history (history.state.idx)
+  unloading: false, // the app itself reloads the tab: the leave was already agreed
 };
 const statusListeners = new Set();
 const els = { nav: new Map() };
@@ -147,6 +150,11 @@ function matchRoute(path) {
 // change, a remount the page asked for, and quitting. ctx.setDirty(bool) is the page's
 // synchronous flag: it makes closing or reloading the tab ask the browser's own question
 // ("beforeunload"), and the Back button ask the guards.
+//
+// A "yes, leave" does not clear the flag: the leave can still fail or be called off
+// after it (the quit's own question, a shop switch refused while a task runs, a failed
+// language save), and the page must then stay protected. The flag goes with the page
+// when it is unmounted; a reload the app makes itself is let through by allowUnload().
 
 /** Ask the mounted page's guards; resolves true when it may be left. */
 export function canLeave() {
@@ -164,7 +172,6 @@ export function canLeave() {
       }
       if (ok === false) return false;
     }
-    if (state.current === cur) cur.dirty = false; // answered: no second browser prompt
     return true;
   })().finally(() => {
     state.guarding = null;
@@ -192,20 +199,90 @@ export async function navigate(path, { replace = false, force = false } = {}) {
   const samePage = url.pathname + url.search === location.pathname + location.search;
   if (!force && !samePage && !(await canLeave())) return false;
   if (state.stopped) return false;
-  history[replace ? "replaceState" : "pushState"]({}, "", target);
+  if (replace) replaceUrl(target);
+  else pushUrl(target);
   await route();
   return true;
 }
 
-/** Back / Forward: a dirty page is asked first; staying puts its address back. */
-async function onPopState() {
+// Every history entry the app makes carries its position ({idx}), so Back and Forward
+// can be told apart and undone exactly (history.go) when a page asks to stay.
+
+function idxOf(st) {
+  return st && typeof st === "object" && Number.isInteger(st.idx) ? st.idx : null;
+}
+
+function pushUrl(url) {
+  state.histIdx += 1;
+  history.pushState({ idx: state.histIdx }, "", url);
+}
+
+function replaceUrl(url) {
+  history.replaceState({ idx: state.histIdx }, "", url);
+}
+
+/** A tab reload the app makes itself, after the leave guards agreed. */
+function allowUnload() {
+  state.unloading = true;
+}
+
+let quietGo = null; // {timer, done}: a history.go() of the app's own, not a person's move
+
+/** history.go(delta) whose popstate is not treated as Back / Forward. */
+function goQuietly(delta) {
+  return new Promise((resolve) => {
+    const entry = {
+      done: () => {
+        clearTimeout(entry.timer);
+        if (quietGo === entry) quietGo = null;
+        resolve();
+      },
+    };
+    entry.timer = setTimeout(entry.done, 1000); // no popstate came (nothing to go to)
+    quietGo = entry;
+    history.go(delta);
+  });
+}
+
+function onPopState(e) {
+  const idx = idxOf(e && e.state);
+  if (quietGo) {
+    if (idx !== null) state.histIdx = idx;
+    quietGo.done();
+    return;
+  }
+  handlePop(idx);
+}
+
+/**
+ * Back / Forward. A page with unsaved edits is asked first: the browser has already
+ * moved, so the app moves back to the page's own entry (keeping every entry, Forward
+ * included), asks, and repeats the person's move if they agree.
+ */
+async function handlePop(idx) {
   if (state.stopped) return;
   const target = location.pathname + location.search + location.hash;
   const cur = state.current;
+  if (cur && cur.url && target !== cur.url && target.split("#")[0] === cur.url.split("#")[0]) {
+    // Only the #fragment changed (the skip link): the same page stays mounted.
+    cur.url = target;
+    if (idx !== null) state.histIdx = idx;
+    return;
+  }
   if (cur && cur.dirty && cur.url && target !== cur.url) {
-    history.pushState({}, "", cur.url); // the address of the page still on screen
-    if (!(await canLeave())) return;
-    history.replaceState({}, "", target);
+    const delta = idx !== null ? idx - state.histIdx : 0;
+    if (delta !== 0) {
+      await goQuietly(-delta);
+      if (!(await canLeave()) || state.stopped || state.current !== cur) return;
+      await goQuietly(delta);
+    } else {
+      // An entry without a position (made before this version): the old way.
+      pushUrl(cur.url);
+      if (!(await canLeave()) || state.stopped || state.current !== cur) return;
+      replaceUrl(target);
+    }
+  } else if (idx !== null) {
+    state.histIdx = idx;
   }
   route();
 }
@@ -236,17 +313,17 @@ async function route() {
     const st = state.status;
     const noKeys = !!st && st.state === "keys" && st.setup && st.setup.keys === false;
     const target = noKeys ? "/kurulum/magaza" : "/panel";
-    history.replaceState({}, "", target);
+    replaceUrl(target);
     return route();
   }
   if (path === OAUTH_DONE_PATH) {
     // Reached from inside the app (Back into an old consent tab's history): not a page.
-    history.replaceState({}, "", "/kurulum/magaza");
+    replaceUrl("/kurulum/magaza");
     return route();
   }
   const m = matchRoute(path);
   if (!m) {
-    history.replaceState({}, "", "/panel");
+    replaceUrl("/panel");
     return route();
   }
   const query = Object.fromEntries(new URLSearchParams(location.search));
@@ -336,6 +413,25 @@ async function mountPage(routeDef, params, query) {
   const slow = setTimeout(() => {
     if (seq === state.mountSeq) mount(host, h("div", { class: "page-loading" }, spinner({ size: 22, tone: "accent" })));
   }, 160);
+  // Still nothing after a long while: the browser is out of connections to stallkit
+  // (every one busy, e.g. in other tabs) or the app stopped. Say so, not only spin.
+  const stuck = setTimeout(() => {
+    if (seq !== state.mountSeq) return;
+    mount(
+      host,
+      h(
+        "div",
+        { class: "page-loading is-stuck" },
+        spinner({ size: 22, tone: "accent" }),
+        infoNote({
+          icon: "alert",
+          tone: "warning",
+          text: t("page.slow"),
+          action: button({ label: t("common.retry"), icon: "refresh", size: "sm", onClick: () => location.reload() }),
+        }),
+      ),
+    );
+  }, PAGE_STUCK_AFTER);
 
   let mod;
   try {
@@ -343,6 +439,7 @@ async function mountPage(routeDef, params, query) {
     mod = results[2];
   } catch (err) {
     clearTimeout(slow);
+    clearTimeout(stuck);
     if (seq !== state.mountSeq) return;
     console.error(`[app] could not load page "${page}"`, err);
     setHeader({ title: t(`nav.${routeDef.nav || page}`), subtitle: "" });
@@ -350,6 +447,7 @@ async function mountPage(routeDef, params, query) {
     return;
   }
   clearTimeout(slow);
+  clearTimeout(stuck);
   if (seq !== state.mountSeq) return;
 
   const pt = i18n.translator(page);
@@ -434,7 +532,9 @@ function makeCtx(cur) {
         else sp.set(k, String(v));
       }
       const qs = sp.toString();
-      history[replace ? "replaceState" : "pushState"]({}, "", location.pathname + (qs ? `?${qs}` : ""));
+      const next = location.pathname + (qs ? `?${qs}` : "");
+      if (replace) replaceUrl(next);
+      else pushUrl(next);
       cur.query = Object.fromEntries(sp);
       cur.url = location.pathname + location.search + location.hash;
     },
@@ -509,6 +609,11 @@ function setStatus(s) {
   state.status = s;
   renderShop();
   renderBanner();
+  // The shown shop name changed (e.g. "hide shop names" turned on in another tab):
+  // the bell's notifications name the shop too, so they are read again.
+  const prevName = prev && prev.shop ? prev.shop.name : null;
+  const name = s.shop ? s.shop.name : null;
+  if (prev && prevName && name && prevName !== name && root && els.bell) loadNotifications();
   for (const cb of [...statusListeners]) {
     try {
       cb(s, prev);
@@ -528,7 +633,8 @@ async function refreshStatus(force = false) {
 /** Save the UI language and reload the app in it (after the page's leave guards agree). */
 async function setLanguage(lang) {
   if (!(await canLeave())) return false;
-  await api.post("/api/prefs", { language: lang });
+  await api.post("/api/prefs", { language: lang }); // a failure leaves the page (and its guard) as it was
+  allowUnload();
   location.reload();
   return true;
 }
@@ -1059,9 +1165,15 @@ async function boot() {
   loadNotifications();
   listenToOtherTabs();
 
-  window.addEventListener("popstate", () => onPopState());
+  // This entry's position in the tab's history (kept across a reload).
+  const known = idxOf(history.state);
+  if (known !== null) state.histIdx = known;
+  else replaceUrl(location.pathname + location.search + location.hash);
+  const newer = newerVersionNote();
+
+  window.addEventListener("popstate", onPopState);
   window.addEventListener("beforeunload", (e) => {
-    if (state.stopped || !state.current || !state.current.dirty) return;
+    if (state.stopped || state.unloading || !state.current || !state.current.dirty) return;
     e.preventDefault();
     e.returnValue = ""; // the browser shows its own "leave site?" question
   });
@@ -1076,6 +1188,22 @@ async function boot() {
     });
   }
   await route();
+  if (newer) toast({ tone: "warning", title: t("update.waiting_title", { version: newer }), message: t("update.waiting"), timeout: 0 });
+}
+
+/**
+ * ?newer=<version>: a newer stallkit was started while this one runs a task, so it did
+ * not start (the launcher sends the browser here with this note). Read once, then
+ * dropped from the address.
+ */
+function newerVersionNote() {
+  const params = new URLSearchParams(location.search);
+  const raw = params.get("newer");
+  if (raw === null) return null;
+  params.delete("newer");
+  const qs = params.toString();
+  replaceUrl(location.pathname + (qs ? `?${qs}` : "") + location.hash);
+  return /^[0-9A-Za-z.+-]{1,32}$/.test(raw) ? raw : null;
 }
 
 boot().catch((err) => {
@@ -1084,4 +1212,4 @@ boot().catch((err) => {
 });
 
 // Exposed for debugging from the browser console only.
-export const _debug = { state, navigate, remount, refreshStatus, setHeader, canLeave };
+export const _debug = { state, navigate, remount, refreshStatus, setHeader, canLeave, events };

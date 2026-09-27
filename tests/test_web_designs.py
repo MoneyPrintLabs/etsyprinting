@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import subprocess
+import sys
 import threading
 import time
 
@@ -360,7 +363,7 @@ def test_a_dry_run_needs_no_connection_and_sends_nothing(web, fast_images):
 def test_a_stale_lock_is_a_blocker_the_seller_can_remove(web):
     _fake, ws = _setup_shop(web)
     _put(web, "ocean-waves.png", _png())
-    (ws.root / ".auto-upload.lock").write_text("4242")
+    (ws.root / ".auto-upload.lock").write_text(str(_ended_pid()))
     pending = web.client.get("/api/designs/pending").json()
     assert pending["blockers"] == ["locked"] and pending["locked_at"]
     resp = web.client.post("/api/designs/unlock", json={})
@@ -384,7 +387,7 @@ def test_an_uncertain_attempt_can_be_retried_after_the_seller_confirms(web):
     pending = web.client.get("/api/designs/pending").json()
     assert pending["items"] == [] and pending["already_done"] == 1
     assert pending["review"] == [{"name": "retro-mountain-sunset.png", "status": "pending",
-                                  "listing_id": None, "message": ""}]
+                                  "listing_id": None, "problem": "uncertain", "message": ""}]
 
     unconfirmed = web.client.post("/api/designs/review/forget",
                                   json={"name": "retro-mountain-sunset.png"})
@@ -525,3 +528,236 @@ def test_a_huge_design_already_in_the_folder_gets_422_thumbnails(web):
                                                       "w": 400})
     assert resp.status_code == 422
     assert resp.json()["error"]["code"] == "too_many_pixels"
+
+
+# --- dropping a folder again (folder-redrop-duplicate) -----------------------------------------
+
+
+def test_dropping_the_same_folder_again_is_the_same_product(web):
+    ws = web.ctx.workspace()
+    for name, colour in (("01-front.jpg", (1, 1, 1)), ("02-back.jpg", (2, 2, 2))):
+        _put(web, f"cozy ceramic mug/{name}", _jpg(colour), batch="b1")
+    again = [_put(web, f"cozy ceramic mug/{name}", _jpg(colour), batch="b2").json()
+             for name, colour in (("01-front.jpg", (1, 1, 1)), ("02-back.jpg", (2, 2, 2)))]
+    assert [(a["name"], a["duplicate"], a["known"]) for a in again] == [
+        ("cozy ceramic mug", True, False), ("cozy ceramic mug", True, False)]
+    assert sorted(p.name for p in ws.products.iterdir()) == ["cozy ceramic mug"]
+    pending = web.client.get("/api/designs/pending").json()
+    assert [i["name"] for i in pending["items"]] == ["cozy ceramic mug"]
+    assert pending["items"][0]["files"] == 2
+
+
+def test_an_interrupted_folder_upload_is_finished_by_dropping_it_again(web):
+    ws = web.ctx.workspace()
+    _put(web, "cozy ceramic mug/01-front.jpg", _jpg((1, 1, 1)), batch="b1")  # then cut off
+    first = _put(web, "cozy ceramic mug/01-front.jpg", _jpg((1, 1, 1)), batch="b2").json()
+    rest = _put(web, "cozy ceramic mug/02-back.jpg", _jpg((2, 2, 2)), batch="b2").json()
+    assert first["duplicate"] is True and rest["duplicate"] is False
+    assert rest["name"] == "cozy ceramic mug" and rest["path"].endswith("cozy ceramic mug/02-back.jpg")
+    assert sorted(p.name for p in (ws.products / "cozy ceramic mug").iterdir()) == [
+        "01-front.jpg", "02-back.jpg"]
+
+
+def test_a_folder_that_became_a_draft_takes_no_new_photos(web):
+    _setup_shop(web)
+    ws = web.ctx.workspace()
+    _put(web, "cozy ceramic mug/01-front.jpg", _jpg((1, 1, 1)), batch="b1")
+    (ws.root / "upload-history.json").write_text(json.dumps({SHOP: {
+        "cozy ceramic mug": {"status": "ok", "listing_id": 2000001}}}), encoding="utf-8")
+    same = _put(web, "cozy ceramic mug/01-front.jpg", _jpg((1, 1, 1)), batch="b2").json()
+    new = _put(web, "cozy ceramic mug/02-back.jpg", _jpg((2, 2, 2)), batch="b2").json()
+    assert (same["duplicate"], same["known"]) == (True, True)
+    assert (new["duplicate"], new["known"], new["name"]) == (False, True, "cozy ceramic mug")
+    assert sorted(p.name for p in ws.products.iterdir()) == ["cozy ceramic mug"]
+    assert [p.name for p in (ws.products / "cozy ceramic mug").iterdir()] == ["01-front.jpg"]
+
+
+# --- the review list and forgetting (forget-allows-known-draft, review-raw-english) -------------
+
+
+def _history_with_every_kind(ws):
+    (ws.root / "upload-history.json").write_text(json.dumps({SHOP: {
+        "a-uncertain.png": {"status": "pending", "listing_id": None},
+        "b-lost.png": {"status": "error", "listing_id": None,
+                       "message": "network error: read timeout — the request may still have "
+                                  "been accepted by Etsy."},
+        "c-partial.png": {"status": "partial", "listing_id": 2000003,
+                          "message": "created as draft (id 2000003), but image 3 of 7 failed"},
+        "d-drafted.png": {"status": "pending", "listing_id": 2000004},
+    }}), encoding="utf-8")
+
+
+def test_review_rows_say_what_happened_as_a_code(web):
+    _setup_shop(web)
+    ws = web.ctx.workspace()
+    for name in ("a-uncertain.png", "b-lost.png", "c-partial.png", "d-drafted.png"):
+        _put(web, name, _png())
+    _history_with_every_kind(ws)
+    review = web.client.get("/api/designs/pending").json()["review"]
+    assert {r["name"]: r["problem"] for r in review} == {
+        "a-uncertain.png": "uncertain", "b-lost.png": "uncertain",
+        "c-partial.png": "partial", "d-drafted.png": "drafted"}
+    assert next(r for r in review if r["name"] == "b-lost.png")["message"].startswith("network")
+
+
+@pytest.mark.parametrize("name", ["c-partial.png", "d-drafted.png"])
+def test_a_design_whose_draft_exists_is_never_forgotten(web, name):
+    # A crash between the create and the last image leaves "pending" with an id: the
+    # draft exists, and trying again would make a second one.
+    _setup_shop(web)
+    ws = web.ctx.workspace()
+    _put(web, name, _png())
+    _history_with_every_kind(ws)
+    resp = web.client.post("/api/designs/review/forget", json={"name": name, "confirm": True})
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "already_drafted"
+    assert resp.json()["error"]["params"]["listing_id"] in (2000003, 2000004)
+    history = json.loads((ws.root / "upload-history.json").read_text(encoding="utf-8"))
+    assert name in history[SHOP]
+
+
+# --- the lock (lock-removed-midrun) ------------------------------------------------------------
+
+
+def _ended_pid() -> int:
+    ended = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"],
+                           capture_output=True, text=True, check=True)
+    return int(ended.stdout)
+
+
+def test_unlock_is_refused_while_a_run_is_active(web):
+    _setup_shop(web)
+    release = threading.Event()
+    blocker = web.ctx.jobs.start("designs", "designs:job.title", lambda job: release.wait(5))
+    try:
+        resp = web.client.post("/api/designs/unlock", json={"confirm": True})
+        assert resp.status_code == 409 and resp.json()["error"]["code"] == "busy"
+    finally:
+        release.set()
+        blocker.wait(5)
+
+
+def test_a_lock_whose_process_still_runs_needs_the_seller_to_insist(web):
+    _setup_shop(web)
+    ws = web.ctx.workspace()
+    _put(web, "ocean-waves.png", _png())
+    (ws.root / ".auto-upload.lock").write_text(f"{os.getpid()}\n", encoding="utf-8")
+    pending = web.client.get("/api/designs/pending").json()
+    assert pending["blockers"] == ["locked"]
+    assert pending["lock"] == {"pid": os.getpid(), "alive": True, "stale": False}
+    refused = web.client.post("/api/designs/unlock", json={"confirm": True})
+    assert refused.status_code == 409
+    assert refused.json()["error"]["code"] == "lock_active"
+    assert refused.json()["error"]["params"]["pid"] == os.getpid()
+    assert (ws.root / ".auto-upload.lock").exists()
+    forced = web.client.post("/api/designs/unlock", json={"confirm": True, "force": True})
+    assert forced.status_code == 200 and not (ws.root / ".auto-upload.lock").exists()
+
+
+def test_a_crashed_runs_lock_is_reported_stale(web):
+    _setup_shop(web)
+    ws = web.ctx.workspace()
+    (ws.root / ".auto-upload.lock").write_text(str(_ended_pid()), encoding="utf-8")
+    pending = web.client.get("/api/designs/pending").json()
+    assert pending["lock"]["stale"] is True and pending["lock"]["alive"] is False
+    assert web.client.post("/api/designs/unlock", json={"confirm": True}).status_code == 200
+
+
+def test_a_run_whose_lock_is_removed_midway_finishes_and_is_saved(web, fast_images):
+    fake, ws = _setup_shop(web)
+    _put(web, "retro-mountain-sunset.png", _png())
+    ids = iter(range(2000001, 2000100))
+
+    def create_and_unlock(request):
+        lock = ws.root / ".auto-upload.lock"
+        if lock.exists():
+            lock.unlink()
+        return {"listing_id": next(ids)}
+
+    fake.add("POST", f"/shops/{ETSY_SHOP_ID}/listings", create_and_unlock)
+    job = web.client.post("/api/designs/start", json={}).json()
+    final = wait_for_job(web, job["id"], timeout=20)
+    assert final["status"] == "done", final
+    assert final["result"]["created"] == 1
+    last = web.client.get("/api/designs/last").json()["run"]
+    assert last["job_id"] == job["id"] and last["summary"]["created"] == 1
+
+
+# --- uploads a draft could never use (oversize-or-truncated-accepted) ----------------------------
+
+
+@pytest.mark.parametrize("name, fmt", [("cozy-cabin-photo.jpg", "JPEG"),
+                                       ("cozy-cabin-art.png", "PNG")])
+def test_a_file_cut_short_is_refused_at_upload(web, name, fmt):
+    buffer = io.BytesIO()
+    Image.effect_noise((300, 300), 60).convert("RGB").save(buffer, fmt)
+    whole = buffer.getvalue()
+    resp = _put(web, name, whole[: len(whole) // 2])
+    assert resp.status_code == 422 and resp.json()["error"]["code"] == "not_image"
+    assert not any(web.ctx.workspace().products.iterdir())
+    assert _put(web, name, whole).status_code == 200
+
+
+# --- the request estimate (estimate-undercount) --------------------------------------------------
+
+
+def test_the_estimate_counts_only_what_will_run_with_its_real_images(web):
+    _setup_shop(web)  # 2 mockups: a design is 3 images
+    ws = web.ctx.workspace()
+    _put(web, "retro-mountain-sunset.png", _png())
+    _put(web, "ocean-waves-photo.jpg", _jpg())
+    _put(web, "IMG_2043.png", _png((10, 200, 30)))  # junk: never runs
+    for name in ("01.jpg", "02.jpg", "03.jpg", "04.jpg"):
+        _put(web, f"desert cactus print/{name}", _jpg((int(name[1]), 0, 0)), batch="b1")
+    data = web.client.get("/api/designs/pending").json()
+    # 3 products and 3 concepts: 6 research pages, 3 creates, 3 + 1 + 4 images, and
+    # (variations unknown for this template) 3 inventory updates + the template's read.
+    assert data["estimate_requests"] == 6 + 3 + 8 + 3 + 1
+    template = json.loads(ws.template_path.read_text(encoding="utf-8"))
+    template["has_variations"] = False
+    ws.write_template(template)
+    data = web.client.get("/api/designs/pending").json()
+    assert data["template"]["has_variations"] is False
+    assert data["estimate_requests"] == 6 + 3 + 8 + 1
+
+
+# --- the job state a page reloads from (restore-stale-rows) --------------------------------------
+
+
+class _FakeJob:
+    def __init__(self):
+        self.states: list[dict] = []
+        self.cancelled = False
+
+    def set_state(self, **state):
+        self.states.append(state)
+
+    def progress(self, *args, **kwargs):
+        pass
+
+    def emit(self, *args, **kwargs):
+        pass
+
+
+def test_a_products_outcome_reaches_the_job_state_at_once():
+    job = _FakeJob()
+    tracker = designs._Tracker(job, dry_run=False, template=None, mockups={})
+    tracker.on_event("", "batch", "running", {"index": -1, "items": [
+        {"index": 0, "name": "a.png"}, {"index": 1, "name": "b.png"}]})
+    tracker.on_event("a.png", "draft", "running", {"index": 0, "images_uploaded": 3,
+                                                    "images_total": 7})
+    tracker.on_event("a.png", "item", "ok", {"index": 0, "listing_id": 2000001,
+                                             "flat": "3-DRAFTS/b/a--flat.jpg"})
+    last = job.states[-1]["items"][0]
+    assert last["status"] == "ok" and last["listing_id"] == 2000001
+    assert last["flat"] == "3-DRAFTS/b/a--flat.jpg"
+
+
+def test_the_run_state_marks_the_flat_design(web, fast_images):
+    _fake, _ws = _setup_shop(web)
+    _put(web, "retro-mountain-sunset.png", _png())
+    job = web.client.post("/api/designs/start", json={}).json()
+    final = wait_for_job(web, job["id"], timeout=20)
+    item = final["state"]["items"][0]
+    assert item["flat"].endswith("--flat.jpg") and item["flat"] == item["images"][-1]
+    assert len(item["images"]) == 3  # two mockups and the flat design

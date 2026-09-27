@@ -552,12 +552,25 @@ def test_needs_keys_then_a_connection(web):
     assert web.client.get("/api/profit").json()["error"]["params"] == {"step": "connect"}
 
 
-def test_bad_months_are_refused(web):
-    fake_shop(web, [])
-    future = profit.shift_month(profit.current_month(), 1)
-    ancient = profit.shift_month(profit.current_month(), -30)
-    for bad in ("2026-13", "september", future, ancient):
-        resp = web.client.get("/api/profit", params={"month": bad})
+def test_a_month_that_cannot_be_shown_opens_this_month_instead(web):
+    # An old bookmark (?month=2019-01) is not a dead end: the latest month is served and
+    # the page is told which month it could not show (it says so, translated).
+    receipts, ledger = month_data()
+    fake_shop(web, receipts, ledger)
+    now = profit.current_month()
+    future = profit.shift_month(now, 1)
+    ancient = profit.shift_month(now, -30)
+    for bad in ("2026-13", "september", future, ancient, "2099-13"):
+        data = load_ready(web, bad)
+        assert data["month"] == now and data["month_refused"] == bad, bad
+        assert data["summary"]["month"] == now and data["summary"]["orders"] == 2
+    assert load_ready(web)["month_refused"] is None
+    assert load_ready(web, now)["month_refused"] is None
+    long_value = "x" * 500
+    assert load_ready(web, long_value)["month_refused"] == "x" * profit.MAX_REFUSED_MONTH
+    # The costs endpoint is only called with a month the page already holds: still strict.
+    for bad in ("2026-13", future, ancient):
+        resp = web.client.get("/api/profit/costs", params={"month": bad})
         assert resp.status_code == 422, bad
         assert resp.json()["error"]["code"] == "invalid"
 
@@ -787,8 +800,10 @@ def test_a_month_with_more_orders_than_can_be_read_says_so(monkeypatch):
     assert client.asked["receipts"] == 3  # one more than the cap, to know it was cut
     assert raw["orders"] == 2 and raw["orders_truncated"] is True
     assert profit.compute_month(raw, {})["partial"] is True
+    assert profit.compute_month(raw, {})["partial_limit"] == 2  # the page's note says how many
     whole = fetch(CountingClient(sales[:2], [entry("transaction", -130)]))
     assert whole["orders_truncated"] is False and profit.compute_month(whole, {})["partial"] is False
+    assert profit.compute_month(whole, {})["partial_limit"] is None
 
 
 def test_a_ledger_of_exactly_the_cap_is_still_trusted(monkeypatch):

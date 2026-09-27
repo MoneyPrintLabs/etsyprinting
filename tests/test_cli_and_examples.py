@@ -1,18 +1,23 @@
 """Regression guards for two defects that shipped in 0.1.0.
 
 Both were found only by running the tool on a real Windows machine, not by the unit
-suite, so they get explicit tests here.
+suite, so they get explicit tests here. The commands at the end (`listings pull`,
+`seo suggest`) run against an httpx.MockTransport; nothing reaches the network.
 """
 
+import time
+import urllib.parse
 from fnmatch import fnmatch
 from pathlib import Path
 
+import httpx
 import pytest
 from typer.testing import CliRunner
 
-from stallkit import cli
+from stallkit import auth, cli
 from stallkit.cli import app
-from stallkit.config import split_credential, write_env_file
+from stallkit.client import EtsyClient
+from stallkit.config import Config, split_credential, write_env_file
 from stallkit.csvio import read_rows
 from stallkit.listings import LISTING_COLUMNS, build_payload
 from stallkit.orders import ORDER_COLUMNS
@@ -203,3 +208,75 @@ def test_init_rejects_an_ip_callback(tmp_path):
     )
     assert result.exit_code != 0
     assert not env.exists()
+
+
+# --- commands that read listings ---------------------------------------------------
+
+SHOP = 12345678
+PREFIX = "/v3/application"
+
+
+def _fake_etsy(monkeypatch, responses):
+    """Point the CLI's client at a MockTransport answering by path; returns the requests."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        body = responses.get(request.url.path[len(PREFIX):])
+        if body is None:
+            return httpx.Response(404, json={"error": "not found"})
+        return httpx.Response(200, json=body)
+
+    def make(**_kw):
+        config = Config(keystring="KEY123", shared_secret="SECRET456", shop_id=SHOP,
+                        rate_per_sec=10)
+        token = auth.Token("1.access", "1.refresh", time.time() + 3600, ("listings_r",))
+        return EtsyClient(config, token=token, transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr(cli, "_client", make)
+    return seen
+
+
+def test_listings_pull_has_no_views_column(monkeypatch):
+    # Etsy's ShopListing has no view count, so a "views" column was always empty.
+    _fake_etsy(monkeypatch, {f"/shops/{SHOP}/listings": {"count": 1, "results": [
+        {"listing_id": 1000001, "title": "Example Mug", "state": "active",
+         "url": "https://www.etsy.com/listing/1000001/example-mug", "num_favorers": 4},
+    ]}})
+    result = runner.invoke(app, ["listings", "pull", "--out", "export.csv"])
+    assert result.exit_code == 0, result.output
+    header = Path("export.csv").read_text(encoding="utf-8-sig").splitlines()[0].split(",")
+    assert "views" not in header
+    assert header[-2:] == ["url", "num_favorers"]
+    row = read_rows(Path("export.csv"))[0]
+    assert row["num_favorers"] == "4" and row["listing_id"] == "1000001"
+
+
+def test_seo_suggest_audits_the_listing_as_plain_text(monkeypatch):
+    # Etsy sends the seller's text HTML-escaped. Read raw, the tag below is 21 characters
+    # (over Etsy's 20) and the title shows "&#39;"; decoded, neither is a problem, and
+    # the listing's own tag is not suggested back to it.
+    seen = _fake_etsy(monkeypatch, {
+        "/listings/1000001": {
+            "listing_id": 1000001, "title": "Mom&#39;s Coffee Mug &amp; Gift",
+            "tags": ["mother&#39;s day gift"], "description": "", "state": "active",
+        },
+        "/listings/active": {"count": 2, "results": [
+            {"listing_id": 1000101, "title": "Mother&#39;s Day Mug",
+             "tags": ["mother&#39;s day gift", "mom mug"]},
+            {"listing_id": 1000102, "title": "Coffee Mug for Mom",
+             "tags": ["mother&#39;s day gift", "mom mug"]},
+        ]},
+    })
+    result = runner.invoke(app, ["seo", "suggest", "1000001"])
+    assert result.exit_code == 0, result.output
+    assert "Mom's Coffee Mug & Gift" in result.output
+    assert "&#39;" not in result.output and "&amp;" not in result.output
+    assert "tags.too_long" not in result.output
+    assert "mom mug" in result.output  # a real suggestion
+    assert "mother's day gift" not in result.output.split("free tag slot")[-1]
+    listing_request = next(r for r in seen if r.url.path == f"{PREFIX}/listings/1000001")
+    assert listing_request.headers["Authorization"] == "Bearer 1.access"  # drafts too
+    search = next(r for r in seen if r.url.path == f"{PREFIX}/listings/active")
+    keywords = dict(urllib.parse.parse_qsl(search.url.query.decode()))["keywords"]
+    assert keywords == "Mom's Coffee Mug &"

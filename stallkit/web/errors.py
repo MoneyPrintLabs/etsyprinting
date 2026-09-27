@@ -12,6 +12,9 @@ file and sent as `internal`.
 from __future__ import annotations
 
 import logging
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from ..errors import AuthError, AuthUnreachable, ConfigError, EtsyApiError, ValidationError
@@ -19,9 +22,46 @@ from .router import ApiError
 
 log = logging.getLogger("stallkit.web")
 
+# Codes that say something about the shop's connection as a whole. When a request
+# ends with one of them (or a handler catches one and shows it in its answer), the
+# status the pages show may be out of date: the app context re-checks it soon.
+STATUS_CODES = frozenset({"reconnect", "offline", "bad_keys", "setup_needed"})
+
+_scope = threading.local()
+
+
+@contextmanager
+def serving(ctx: Any) -> Iterator[None]:
+    """Errors mapped on this thread meanwhile are told to `ctx` (the server wraps
+    every API request in it)."""
+    previous = getattr(_scope, "ctx", None)
+    _scope.ctx = ctx
+    try:
+        yield
+    finally:
+        _scope.ctx = previous
+
+
+def _tell(error: ApiError) -> None:
+    if error.code not in STATUS_CODES:
+        return
+    ctx = getattr(_scope, "ctx", None)
+    if ctx is None:
+        return
+    try:
+        ctx.status_suspect(error.code)
+    except Exception:  # noqa: BLE001 — mapping an error must never fail
+        log.exception("could not schedule a status check")
+
 
 def to_api_error(exc: BaseException) -> ApiError:
     """The ApiError an exception is sent as. Logs anything unexpected."""
+    error = _map(exc)
+    _tell(error)
+    return error
+
+
+def _map(exc: BaseException) -> ApiError:
     if isinstance(exc, ApiError):
         return exc
     from .jobs import JobCancelled

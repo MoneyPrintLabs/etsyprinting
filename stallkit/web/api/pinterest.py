@@ -19,6 +19,7 @@ local queue file, posting is the only thing that reaches Pinterest in bulk.
 
 from __future__ import annotations
 
+import logging
 import re
 import secrets
 import sys
@@ -33,7 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 from ... import pinterest
 from ...desktop import settings
-from ...errors import AuthError, ConfigError, ValidationError
+from ...errors import AuthError, ConfigError, EtsyApiError, ValidationError
 from ..jobs import JobCancelled
 from ..router import ApiError, Request
 
@@ -41,6 +42,8 @@ if TYPE_CHECKING:  # pragma: no cover
     from ..context import AppContext
     from ..jobs import Job
     from ..router import Router
+
+log = logging.getLogger("stallkit.web")
 
 PINTEREST_APPS_URL = "https://developers.pinterest.com/apps/"
 DONE_PATH = "/oauth-done"
@@ -65,7 +68,8 @@ class PinState:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.boards: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}
-        self.listings: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+        # shop -> (fetched at, the newest LISTINGS_MAX active listings, the shop's active count)
+        self.listings: dict[str, tuple[float, list[dict[str, Any]], int]] = {}
         self.connecting = False
 
 
@@ -519,7 +523,11 @@ def _queue_or_empty() -> pinterest.Queue:
 
 
 def listings(req: Request, state: PinState) -> dict[str, Any]:
-    """Active listings with a thumbnail, and how many of their Pins are queued."""
+    """Active listings with a thumbnail, and how many of their Pins are queued.
+
+    At most the newest LISTINGS_MAX are listed (`shown`); `total` is the shop's real
+    active count, so a large shop is not reported as having exactly LISTINGS_MAX.
+    """
     ctx = _ctx(req)
     shop = ctx.shop_id
     with state.lock:
@@ -538,10 +546,16 @@ def listings(req: Request, state: PinState) -> dict[str, Any]:
                 for listing in client.listings_by_shop("active", includes=["Images"],
                                                        max_items=LISTINGS_MAX)
             ]
+            active = len(rows)
+            if active >= LISTINGS_MAX:  # cut: one limit=1 request for the real count
+                try:
+                    active = max(active, client.count_listings("active"))
+                except EtsyApiError as exc:
+                    log.warning("pinterest: active listing count unavailable (%s)", exc)
         with state.lock:
-            state.listings[shop] = (time.time(), rows)
+            state.listings[shop] = (time.time(), rows, active)
     else:
-        rows = hit[1]
+        rows, active = hit[1], hit[2]
     queued: dict[Any, dict[str, int]] = {}
     for entry in _queue_or_empty().entries:
         mark = queued.setdefault(entry.get("listing_id"), {"queued": 0, "posted": 0})
@@ -550,7 +564,8 @@ def listings(req: Request, state: PinState) -> dict[str, Any]:
         elif entry.get("status") == "pending":
             mark["queued"] += 1
     items = [dict(row, **queued.get(row["listing_id"], {"queued": 0, "posted": 0})) for row in rows]
-    return {"items": items, "total": len(items), "truncated": len(items) >= LISTINGS_MAX}
+    return {"items": items, "total": active, "shown": len(items),
+            "truncated": active > len(items)}
 
 
 # --- the queue ------------------------------------------------------------------------------

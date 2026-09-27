@@ -114,6 +114,11 @@
   color: var(--muted);
   line-height: 1.35;
 }
+.page-orders .o-date {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .page-orders .o-gift {
   margin-left: 6px;
   padding: 1px 6px;
@@ -302,10 +307,25 @@
   opacity: 0.65;
 }
 
+/* The pill never runs past its cell: at worst its words end in "…" (the column is
+   sized for the longest one, "Awaiting shipment"). */
+.page-orders .o-status {
+  display: inline-flex;
+  max-width: 100%;
+  vertical-align: middle;
+}
 .page-orders .o-status .badge {
   height: 24px;
+  max-width: 100%;
   padding: 0 9px;
   font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.page-orders .o-status .badge > span:not(.dot):not(.spinner) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .page-orders .o-status .badge .spinner {
   border-color: rgba(155, 140, 255, 0.3);
@@ -429,7 +449,7 @@
   }
   /* Narrower fixed columns so the product keeps some room (inline widths need !important). */
   .page-orders .o-table .tbl colgroup col:nth-child(2) {
-    width: 122px !important;
+    width: 132px !important;
   }
   .page-orders .o-table .tbl colgroup col:nth-child(3) {
     width: 118px !important;
@@ -438,13 +458,20 @@
     width: 84px !important;
   }
   .page-orders .o-table .tbl colgroup col:nth-child(6) {
-    width: 116px !important;
+    width: 108px !important;
   }
   .page-orders .o-table .tbl colgroup col:nth-child(7) {
     width: 166px !important;
   }
   .page-orders .o-table .tbl colgroup col:nth-child(8) {
-    width: 132px !important;
+    width: 154px !important;
+  }
+  /* The carrier select keeps its chevron; the truck icon goes so "Seçin" / "Choose" fit. */
+  .page-orders .o-carrier.is-edit > .icon {
+    display: none;
+  }
+  .page-orders .o-carrier.is-edit {
+    padding-left: 9px;
   }
   .page-orders .o-table .tbl td:last-child,
   .page-orders .o-table .tbl th:last-child {

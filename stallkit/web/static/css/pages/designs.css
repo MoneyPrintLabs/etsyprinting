@@ -621,12 +621,24 @@ button.dz-chip:hover {
 .dz-review-meta a {
   color: var(--accent-2);
 }
-.dz-review-msg {
-  font-size: 12px;
+.dz-review-id {
   color: var(--muted);
+}
+.dz-review-why {
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+/* The library's own words (English): a muted detail, the whole text on hover. */
+.dz-review-msg {
+  font-size: 11.5px;
+  color: var(--muted);
+  opacity: 0.85;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+.dz-review-row > .btn {
+  flex: none;
 }
 
 /* ------------------------------------------------------------------ run: the header card */
@@ -795,10 +807,35 @@ button.dz-chip:hover {
   display: grid;
   grid-template-columns: minmax(0, 1.46fr) minmax(360px, 1fr);
   gap: 16px;
-  align-items: start;
+  /* Both cards end on one line, as in the video (t220, t240): each fills its cell, and
+     the pipeline's footer and the side card's "Şablondan" footer sit at the bottom. */
+  align-items: stretch;
 }
 .page-designs .dr-grid[hidden] {
   display: none;
+}
+.page-designs .dr-grid.is-expanded {
+  align-items: start;
+}
+.page-designs .dr-pipe-host,
+.page-designs .dr-side-host {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.page-designs .dr-pipe-host > .card,
+.page-designs .dr-side-host > .card {
+  flex: 1 1 auto;
+}
+.page-designs .dr-pipe {
+  display: flex;
+  flex-direction: column;
+}
+.page-designs .dr-pipe > .dr-tfoot {
+  margin-top: auto;
+}
+.page-designs .dr-side > .dr-side-foot {
+  margin-top: auto;
 }
 .page-designs .dr-pipe-head {
   display: flex;

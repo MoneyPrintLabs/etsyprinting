@@ -686,6 +686,37 @@
 .page-connect .cx-cb.is-compact {
   padding: 12px 14px;
 }
+/* In the question before the first Bağlan: fewer lines (see callbackGuide). */
+.page-connect .cx-cb.is-dense {
+  gap: 8px;
+  padding: 10px 12px;
+}
+.page-connect .cx-cb.is-dense .cx-cb-foot {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 4px;
+}
+/* The chips and the note flow as one line where they fit. */
+.page-connect .cx-cb.is-dense .cx-cb-rules {
+  display: contents;
+}
+.page-connect .cx-cb.is-dense .cx-cb-note {
+  margin-left: 6px;
+  line-height: 21px;
+}
+.page-connect .cx-cb.is-dense .cx-cb-note .icon {
+  margin-top: 4px;
+}
+.page-connect .cx-cb.is-dense .cx-cb-rule {
+  height: 21px;
+  gap: 4px;
+  padding: 0 7px 0 5px;
+  font-size: 11.5px;
+}
+.page-connect .cx-cb.is-dense .cx-cb-path li + li::before {
+  margin: 0 6px;
+}
 .page-connect .cx-cb-head {
   display: flex;
   flex-direction: column;
@@ -771,6 +802,11 @@
   font-size: 14px;
   font-weight: 700;
   line-height: 1;
+}
+.page-connect .cx-cb-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 .page-connect .cx-cb-rules {
   display: flex;
@@ -924,6 +960,24 @@
 .page-connect .cx-gate-skip {
   font-size: 12px;
 }
+/* A shop's first connect or a reconnect: Bağlan before the permissions (connectView),
+   a little tighter so the question and the button fit a 1280x720 window. */
+.page-connect .cx-main.action-first {
+  gap: 15px;
+  padding-top: 28px;
+}
+.page-connect .cx-main.action-first .cx-gate {
+  gap: 10px;
+  padding: 13px 16px 14px;
+}
+.page-connect .cx-main.action-first .cx-connect-row {
+  margin-top: 0;
+  padding-top: 0;
+}
+.page-connect .cx-main.action-first .cx-connect-row + .section-title,
+.page-connect .cx-main.action-first .cx-connect-row + .cx-cb-meta + .section-title {
+  margin-top: 14px;
+}
 .page-connect .cx-connect-row .cx-hint {
   flex: 1 1 220px;
   min-width: 0;
@@ -1065,5 +1119,24 @@
   }
   .page-connect .cx-tr-list {
     padding: 0 8px 8px;
+  }
+}
+
+/* A short window (1280x720): the card a little tighter, so Bağlan stays on screen. */
+@media (max-height: 760px) {
+  .page-connect .cx-main {
+    gap: 15px;
+    padding-top: 28px;
+  }
+  .page-connect .cx-perm {
+    min-height: 46px;
+  }
+  .page-connect .note.tone-info {
+    min-height: 48px;
+    padding-top: 9px;
+    padding-bottom: 9px;
+  }
+  .page-connect .cx-connect-row {
+    padding-top: 14px;
   }
 }

@@ -27,6 +27,7 @@ import urllib.parse
 from pathlib import Path
 from typing import Any
 
+from . import errors as errors_mod
 from . import events as events_mod
 from .context import SWITCH_WAIT, AppContext
 from .errors import to_api_error
@@ -359,6 +360,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _api(self, method: str, raw_path: str, raw_query: str, body: bytes) -> None:
         ctx = self.server.ctx
+        # An answer saying "reconnect" / "offline" / "bad_keys" (sent, or shown inside
+        # a page's answer) makes the context re-check the shop's status soon.
+        with errors_mod.serving(ctx):
+            response = self._api_response(ctx, method, raw_path, raw_query, body)
+        self._send(response, api=True)
+
+    def _api_response(
+        self, ctx: AppContext, method: str, raw_path: str, raw_query: str, body: bytes
+    ) -> Response:
         query = dict(urllib.parse.parse_qsl(raw_query, keep_blank_values=True))
         try:
             route, params = self.server.router.match(method, raw_path)
@@ -389,7 +399,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
             response = Response.error(to_api_error(exc))
-        self._send(response, api=True)
+        return response
 
     def _events(self) -> None:
         """GET /api/events: hello, the current status, then whatever is published."""

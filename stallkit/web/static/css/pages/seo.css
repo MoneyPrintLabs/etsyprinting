@@ -221,7 +221,9 @@
   color: var(--success);
 }
 
-/* One line of chips, as in the video: long ones shorten (full text in the tooltip). */
+/* One line of whole chips, as in the video: the page moves the ones that do not fit
+   into the "+N" pill (seo.js fitChips). Only a lone first chip that is wider than the
+   row ends in "…" (full text in the tooltip). */
 .seo-chips {
   display: flex;
   flex-wrap: nowrap;
@@ -242,7 +244,7 @@
 .seo-chip {
   display: inline-flex;
   align-items: center;
-  flex: 0 1 auto;
+  flex: none;
   min-width: 0;
   gap: 6px;
   height: 26px;
@@ -263,8 +265,8 @@
 .seo-chip > .icon {
   flex: none;
 }
-.seo-chip:first-child {
-  flex-shrink: 0; /* the main problem stays readable; the others shorten first */
+.seo-chips.is-tight .seo-chip:first-child {
+  flex-shrink: 1;
 }
 .seo-chip.tone-muted {
   background: rgba(255, 255, 255, 0.045);

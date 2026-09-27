@@ -7,6 +7,7 @@ import os
 import socket
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -166,7 +167,7 @@ def test_a_stale_web_json_is_ignored(running):
     assert launcher.find_running() is None
 
 
-def test_a_second_launch_opens_the_first_server_instead(running, monkeypatch):
+def test_a_second_launch_opens_the_first_server_instead(running, monkeypatch, capsys):
     launcher.write_state(running.port, "first-launch-token")
     opened = []
     monkeypatch.setattr(launcher.webbrowser, "open", opened.append)
@@ -175,6 +176,143 @@ def test_a_second_launch_opens_the_first_server_instead(running, monkeypatch):
     assert launcher.launch(open_browser=True) == 0
     assert opened == [f"http://localhost:{running.port}/?k=first-launch-token"]
     assert started == []
+    # The printed address works on its own (with --no-browser, or when no browser opens).
+    assert f"http://localhost:{running.port}/?k=first-launch-token" in capsys.readouterr().out
+
+
+def test_the_printed_address_carries_the_session_key(capsys):
+    import httpx
+
+    def ready(server):
+        with httpx.Client(base_url=f"http://127.0.0.1:{server.port}", trust_env=False,
+                          verify=False) as http:
+            http.get(f"/?k={server.ctx.token}")
+            http.post("/api/quit", json={}, headers={"X-Stallkit": "1"})
+
+    seen = {}
+
+    def remember(server):
+        seen["url"] = launcher.browser_url(server.port, server.ctx.token)
+        ready(server)
+
+    assert launcher.launch(open_browser=False, ports=[0], ready=remember) == 0
+    out = capsys.readouterr().out
+    assert f"stallkit is running at {seen['url']}" in out and "?k=" in seen["url"]
+
+
+def test_no_browser_opening_points_at_the_printed_address(running, monkeypatch, capsys):
+    launcher.write_state(running.port, "first-launch-token")
+    monkeypatch.setattr(launcher.webbrowser, "open", lambda url: False)  # none registered
+    assert launcher.launch(open_browser=True) == 0
+    out = capsys.readouterr().out
+    assert "?k=first-launch-token" in out and "open the address above" in out
+
+
+# --- two launches at once, an older version still running ---------------------------------------
+
+
+def test_the_launch_lock_is_held_by_one_at_a_time(tmp_path):
+    first = launcher.LaunchLock(tmp_path / "web.lock")
+    second = launcher.LaunchLock(tmp_path / "web.lock")
+    assert first.acquire(timeout=1)
+    started = time.monotonic()
+    assert second.acquire(timeout=0.3) is False
+    assert time.monotonic() - started >= 0.25
+    first.release()
+    assert second.acquire(timeout=1)
+    second.release()
+    assert (tmp_path / "web.lock").is_file()  # the file stays; only the lock goes
+
+
+def test_two_launches_at_the_same_moment_end_with_one_server(tmp_path):
+    import subprocess
+    import sys
+
+    home = tmp_path / "shared-home"
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("ETSY_", "STALLKIT_"))}
+    env.update(STALLKIT_HOME=str(home), USERPROFILE=str(tmp_path), HOME=str(tmp_path),
+               PYTHONPATH=str(Path(stallkit.web.__file__).resolve().parents[2]))
+    code = ("import sys; from stallkit.web import launcher; "
+            "sys.exit(launcher.launch(open_browser=False, ports=[0], grace=4.0, "
+            "idle_timeout=1.0, watch_interval=0.1))")
+    procs = [subprocess.Popen([sys.executable, "-c", code], env=env, cwd=str(tmp_path),
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+             for _ in range(2)]
+    outs = [proc.communicate(timeout=60)[0] for proc in procs]
+    assert [proc.returncode for proc in procs] == [0, 0], outs
+    started = [out for out in outs if "stallkit is running at" in out]
+    reused = [out for out in outs if "stallkit is already running at" in out]
+    assert len(started) == 1 and len(reused) == 1, outs
+    port = started[0].split("http://localhost:", 1)[1].split("/", 1)[0]
+    assert f"http://localhost:{port}/?k=" in reused[0]
+
+
+def _old_version_server(version: str, token: str = "old-version-token"):
+    ctx = AppContext(token=token, check_status=False)
+    ctx.version = version
+    server = WebServer(ctx, 0)
+
+    def stop():  # what the old launcher does when its server is asked to quit
+        server.stop()
+        launcher.clear_state(token)
+
+    ctx.on_quit = stop
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05},
+                              daemon=True)
+    thread.start()
+    launcher.write_state(server.port, token)
+    return ctx, server, thread
+
+
+def test_a_new_version_stops_the_old_one_and_starts(monkeypatch, capsys):
+    import httpx
+
+    ctx, old, thread = _old_version_server("0.0.1")
+    try:
+        assert launcher.find_running()["version"] == "0.0.1"
+        seen = {}
+
+        def ready(server):
+            seen["old_alive"] = launcher.ping(old.port, "old-version-token", timeout=0.5)
+            seen["state"] = launcher.find_running()
+            with httpx.Client(base_url=f"http://127.0.0.1:{server.port}", trust_env=False,
+                              verify=False) as http:
+                http.get(f"/?k={server.ctx.token}")
+                http.post("/api/quit", json={}, headers={"X-Stallkit": "1"})
+
+        assert launcher.launch(open_browser=False, ports=[0], ready=ready) == 0
+        assert seen["old_alive"] is False
+        assert seen["state"]["version"] == stallkit.__version__
+        assert "Stopped stallkit 0.0.1" in capsys.readouterr().out
+        thread.join(5)
+        assert not thread.is_alive()
+    finally:
+        old.stop()
+        old.server_close()
+        ctx.close()
+
+
+def test_an_old_version_running_a_task_is_left_alone(monkeypatch, capsys):
+    ctx, old, thread = _old_version_server("0.0.1")
+    release = threading.Event()
+    opened, started = [], []
+    monkeypatch.setattr(launcher.webbrowser, "open", opened.append)
+    monkeypatch.setattr(launcher, "bind", lambda *a, **k: started.append(a))
+    try:
+        job = ctx.jobs.start("test", "common:test", lambda j: release.wait(10))
+        assert launcher.launch(open_browser=True) == 0
+        assert started == []  # no second server on the same home
+        assert launcher.ping(old.port, "old-version-token")
+        assert opened == [f"http://localhost:{old.port}/?k=old-version-token"
+                          f"&newer={stallkit.__version__}"]
+        assert "still running a task" in capsys.readouterr().out
+    finally:
+        release.set()
+        job.wait(5)
+        old.stop()
+        thread.join(5)
+        old.server_close()
+        ctx.close()
 
 
 def test_web_json_is_only_removed_by_its_own_server():

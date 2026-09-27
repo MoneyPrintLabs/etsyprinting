@@ -413,9 +413,12 @@
 }
 
 /* Price / category / status */
+/* The price never shrinks below its text ("$24.90 USD"); the status card never below
+   its widest part (its note moves under the badge when both do not fit on a line);
+   the category takes the rest and ends in "…" (the full path is its tooltip). */
 .page-listing-detail .ld-facts {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.55fr) minmax(0, 1.25fr);
+  grid-template-columns: minmax(max-content, 1fr) minmax(0, 1.4fr) minmax(min-content, 1.4fr);
   gap: 14px;
 }
 .page-listing-detail .ld-fact {
@@ -454,31 +457,50 @@
 }
 .page-listing-detail .ld-state {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 4px 10px;
   min-width: 0;
   font-size: 12.5px;
 }
 .page-listing-detail .ld-state .muted {
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* Bottom actions */
+/* Bottom actions: the note takes whatever is left (flex-basis 0, so it never pushes
+   a button onto a second line) and wraps (three lines at most); the buttons stay on
+   one line at the right. They only wrap when the column is too narrow for them. */
 .page-listing-detail .ld-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   flex-wrap: wrap;
   gap: 10px;
   margin-top: 4px;
 }
 .page-listing-detail .ld-note {
-  display: inline-flex;
+  flex: 1 1 0;
+  min-width: 120px;
+  display: flex;
   align-items: center;
   gap: 6px;
+  margin-right: 4px;
   color: var(--muted);
   font-size: 12.5px;
+  line-height: 1.4;
+}
+.page-listing-detail .ld-note .icon {
+  flex: none;
+}
+.page-listing-detail .ld-note span {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+.page-listing-detail .ld-actions .btn {
+  flex: none;
 }
 .page-listing-detail .ld-actions .btn-lg {
   height: 44px;
@@ -534,9 +556,34 @@
 }
 
 /* ---------------------------------------------------------------- narrower windows */
-@media (max-width: 1180px) {
+@media (max-width: 1400px) {
   .page-listing-detail .ld-facts {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-columns: minmax(max-content, 1fr) minmax(0, 1.55fr) minmax(min-content, 1.25fr);
+  }
+  .page-listing-detail .ld-fact {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+  /* With unsaved edits four buttons share the row: tighter buttons and an icon-only
+     "Etsy'de aç" keep "Yayınla" on the same line. */
+  .page-listing-detail .ld-actions.is-dirty .btn-lg {
+    padding: 0 14px;
+  }
+  .page-listing-detail .ld-actions.is-dirty .ld-open {
+    width: 46px;
+    padding: 0;
+    justify-content: center;
+  }
+  .page-listing-detail .ld-actions.is-dirty .ld-open .btn-label {
+    display: none;
+  }
+}
+@media (max-width: 1180px) {
+  .page-listing-detail .ld-actions .btn-lg {
+    padding: 0 14px;
+  }
+  .page-listing-detail .ld-facts {
+    grid-template-columns: minmax(max-content, 1fr) minmax(min-content, 1fr);
   }
   .page-listing-detail .ld-facts .ld-fact:nth-child(2) {
     grid-column: span 2;

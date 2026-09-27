@@ -42,6 +42,14 @@ function minus(text) {
   return typeof text === "string" ? text.replace(/^-/, "−") : text;
 }
 
+/** "Retro Mountain Sunset Shirt, Vintage Hiking Tee, ..." -> "Retro Mountain Sunset Shirt"
+ *  (the product name the video shows; same rule as Siparişler). The full title is the tooltip. */
+function shortTitle(title) {
+  const text = String(title || "");
+  const first = text.split(/\s*[,|]\s*|\s+[-–—]\s+/)[0];
+  return first.length >= 8 ? first : text;
+}
+
 function currencyLabel(code) {
   return code === "TRY" ? "TL" : code || "";
 }
@@ -49,6 +57,12 @@ function currencyLabel(code) {
 function parseMonth(ym) {
   const m = /^(\d{4})-(\d{2})$/.exec(ym || "");
   return m ? { year: Number(m[1]), month: Number(m[2]) } : null;
+}
+
+/** This month on this computer ("2026-09"), the one the API serves by default. */
+function currentYm() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
 function shiftMonth(ym, delta) {
@@ -82,8 +96,12 @@ export default {
   async mount(el, ctx) {
     const t = ctx.t;
     const decimalSep = ctx.lang === "en" ? "." : ",";
+    const askedMonth = ctx.query.month;
     const state = {
-      month: parseMonth(ctx.query.month) ? ctx.query.month : null,
+      month: parseMonth(askedMonth) ? askedMonth : null,
+      // A ?month= that cannot be shown (an old bookmark): the latest month opens instead
+      // with a note. Malformed ones are caught here, out-of-range ones by the API.
+      monthNotice: askedMonth && !parseMonth(askedMonth) ? String(askedMonth).slice(0, 40) : null,
       sort: SORTS.includes(ctx.query.sort) ? ctx.query.sort : "sales",
       display: "both",
       showAll: false,
@@ -98,6 +116,7 @@ export default {
       pollTimer: null,
       finished: new Map(), // job id -> summary, for events that beat the GET answer
     };
+    if (state.monthNotice) ctx.setQuery({ month: null });
 
     // ---------------------------------------------------------------- money helpers
 
@@ -179,6 +198,7 @@ export default {
       class: "pf-month",
       onChange: (v) => {
         state.month = v;
+        state.monthNotice = null;
         state.showAll = false;
         ctx.setQuery({ month: v });
         load();
@@ -271,7 +291,7 @@ export default {
               h(
                 "div",
                 { class: "pf-prod-text" },
-                h("span", { class: "pf-prod-title ellipsis", title: r.title }, r.title || "–"),
+                h("span", { class: "pf-prod-title ellipsis", title: r.title || null }, shortTitle(r.title) || "–"),
                 r.net !== null && r.net < 0
                   ? h("span", { class: "pf-loss-chip" }, icon("alert", { size: 11, strokeWidth: 2.2 }), t("products.loss"))
                   : h("span", { class: "pf-prod-type" }, t(`type.${r.type}`)),
@@ -520,6 +540,24 @@ export default {
 
     function renderNotes(s) {
       const nodes = [];
+      if (state.monthNotice) {
+        nodes.push(
+          infoNote({
+            tone: "info",
+            icon: "calendar",
+            text: t("note.month_fallback", { asked: state.monthNotice, month: monthLong(state.month || currentYm()) }),
+            action: button({
+              label: t("common.ok"),
+              size: "sm",
+              variant: "ghost",
+              onClick: () => {
+                state.monthNotice = null;
+                renderNotes(state.mode === "ready" && state.data ? state.data.summary : null);
+              },
+            }),
+          }),
+        );
+      }
       if (s) {
         const productReady = s.product_cost !== null;
         const shipReady = s.shipping_cost !== null;
@@ -547,6 +585,11 @@ export default {
             nodes.push(infoNote({ tone: "warning", icon: "truck", text: t("note.missing_shipping", { n: s.missing_shipping_orders }), action: button({ label: t("note.edit"), size: "sm", variant: "ghost", onClick: () => openCosts() }) }));
           }
         }
+      }
+      if (s && s.partial) {
+        // More paid orders than the app reads for one month: say so quietly.
+        const limit = number(s.partial_limit || s.orders);
+        nodes.push(h("p", { class: "pf-partial" }, icon("info", { size: 13 }), h("span", null, t("note.partial", { n: limit }))));
       }
       mount(noteSlot, nodes);
       noteSlot.hidden = !nodes.length;
@@ -978,6 +1021,10 @@ export default {
         const res = await ctx.api.get("/api/profit", { month: state.month || undefined, refresh: refresh ? 1 : undefined }, { signal: ctx.signal });
         if (seq !== state.loadSeq || !ctx.isActive()) return;
         state.month = res.month;
+        if (res.month_refused) {
+          state.monthNotice = res.month_refused;
+          ctx.setQuery({ month: null });
+        }
         state.display = DISPLAYS.includes(res.display) ? res.display : "both";
         if (res.fx) state.fx = res.fx;
         if (res.state === "loading") {
@@ -1195,7 +1242,7 @@ export default {
           "div",
           { class: "pf-cm-prod", dataset: { q: `${p.title} ${t(`type.${p.type}`)}`.toLocaleLowerCase() } },
           thumb({ src: p.image || null, size: 32, radius: 8 }),
-          h("div", { class: "pf-cm-prod-text" }, h("span", { class: "pf-cm-prod-title ellipsis", title: p.title }, p.title), h("span", { class: "pf-cm-prod-type" }, `${t(`type.${p.type}`)} · ${number(p.qty)}`)),
+          h("div", { class: "pf-cm-prod-text" }, h("span", { class: "pf-cm-prod-title ellipsis", title: p.title }, shortTitle(p.title)), h("span", { class: "pf-cm-prod-type" }, `${t(`type.${p.type}`)} · ${number(p.qty)}`)),
           amount(`listing:${p.listing_id}`, p.unit, p.title, typeUnit !== null && typeUnit !== undefined ? t("costs.type_value", { value: inputValue(typeUnit) }) : ""),
         );
         return row;

@@ -497,6 +497,13 @@ a:hover {
   place-items: center;
   min-height: 240px;
 }
+.page-loading.is-stuck {
+  align-content: center;
+  gap: 16px;
+}
+.page-loading.is-stuck .note {
+  max-width: 560px;
+}
 .banner-slot:empty {
   display: none;
 }

@@ -7,31 +7,65 @@ and no amount of cleverness changes that — the information is simply not there
 So this module's real job is not extraction, it is **knowing when it failed**. A junk
 seed is flagged, surfaced to the seller, and never quietly turned into a confident
 title that would put a wrong listing in their shop.
+
+Most junk is not a camera name but a default one: what Canva, Photoshop, Procreate, a
+phone or a browser calls a file nobody named — `Adsız tasarım (3)`, `Untitled-1 copy`,
+`WhatsApp Image 2026-09-01 at 10.10.10`, `indir (2)`. Those are recognised in Turkish
+and English, and the marks a copy leaves on a good name (`Retro Sunset (2)`,
+`Copy of …`, `… kopyası`, `… - Copy`) are taken off rather than put in a title.
 """
 
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-# Camera and screenshot names. These carry a number, never a concept.
+
+def fold(text: str) -> str:
+    """Compare text the way a person reads it: `Adsız Tasarım` is `adsiz tasarim`.
+
+    Lowercasing alone keeps the Turkish dotless ı (and gives İ a combining dot), so a
+    list of junk names written in ASCII never matched what apps export in Turkish.
+    """
+    text = str(text or "").replace("ı", "i").replace("İ", "i")
+    text = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in text if not unicodedata.combining(ch)).casefold()
+
+
+def _lower(token: str) -> str:
+    # "İ".lower() is "i" plus a combining dot; the concept keeps its letters, not that.
+    return token.replace("İ", "i").lower()
+
+
+# Camera and screenshot names. These carry a number, never a concept. Matched on the
+# folded name, so `Adsız` and `adsiz` are the same thing.
 _CAMERA = re.compile(
     r"^(img|dsc|dscn|dscf|pxl|gopr|mvimg|photo|image|screenshot|screen[\s_-]?shot|"
-    r"ekran[\s_-]?g[oö]r[uü]nt[uü]s[uü]|adsiz|untitled|unnamed|document|scan)"
+    r"ekran[\s_-]?goruntusu|ekran[\s_-]?resmi|adsiz|untitled|unnamed|document|scan|"
+    r"vid|video|mov|snapchat|signal)"
     # Anything after is a timestamp, a counter or a date — never a product.
-    r"[\s_.\-]*[\d\s_.\-]*$",
-    re.IGNORECASE,
+    r"[\s_.\-()]*[\d\s_.\-()]*$",
 )
 
-# Words that describe the file's revision, not the product.
+# Whole-name prefixes that only ever come from a device or a messaging app. Whatever
+# follows (a date, a time, the app a screenshot was taken in) is not a product.
+_DEVICE_PREFIX = re.compile(
+    r"^(screenshot|screen[\s_-]*shot|screen[\s_-]*recording|"
+    r"ekran[\s_-]*(goruntusu|resmi|alintisi|kaydi)|"
+    r"whatsapp[\s_-]*(image|gorsel|video|photo|resim|audio|ses)|"
+    r"snapchat[\s_-]|signal[\s_-]\d)",
+)
+
+# Tokens that are never part of a product name, wherever they appear: camera and
+# screenshot prefixes, the marks a copy leaves, and words that only describe the file.
 # Deliberately excludes "photo", "image" and "frame": those appear in real product
 # names ("photo frame", "image transfer"), and stripping them would lose the concept.
-# Tokens that are never part of a product name, wherever they appear: camera and
-# screenshot prefixes, and words that only ever describe the file rather than the thing.
 _ALWAYS_NOISE = {
-    "finalv", "copy", "kopya", "duzenlenmis", "untitled", "adsiz", "temp", "tmp",
-    "printfile", "unnamed",
+    "finalv", "copy", "kopya", "kopyasi", "ogesinin", "duzenlenmis", "untitled", "adsiz",
+    "isimsiz", "temp", "tmp", "printfile", "unnamed", "recovered", "kurtarildi",
+    "removebg", "nobg", "canva",
     # Camera and screenshot prefixes, for when they survive as a bare token.
     "img", "dsc", "dscn", "dscf", "pxl", "gopr", "mvimg", "screenshot", "scan",
 }
@@ -43,17 +77,76 @@ _ALWAYS_NOISE = {
 # skyline" and mislabel two of the biggest print categories on Etsy.
 _TRAILING_NOISE = {
     "final", "new", "yeni", "edit", "edited", "draft", "taslak", "test", "deneme",
-    "son", "orig", "original", "export", "output", "asset", "file", "version",
-    "revised", "fix", "print", "design", "tasarim", "artwork",
+    "son", "orig", "original", "orijinal", "export", "output", "cikti", "asset", "file",
+    "dosya", "version", "surum", "revised", "fix", "print", "baski", "design", "tasarim",
+    "tasarimi", "artwork", "preview", "onizleme", "png", "jpg", "jpeg", "transparent",
+    "seffaf", "hd", "hq", "hires", "upscaled", "mockup",
+    # What a trailing date leaves behind: "… 2026-09-01 at 10.10.10".
+    "at", "saat",
 }
+
+# A name made only of these words is a default name, not a product: "Untitled design",
+# "Adsız tasarım", "New Project", "image", "indir", "Çalışma Yüzeyi 1", "Layer 1".
+_DEFAULT_WORDS = {
+    "untitled", "adsiz", "isimsiz", "unnamed", "image", "images", "img", "photo", "photos",
+    "picture", "pictures", "pic", "resim", "resimler", "gorsel", "gorseller", "foto",
+    "fotograf", "file", "files", "dosya", "document", "belge", "design", "designs",
+    "tasarim", "tasarimi", "artwork", "art", "artboard", "calisma", "yuzeyi", "project",
+    "proje", "folder", "klasor", "new", "yeni", "download", "downloads", "indir",
+    "indirilen", "indirme", "whatsapp", "screenshot", "screen", "shot", "ekran", "resmi",
+    "goruntusu", "alintisi", "scan", "taranmis", "canva", "draft", "taslak", "test",
+    "deneme", "sample", "ornek", "copy", "kopya", "kopyasi", "final", "son", "mockup",
+    "template", "sablon", "sketch", "cizim", "drawing", "layer", "katman", "group", "grup",
+    "png", "jpg", "jpeg", "transparent", "seffaf", "print", "baski", "logo", "export",
+    "output", "cikti", "edit", "edited", "duzenlenmis", "version", "surum", "original",
+    "orijinal", "preview", "onizleme", "temp", "tmp", "misc", "diger", "other", "my",
+    "benim", "the", "a", "of", "at", "and", "ve", "saat", "vid", "video", "mov",
+}
+
+# Default names that are only junk when a counter follows: Figma's "Frame 12" and
+# "Page 3" are defaults, but a design called "frame" or "page" might not be.
+_COUNTED_DEFAULTS = {
+    "frame", "cerceve", "page", "sayfa", "slide", "rectangle", "dikdortgen", "shape",
+    "sekil", "vector", "vektor", "element", "graphic", "grafik",
+}
+
+_STOP_TAIL = {"and", "ve", "of", "the", "a", "an", "for", "with", "ile", "in", "on"}
+
+# `Copy of X` (Google Drive, old Windows), `Copy (2) of X`.
+_COPY_OF = re.compile(r"^\s*(copy|kopya)\s*(\(\s*\d+\s*\))?\s+of\s+", re.IGNORECASE)
+# `(3)`, `[2]`, `{1}` — a browser's or a file manager's copy counter, never a product.
+_BRACKET_COUNTER = re.compile(r"[(\[{]\s*\d{1,4}\s*[)\]}]")
+_UUID = re.compile(
+    r"[0-9a-f]{8}[-_]?[0-9a-f]{4}[-_]?[0-9a-f]{4}[-_]?[0-9a-f]{4}[-_]?[0-9a-f]{12}",
+    re.IGNORECASE,
+)
+# A calendar date, year first or last, with or without separators: 2026-09-01,
+# 20260901, 01.09.2026.
+_DATE = re.compile(
+    r"(?<!\d)(?:(?:19|20)\d{2}([-_./]?)(?:0[1-9]|1[0-2])\1(?:0[1-9]|[12]\d|3[01])"
+    r"|(?:0?[1-9]|[12]\d|3[01])([-_./])(?:0?[1-9]|1[0-2])\2(?:19|20)\d{2})(?!\d)"
+)
+# A clock time, only looked for once a date was found: 10.10.10, 10-10, 101010, 10.10 AM.
+_TIME = re.compile(
+    r"(?<!\d)(?:(?:[01]?\d|2[0-3])[.:_-][0-5]\d(?:[.:_-][0-5]\d)?|\d{6}(?:\d{1,3})?)"
+    r"(?:\s*[ap]\.?m\.?)?(?![\d])",
+    re.IGNORECASE,
+)
 
 # A version is `v3` or `1.2`, never a bare `66` — that is a route number, a year or a
 # model, and dropping it anywhere in the name would cost products their identity. Plain
 # counters are handled as trailing tokens instead, where they actually behave like one.
 _VERSION = re.compile(r"^(v\d+(\.\d+)*|\d+(\.\d+)+)$", re.IGNORECASE)
 _HEXISH = re.compile(r"^[0-9a-f]{8,}$", re.IGNORECASE)
+# Pixel sizes and resolutions describe the file: 4500x5400, 300dpi. A print size such as
+# 8x10 is a product fact and stays.
+_PIXELS = re.compile(r"^(\d{3,5}x\d{3,5}(px)?|\d+(dpi|ppi|px))$", re.IGNORECASE)
+_WORD_COUNTER = re.compile(r"^([^\W\d_]+)(\d{1,4})$")
 _LEADING_INDEX = re.compile(r"^\d{1,4}[\s._-]+")
-_SEPARATORS = re.compile(r"[\s._\-+]+")
+_SEPARATORS = re.compile(r"[\s._\-+()\[\]{},;~#=|/\\]+")
+# A year after "class of" or "est." is part of the product, not a counter.
+_YEAR = re.compile(r"^(19|20)\d{2}$")
+_YEAR_AFTER = {"of", "est", "established", "since", "class", "sinifi", "mezun"}
 
 
 @dataclass
@@ -97,35 +190,97 @@ def derive(path: Path, *, folder_fallback: bool = True) -> Seed:
     return seed
 
 
+def _looks_like_id(token: str) -> bool:
+    """A generated id such as Canva's `DAFx7Kq2Lm8`: long, and letters and digits mixed."""
+    if len(token) < 8 or token.isalpha() or token.isdigit():
+        return False
+    digits = sum(ch.isdigit() for ch in token)
+    switches = sum(1 for a, b in zip(token, token[1:]) if a.isdigit() != b.isdigit())
+    return switches >= 3 or digits >= 4
+
+
+def _clean_token(token: str) -> str:
+    """Letters, digits and inner apostrophes: what both a title and a tag accept."""
+    if token == "&":
+        return "and"
+    kept = "".join(ch for ch in token if ch.isalnum() or ch == "'")
+    return kept.strip("'")
+
+
 def _from_text(raw: str, *, source: str) -> Seed:
-    text = raw.strip()
+    text = unicodedata.normalize("NFC", str(raw or "")).replace("’", "'").strip()
     if not text:
         return Seed("", source, True, "empty filename")
 
-    if _CAMERA.match(text):
+    folded = fold(text)
+    if _CAMERA.match(folded) or _DEVICE_PREFIX.match(folded):
         return Seed("", source, True, f"{raw!r} looks like a camera or screenshot name")
 
+    text = _UUID.sub(" ", text)
+    if _DATE.search(text):
+        text = _TIME.sub(" ", _DATE.sub(" ", text))
+    text = _BRACKET_COUNTER.sub(" ", text)
+    text = _COPY_OF.sub("", text)
     # `001-retro-sunset-surf` -> `retro-sunset-surf`
     text = _LEADING_INDEX.sub("", text)
-    tokens = [t for t in _SEPARATORS.split(text) if t]
 
-    kept = []
+    tokens: list[str] = []
+    for part in _SEPARATORS.split(text):
+        # `Resim1`, `Image2`, `Tasarım3`: a default word glued to its counter.
+        glued = _WORD_COUNTER.match(part)
+        if glued and fold(glued.group(1)) in _DEFAULT_WORDS | _COUNTED_DEFAULTS:
+            tokens.extend([glued.group(1), glued.group(2)])
+        elif part:
+            tokens.append(part)
+
+    kept: list[str] = []
+    dropped_default = False
     for token in tokens:
-        lowered = token.lower()
-        if lowered in _ALWAYS_NOISE or _VERSION.match(token) or _HEXISH.match(token):
+        key = fold(token)
+        if key in _ALWAYS_NOISE:
+            dropped_default = True
             continue
-        kept.append(lowered)
+        if _VERSION.match(token) or _HEXISH.match(token) or _PIXELS.match(token):
+            continue
+        if _looks_like_id(token):
+            continue
+        cleaned = _clean_token(_lower(token))
+        if not cleaned:
+            continue
+        # `t-shirt` and `tee shirt` are one word to a buyer, and one to a title.
+        if fold(cleaned) in ("shirt", "shirts") and kept and fold(kept[-1]) in ("t", "tee"):
+            kept[-1] = "tshirt"
+            continue
+        kept.append(cleaned)
+
+    # Nothing but default words — "Untitled design", "Adsız tasarım", "New Project",
+    # "image", "indir" — however many counters and copy marks came with them.
+    words = [fold(word) for word in kept if not word.isdigit()]
+    counted = len(words) < len(kept)
+    if (
+        (words and all(word in _DEFAULT_WORDS for word in words))
+        or (counted and len(words) == 1 and words[0] in _COUNTED_DEFAULTS)
+        or (not words and dropped_default)
+    ):
+        return Seed(
+            "", source, True,
+            f"{raw!r} is a default name from a design app, phone or browser, not a "
+            "product name",
+        )
 
     # A bare counter is the very last thing in a name, so that is the only place it is
     # dropped: `mountain-sunset-2` loses its 2, `route-66-poster` keeps its 66. Checked
     # before the markers and never again after, or `boeing-747-print` would lose the 747
-    # as soon as `print` came off and exposed it.
+    # as soon as `print` came off and exposed it. A year after "class of" or "est" is
+    # part of the product, not a counter.
     while kept and kept[-1].isdigit():
+        if _YEAR.match(kept[-1]) and len(kept) > 1 and fold(kept[-2]) in _YEAR_AFTER:
+            break
         kept.pop()
 
     # Markers trail the name rather than interrupting it, and they stack:
-    # `mountain-sunset-final-edit`.
-    while kept and kept[-1] in _TRAILING_NOISE:
+    # `mountain-sunset-final-edit`. A name cannot end on "and" or "of" either.
+    while kept and (fold(kept[-1]) in _TRAILING_NOISE or kept[-1] in _STOP_TAIL):
         kept.pop()
 
     if not kept:

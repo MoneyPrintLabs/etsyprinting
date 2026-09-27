@@ -518,3 +518,85 @@ def test_the_consent_popup_gets_no_handle_on_the_app():
     opened = source.index('window.open("", "_blank")')
     assert "w.opener = null" in source[opened:opened + 600]
     assert 'api.post("/api/pinterest/post", { confirm: true })' in source
+
+
+# --- round 2 ------------------------------------------------------------------------------------
+
+
+def _big_shop(web, active):
+    """A shop with `active` live listings, answered a page at a time like Etsy does."""
+    fake = use_fake_etsy(web)
+    rows = [{"listing_id": 2000000 + i, "state": "active", "title": f"Example Print {i}",
+             "url": f"https://www.etsy.com/listing/{2000000 + i}/example-print",
+             "tags": [], "images": _images(2000000 + i, [1])} for i in range(active)]
+
+    def by_shop(request):
+        assert request.url.params.get("state") == "active"
+        offset = int(request.url.params.get("offset", "0"))
+        limit = int(request.url.params.get("limit", "25"))
+        return {"count": len(rows), "results": rows[offset:offset + limit]}
+
+    fake.add("GET", f"/shops/{ETSY_SHOP_ID}/listings", by_shop)
+    return fake
+
+
+def test_the_picker_says_how_many_active_listings_the_shop_really_has(web, keys):
+    # Review pinterest-count-capped: a shop with 2,575 live listings is not "500".
+    fake = _big_shop(web, 2575)
+    data = web.client.get("/api/pinterest/listings").json()
+    assert len(data["items"]) == data["shown"] == api.LISTINGS_MAX
+    assert data["total"] == 2575 and data["truncated"] is True
+    count_calls = [r for r in fake.requests if r.url.params.get("limit") == "1"]
+    assert len(count_calls) == 1  # one limit=1 request for the count
+    # Cached with the list: a second look asks Etsy nothing.
+    before = len(fake.calls)
+    again = web.client.get("/api/pinterest/listings").json()
+    assert again["total"] == 2575 and len(fake.calls) == before
+
+
+def test_a_shop_the_picker_shows_whole_is_not_marked_cut(web, keys):
+    fake = _etsy(web)
+    data = web.client.get("/api/pinterest/listings").json()
+    assert data["total"] == data["shown"] == 2 and data["truncated"] is False
+    assert not [r for r in fake.requests if r.url.params.get("limit") == "1"]
+    # Exactly LISTINGS_MAX: the count proves nothing was left out.
+    _big_shop(web, api.LISTINGS_MAX)
+    data = web.client.get("/api/pinterest/listings", params={"refresh": 1}).json()
+    assert data["total"] == data["shown"] == api.LISTINGS_MAX and data["truncated"] is False
+
+
+def test_the_picker_still_answers_when_the_count_fails(web, keys):
+    fake = _big_shop(web, 600)
+    listings_route = fake.routes[("GET", f"/shops/{ETSY_SHOP_ID}/listings")]
+
+    def no_count(request):
+        if request.url.params.get("limit") == "1":
+            return httpx.Response(500, json={"error": "boom"})
+        return listings_route(request)
+
+    fake.add("GET", f"/shops/{ETSY_SHOP_ID}/listings", no_count)
+    data = web.client.get("/api/pinterest/listings").json()
+    assert data["shown"] == api.LISTINGS_MAX and data["total"] == api.LISTINGS_MAX
+
+
+def test_pins_queued_before_the_fix_show_and_post_as_plain_text(web, pin_api):
+    # A queue file from 0.2.0: Etsy's escaped title, no plain_text mark.
+    today = date.today().isoformat()
+    old = {"key": "1000002:1:900001", "listing_id": 1000002, "rank": 1, "due": today,
+           "status": "pending", "pin_id": None, "message": "",
+           "payload": {"board_id": "900001", "title": "Mom&#39;s Coffee Mug &amp; Gift",
+                       "description": "Mom&#39;s Coffee Mug &amp; Gift", "link": LISTING_URL,
+                       "alt_text": "Mom&#39;s Coffee Mug &amp; Gift",
+                       "media_source": {"source_type": "image_url",
+                                        "url": "https://i.etsystatic.com/x/il_fullxfull.1.jpg"}}}
+    pinterest.queue_path().parent.mkdir(parents=True, exist_ok=True)
+    pinterest.queue_path().write_text(json.dumps([old]), encoding="utf-8")
+    items = web.client.get("/api/pinterest/queue").json()["items"]
+    assert items[0]["title"] == "Mom's Coffee Mug & Gift"
+    job = web.client.post("/api/pinterest/post", json={"confirm": True}).json()["job"]
+    final = wait_for_job(web, job["id"])
+    assert final["status"] == "done", final
+    sent = pin_api.pins[0]
+    assert sent["title"] == sent["description"] == sent["alt_text"] == "Mom's Coffee Mug & Gift"
+    saved = pinterest.Queue.load().entries[0]
+    assert saved["status"] == "posted" and saved["plain_text"] is True

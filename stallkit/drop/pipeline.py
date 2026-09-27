@@ -9,18 +9,23 @@ spreadsheet can edit the file and get an identical result.
 from __future__ import annotations
 
 import os
+import re
+import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from PIL import Image
+
 from .. import csvio
-from ..client import EtsyClient
-from ..config import MAX_LISTING_IMAGES
+from ..client import MAX_IMAGE_BYTES, EtsyClient
+from ..config import MAX_LISTING_IMAGES, MAX_TITLE_LEN
 from ..errors import ValidationError
 from ..listings import LISTING_COLUMNS
 from ..seo import MarketReport, research
-from . import cache, generate, mockup, seeds
+from . import cache, catalog, generate, mockup, seeds
 from .template import Template
 from .workspace import Workspace
 
@@ -29,6 +34,15 @@ REVIEW_FILE = "review.csv"
 # Columns the review file carries beyond what `listings push` reads. push() ignores
 # extras, so the same file serves both the seller's eye and the writer.
 REVIEW_EXTRA_COLUMNS = ["source_file", "concept", "evidence", "warnings"]
+
+# Etsy's title rule (createDraftListing in the Open API spec): "valid title strings
+# contain only letters, numbers, punctuation marks, mathematical symbols, whitespace
+# characters, ™, ©, and ®" — regex /[^\p{L}\p{Nd}\p{P}\p{Sm}\p{Zs}™©®]/u — and "you can
+# only use the %, :, & and + characters once each". A title built from a file name can
+# break either rule ("salt & pepper & co.png", an emoji, a "$"), and Etsy would then
+# refuse the draft at step 6, counting toward the stop after repeated failures.
+TITLE_SYMBOLS = "™©®"
+TITLE_ONCE = {"&": "and", "+": "plus", "%": "percent", ":": "-"}
 
 
 @dataclass
@@ -71,15 +85,147 @@ class DropReport:
         return sum(len(r.images) for r in self.rows)
 
 
-def estimate_requests(products: int, concepts: int, images_per_product: int) -> int:
+def estimate_requests(
+    products: int,
+    concepts: int,
+    images_per_product: int = 0,
+    *,
+    images: int | None = None,
+    has_variations: bool = False,
+    template_inventory: bool = False,
+) -> int:
     """What a run will cost against the daily allowance, before it starts.
 
     A Personal Access app gets 5,000 requests a day. Research pages at 100 listings
-    each, then every product costs one create plus one upload per image.
+    each, then every product costs one create plus one upload per image — `images` in
+    all when the caller knows each product's real count, else `images_per_product`
+    each. A template with variations adds one inventory update per draft, and reading
+    the template's inventory costs one request per run.
     """
     research_calls = concepts * 2  # a 200-listing sample is two pages of 100
-    write_calls = products * (1 + images_per_product)
-    return research_calls + write_calls
+    image_calls = images if images is not None else products * images_per_product
+    write_calls = products + image_calls + (products if has_variations else 0)
+    return research_calls + write_calls + (1 if template_inventory and products else 0)
+
+
+# --- what Etsy accepts ---------------------------------------------------------------
+
+
+def _title_char_ok(ch: str) -> bool:
+    if ch in TITLE_SYMBOLS:
+        return True
+    category = unicodedata.category(ch)
+    return category[0] in "LP" or category in ("Nd", "Sm", "Zs")
+
+
+def title_problems(title: str) -> list[str]:
+    """Why Etsy would refuse this title's characters (the length is checked elsewhere)."""
+    problems: list[str] = []
+    bad = sorted({ch for ch in title if not _title_char_ok(ch)})
+    if bad:
+        problems.append(
+            "title contains characters Etsy does not accept: " + " ".join(repr(c) for c in bad)
+        )
+    for ch in TITLE_ONCE:
+        count = title.count(ch)
+        if count > 1:
+            problems.append(f"title uses {ch!r} {count} times; Etsy allows it once")
+    return problems
+
+
+def clean_title(title: str) -> str:
+    """The title with what Etsy refuses taken out, or spelled out; "" if nothing is left.
+
+    Disallowed characters (emoji, "$", "°") are dropped; a second "&" becomes "and",
+    a second "+" "plus", a second "%" "percent" and a second ":" a dash. Plain titles
+    come back unchanged.
+    """
+    text = unicodedata.normalize("NFC", str(title or ""))
+    text = "".join(ch if _title_char_ok(ch) else (" " if ch.isspace() else "") for ch in text)
+    for ch, word in TITLE_ONCE.items():
+        first = text.find(ch)
+        if first >= 0 and text.count(ch) > 1:
+            text = text[: first + 1] + text[first + 1:].replace(ch, f" {word} ")
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\s+([,.;!?])", r"\1", text)
+    text = re.sub(r"(?:,\s*){2,}", ", ", text)
+    text = text.strip(" ,-|/")
+    if len(text) > MAX_TITLE_LEN:
+        cut = text.rfind(", ", 0, MAX_TITLE_LEN + 1)
+        text = (text[:cut] if cut > 0 else text[:MAX_TITLE_LEN]).rstrip(" ,-|/")
+    return text
+
+
+def image_size(path: Path) -> tuple[int, int] | None:
+    """(width, height) from the file's header, without decoding it; None if unreadable.
+
+    Pillow refuses to even open an image of more than about 179M pixels; that one's
+    size is estimated from its message, so it still reads as too large.
+    """
+    try:
+        with Image.open(path) as image:
+            return image.size
+    except Image.DecompressionBombError as exc:
+        return catalog.bomb_size(exc)
+    except (OSError, ValueError, SyntaxError):
+        return None
+
+
+def oversized(paths: Sequence[Path]) -> tuple[Path, tuple[int, int]] | None:
+    """The first image over the pixel limits (catalog.too_many_pixels), with its size.
+
+    A design this large would need gigabytes to composite (MemoryError); it is refused
+    as that product's problem, before any work.
+    """
+    for path in paths:
+        size = image_size(path)
+        if size is not None and catalog.too_many_pixels(size):
+            return path, size
+    return None
+
+
+def fit_for_etsy(image: Path, out_dir: Path, *, limit: int | None = None) -> Path:
+    """A JPEG copy under Etsy's 20 MB image limit when `image` is over it; else `image`.
+
+    Finished photos go up byte for byte, so a 30 MB export would fail the check step on
+    every run. The copy is made smaller in quality first, then in size, and lands in the
+    batch folder beside the other outputs.
+    """
+    if limit is None:
+        limit = MAX_IMAGE_BYTES
+    try:
+        if image.stat().st_size <= limit:
+            return image
+    except OSError:
+        return image
+    try:
+        with Image.open(image) as raw:
+            picture = mockup._as_displayed(raw)
+            if picture.mode in ("RGBA", "LA", "PA") or (
+                picture.mode == "P" and "transparency" in picture.info
+            ):
+                rgba = picture.convert("RGBA")
+                picture = Image.new("RGB", rgba.size, (255, 255, 255))
+                picture.paste(rgba, (0, 0), rgba)
+            else:
+                picture = picture.convert("RGB")
+    except (OSError, ValueError, Image.DecompressionBombError) as exc:
+        raise ValidationError(f"Cannot open {image.name}: {exc}") from exc
+    out = out_dir / f"{image.stem}-{image.suffix.lstrip('.').lower()}-etsy.jpg"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    quality = 90
+    for _attempt in range(10):
+        picture.save(out, "JPEG", quality=quality, optimize=True)
+        if out.stat().st_size <= limit:
+            return out
+        if quality > 80:
+            quality = 80
+        else:
+            width, height = picture.size
+            picture = picture.resize(
+                (max(1, round(width * 0.8)), max(1, round(height * 0.8))), Image.LANCZOS
+            )
+    raise ValidationError(f"{image.name} could not be made smaller than Etsy's 20MB limit.")
 
 
 def _batch_name() -> str:
@@ -134,8 +280,14 @@ def run(
     use_cache: bool = True,
     on_progress: Callable[[str], None] | None = None,
     exclude_products: set[str] | None = None,
+    mockups: Sequence[Path] | None = None,
 ) -> DropReport:
-    """Composite, research, write copy, and emit review.csv. Nothing is sent to Etsy."""
+    """Composite, research, write copy, and emit review.csv. Nothing is sent to Etsy.
+
+    `mockups` are the templates to composite onto, first (the main image) to last —
+    normally `catalog.enabled_mockups(workspace)`, the Mockuplar page's selection and
+    order. Without it the first `mockups_per_product` files of 1-MOCKUPS are used.
+    """
     workspace.require()
 
     def say(message: str) -> None:
@@ -153,9 +305,16 @@ def run(
         return report
 
     available = workspace.mockup_files()
-    mockups = available[:mockups_per_product]
-    # A mockup left out by --mockups is never silently dropped: the row says so.
-    unused = len(available) - len(mockups)
+    if mockups is not None:
+        # The seller chose these (and their order) on the Mockuplar page; the ones left
+        # out were switched off there, which the caller reports once, not per row.
+        chosen = list(mockups)
+        unused = 0
+    else:
+        chosen = available[:mockups_per_product]
+        # A mockup left out by --mockups is never silently dropped: the row says so.
+        unused = len(available) - len(chosen)
+    mockups = chosen
 
     # A composited row carries one image per mockup plus the flat render, and Etsy takes
     # ten per listing. Counted against the mockups that actually exist rather than the
@@ -167,7 +326,11 @@ def run(
     if planned > MAX_LISTING_IMAGES:
         allowed = MAX_LISTING_IMAGES - (1 if include_flat else 0)
         flat_note = " plus the flat render" if include_flat else ""
-        remedy = f"Use --mockups {allowed} or fewer" + (", or --no-flat." if include_flat else ".")
+        remedy = (
+            f"Use --mockups {allowed} or fewer" + (", or --no-flat." if include_flat else ".")
+            if unused or mockups_per_product < len(available)
+            else f"Turn some mockups off on the Mockups page (at most {allowed})."
+        )
         raise ValidationError(
             f"{len(mockups)} mockup(s){flat_note} is {planned} images per listing, and "
             f"Etsy allows {MAX_LISTING_IMAGES}. {remedy}"
@@ -235,6 +398,17 @@ def run(
             row.warnings.append(row.seed.reason or "no concept could be read from the filename")
             say(f"skipped {row.source.name}")
             continue
+        huge = oversized(row.images if row.source.is_dir() else [row.source])
+        if huge is not None:
+            (path, (width, height)) = huge
+            row.skipped = True
+            row.warnings.append(
+                f"{path.name} is {width}x{height} px; images can be at most "
+                f"{catalog.MAX_EDGE} px on a side and {catalog.MAX_PIXELS // 1_000_000} "
+                "million pixels — make it smaller"
+            )
+            say(f"skipped {row.source.name}")
+            continue
 
         copy = generate.generate(
             row.seed,
@@ -242,9 +416,15 @@ def run(
             template_description=template.description,
             fallback_tags=template.tags,
         )
-        row.title, row.tags = copy.title, copy.tags
+        row.title, row.tags = clean_title(copy.title), copy.tags
         row.description = copy.description
         row.evidence, row.warnings = copy.sources, list(copy.warnings)
+        if row.title != copy.title:
+            row.warnings.append("characters Etsy does not accept were taken out of the title")
+        if not row.title:
+            row.skipped = True
+            row.warnings.append("no title Etsy accepts could be made from the file name")
+            continue
 
         # Only the routes that redraw pixels turn a photo upright (see the EXIF note on
         # mockup.ORIENTATION_TAG). A ready photo is uploaded byte for byte, and Etsy
@@ -307,7 +487,17 @@ def run(
                     f"{image.name} was converted to {converted.name}: Etsy accepts only "
                     "JPG, PNG and GIF listing images"
                 )
-            uploadable.append(converted)
+            try:
+                fitted = fit_for_etsy(converted, convert_dir)
+            except Exception as exc:  # noqa: BLE001
+                row.warnings.append(f"{converted.name} could not be made smaller for Etsy: {exc}")
+                continue
+            if fitted != converted:
+                row.warnings.append(
+                    f"{converted.name} was over Etsy's 20MB image limit; made smaller as "
+                    f"{fitted.name}"
+                )
+            uploadable.append(fitted)
         row.images = uploadable
 
         if not row.images:

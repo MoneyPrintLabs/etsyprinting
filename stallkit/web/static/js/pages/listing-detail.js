@@ -676,13 +676,15 @@ export default {
       st.discardBtn = button({ label: t("actions.discard"), variant: "ghost", size: "lg", onClick: () => discard() });
       const open = h(
         "a",
-        { class: "btn btn-secondary btn-lg", href: d.etsy_url, target: "_blank", rel: "noopener noreferrer", "data-external": "" },
+        { class: "btn btn-secondary btn-lg ld-open", href: d.etsy_url, target: "_blank", rel: "noopener noreferrer", "data-external": "", title: t("actions.open"), "aria-label": t("actions.open") },
         icon("link", { size: 18 }),
         h("span", { class: "btn-label" }, t("actions.open")),
       );
       st.publishBtn = state === "draft" ? button({ label: t("actions.publish"), icon: "upload", variant: "primary", size: "lg", onClick: () => publish() }) : null;
-      st.noteEl = h("p", { class: "ld-note" }, icon("lock", { size: 13 }), h("span", null, state === "active" ? t("actions.note_active") : t("actions.note")));
-      const row = h("div", { class: "ld-actions" }, st.noteEl, h("div", { class: "spacer" }), st.discardBtn, st.saveBtn, open, st.publishBtn);
+      const note = state === "active" ? t("actions.note_active") : t("actions.note");
+      st.noteEl = h("p", { class: "ld-note", title: note }, icon("lock", { size: 13 }), h("span", null, note));
+      // The note takes the free space and wraps; the buttons stay together on the right.
+      const row = h("div", { class: "ld-actions" }, st.noteEl, st.discardBtn, st.saveBtn, open, st.publishBtn);
       st.actionsEl = row;
       queueMicrotask(syncDirty);
       return row;

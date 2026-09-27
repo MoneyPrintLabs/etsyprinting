@@ -8,19 +8,29 @@ shop and product name, and never run at the same time.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import secrets
+import socket
+import sys
+import threading
+import time
+from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from PIL import Image
 
 from .. import csvio, listings
 from ..client import EtsyClient
 from ..errors import ValidationError
-from . import pipeline
+from . import catalog, pipeline
 from .template import Template
 from .workspace import Workspace
+
+log = logging.getLogger("stallkit.drop")
 
 
 @dataclass
@@ -51,23 +61,105 @@ def lock_path(root: Path) -> Path:
     return root / LOCK_FILE
 
 
+# One process writes the history while its own request threads read it (the pending
+# list, the status check, İlanlar). Every read and write in this process goes through
+# this lock, so a reader never holds the file open while the writer replaces it.
+_HISTORY_LOCK = threading.RLock()
+
+# On Windows a file cannot be replaced while anyone has it open: another program (an
+# antivirus scan, OneDrive, Explorer's preview, a second stallkit) reading
+# upload-history.json makes os.replace fail with "Access denied" for a moment. The
+# write is retried with growing pauses, about 5 s in all, before anything gives up.
+REPLACE_TRIES = 25
+REPLACE_FIRST_PAUSE = 0.01
+REPLACE_MAX_PAUSE = 0.3
+
+
+def _busy(exc: OSError) -> bool:
+    """A file another program holds open for a moment (Windows sharing violations)."""
+    return isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in (5, 32, 33)
+
+
+def _replace(temporary: Path, path: Path) -> None:
+    """os.replace, retried while another program holds `path` open (Windows)."""
+    pause = REPLACE_FIRST_PAUSE
+    for attempt in range(REPLACE_TRIES):
+        try:
+            os.replace(temporary, path)
+            return
+        except OSError as exc:
+            if not _busy(exc) or attempt == REPLACE_TRIES - 1:
+                raise
+        time.sleep(pause)
+        pause = min(REPLACE_MAX_PAUSE, pause * 2)
+
+
+def _write_in_place(path: Path, text: str) -> None:
+    """The last resort when the file cannot be replaced: overwrite it where it is.
+
+    Not atomic, but a program that only reads the file still lets it be written, and
+    a draft's record on disk beats a draft Etsy has and the history does not.
+    """
+    with path.open("r+" if path.exists() else "w", encoding="utf-8") as handle:
+        handle.seek(0)
+        handle.write(text)
+        handle.truncate()
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
 def save_history(path: Path, state: dict) -> None:
     """Write the history atomically, or stop: an unsaved entry is a future duplicate."""
+    text = json.dumps(state, ensure_ascii=False, indent=2)
     temporary = path.with_suffix(".tmp")
+    with _HISTORY_LOCK:
+        try:
+            with temporary.open("w", encoding="utf-8") as handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            _replace(temporary, path)
+            return
+        except OSError as exc:
+            if not _busy(exc):
+                raise ValidationError(
+                    "Cannot save upload history; stopped to avoid duplicates."
+                ) from exc
+            log.warning("upload-history.json stayed busy (%s); writing it in place", exc)
+        try:
+            _write_in_place(path, text)
+        except OSError as exc:
+            raise ValidationError(
+                "Cannot save upload history; stopped to avoid duplicates."
+            ) from exc
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+
+
+# --- the upload lock -------------------------------------------------------------------
+
+
+def _lock_text(token: str) -> str:
+    # The first line stays the bare PID: older stallkit versions wrote only that.
+    return f"{os.getpid()}\n{socket.gethostname()}\n{token}\n"
+
+
+def _read_lock(path: Path) -> list[str] | None:
     try:
-        with temporary.open("w", encoding="utf-8") as handle:
-            json.dump(state, handle, ensure_ascii=False, indent=2)
-            handle.flush()
-            os.fsync(handle.fileno())
-        temporary.replace(path)
-    except OSError as exc:
-        raise ValidationError("Cannot save upload history; stopped to avoid duplicates.") from exc
+        return path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return []
 
 
 @contextmanager
 def upload_lock(root: Path):
     """One writer per workspace. Raises UploadLocked while another run holds it."""
     path = lock_path(root)
+    token = secrets.token_hex(8)
     try:
         handle = path.open("x", encoding="utf-8")
     except FileExistsError as exc:
@@ -78,21 +170,145 @@ def upload_lock(root: Path):
         ) from exc
     try:
         with handle:
-            handle.write(str(os.getpid()))
+            handle.write(_lock_text(token))
         yield
     finally:
-        path.unlink()
+        # Removed only while it is still this run's lock. Someone may have deleted it
+        # by hand during the run (the workspace README says how, for a crashed run);
+        # that must not turn a finished run into an error, and a lock another run took
+        # since then is that run's to remove.
+        lines = _read_lock(path)
+        if lines is None:
+            log.warning("the upload lock %s was removed while this run held it", path)
+        elif len(lines) >= 3 and lines[2].strip() == token:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                log.warning("could not remove the upload lock %s: %s", path, exc)
+        else:
+            log.warning("the upload lock %s now belongs to another run; left in place", path)
+
+
+def _pid_alive(pid: int) -> bool | None:
+    """Whether a process with this id runs on this computer (None: cannot tell)."""
+    if pid <= 0:
+        return None
+    if pid == os.getpid():
+        return True
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        query_limited_information, still_active = 0x1000, 259
+        handle = kernel32.OpenProcess(query_limited_information, False, pid)
+        if not handle:
+            error = ctypes.get_last_error()
+            if error == 5:  # access denied: it exists, it is someone else's
+                return True
+            if error == 87:  # invalid parameter: no such process
+                return False
+            return None
+        try:
+            code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return None
+            return code.value == still_active
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)  # signal 0 only asks; on Windows it would not (see above)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return None
+    return True
+
+
+def lock_info(root: Path) -> dict[str, Any] | None:
+    """What the workspace's upload lock says, or None when there is no lock.
+
+    {"pid": int | None, "since": epoch | None, "alive": bool | None, "stale": bool}.
+    `stale` is True only when the lock was written on this computer and its process
+    provably no longer runs: a crashed run. A PID the system has since handed to
+    another program reads as alive, so a stale lock can look active, never the reverse.
+    """
+    path = lock_path(root)
+    lines = _read_lock(path)
+    if lines is None:
+        return None
+    try:
+        since: float | None = path.stat().st_mtime
+    except OSError:
+        since = None
+    try:
+        pid: int | None = int(lines[0].strip()) if lines else None
+    except ValueError:
+        pid = None
+    host = lines[1].strip() if len(lines) > 1 else ""
+    alive = _pid_alive(pid) if pid is not None else None
+    # A lock from another computer (a synced folder) says nothing about processes here.
+    same_host = not host or host == socket.gethostname()
+    return {"pid": pid, "since": since, "alive": alive if same_host else None,
+            "stale": bool(same_host and alive is False)}
+
+
+# --- reading the history ------------------------------------------------------------
+
+
+def _read_text(path: Path) -> str | None:
+    """The file's text, retried while another program holds it (None: no file)."""
+    pause = REPLACE_FIRST_PAUSE
+    for attempt in range(REPLACE_TRIES):
+        try:
+            return path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            if not _busy(exc) or attempt == REPLACE_TRIES - 1:
+                raise
+        time.sleep(pause)
+        pause = min(REPLACE_MAX_PAUSE, pause * 2)
+    return None  # pragma: no cover - the loop always returns or raises
+
+
+# For the app's other small state files (last-run.json) that readers open meanwhile.
+replace_file = _replace
+read_text = _read_text
 
 
 def load_history(path: Path) -> dict:
     """The whole history file ({shop: {product: entry}}); {} when there is none yet."""
-    try:
-        state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-        if not isinstance(state, dict) or any(not isinstance(v, dict) for v in state.values()):
-            raise ValueError("invalid history")
-    except (ValueError, OSError) as exc:
-        raise ValidationError("Cannot read upload-history.json; stopped to avoid duplicates.") from exc
+    with _HISTORY_LOCK:
+        try:
+            text = _read_text(path)
+            state = json.loads(text) if text is not None else {}
+            if not isinstance(state, dict) or any(not isinstance(v, dict) for v in state.values()):
+                raise ValueError("invalid history")
+        except (ValueError, OSError) as exc:
+            raise ValidationError(
+                "Cannot read upload-history.json; stopped to avoid duplicates."
+            ) from exc
     return state
+
+
+def read_history(root: Path) -> dict:
+    """The history for a screen that only shows it: {} when it cannot be read.
+
+    Same lock as the writer, so a reader in this process never makes a save fail.
+    """
+    try:
+        return load_history(history_path(root))
+    except ValidationError:
+        return {}
 
 
 def shop_history(state: dict, shop: str | None) -> dict:
@@ -159,16 +375,25 @@ class RecordedClient:
         save_history(self.path, self.state)
         return result
 
+    def _progress_saved(self) -> None:
+        # The draft id is already on disk; a count of images or variations is only
+        # progress, and the product's final save records it. A save that fails here
+        # must not cost the draft its remaining images.
+        try:
+            save_history(self.path, self.state)
+        except ValidationError as exc:
+            log.warning("could not record progress in upload-history.json: %s", exc.__cause__)
+
     def update_listing_inventory(self, listing_id, inventory):
         result = self.client.update_listing_inventory(listing_id, inventory)
         self.entry["variations"] = len(inventory["products"])
-        save_history(self.path, self.state)
+        self._progress_saved()
         return result
 
     def upload_listing_image(self, listing_id, image, *, rank):
         result = self.client.upload_listing_image(listing_id, image, rank=rank)
         self.entry["images_uploaded"] = rank
-        save_history(self.path, self.state)
+        self._progress_saved()
         return result
 
 
@@ -176,13 +401,18 @@ _RecordedClient = RecordedClient
 
 
 def run(workspace: Workspace, template: Template, *, client: EtsyClient | None = None,
-        dry_run: bool = False) -> AutoReport:
+        dry_run: bool = False, mockups: Sequence[Path] | None = None) -> AutoReport:
     """Run once. Existing or uncertain products are never automatically recreated.
 
     The local history is scoped to a shop and product path. An interrupted POST
     cannot be retried safely, so pending/partial/error entries need manual review.
+    `mockups` are the templates to composite onto, first (the main image) to last;
+    by default the ones chosen on the Mockuplar page, in that order
+    (`catalog.enabled_mockups`), exactly as the app's own runs use them.
     """
     workspace.require()
+    if mockups is None:
+        mockups = catalog.enabled_mockups(workspace)
     if client is None and not dry_run:
         raise ValidationError("Connect your Etsy shop before uploading drafts.")
     if template.fields.get("type", "physical") != "physical":
@@ -197,7 +427,8 @@ def run(workspace: Workspace, template: Template, *, client: EtsyClient | None =
         # the same product; matching exactly would upload it a second time.
         names = {p.name.casefold() for p, _ in workspace.product_groups()}
         report.already_done, report.needs_review = known_products(history, names)
-        prepared = pipeline.run(workspace, template, client=client, exclude_products=set(history))
+        prepared = pipeline.run(workspace, template, client=client, exclude_products=set(history),
+                                mockups=mockups)
         report.prepared = prepared
         if prepared.skipped:
             details = "; ".join(f"{row.source.name}: {', '.join(row.warnings)}" for row in prepared.skipped)

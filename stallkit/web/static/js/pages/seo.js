@@ -270,21 +270,50 @@ export default {
       return [...first, ...rest];
     }
 
-    function issueChips(item) {
+    function issueChips(item, limit = CHIP_LIMIT) {
       const issues = chipOrder(item.issues || []);
       if (!issues.length) {
         return [h("span", { class: "seo-chip tone-success" }, icon("check", { size: 13, strokeWidth: 2.4 }), h("span", null, t("no_issues")))];
       }
       // The first chip is the listing's main problem: red, like an error.
-      const shown = issues.slice(0, CHIP_LIMIT);
+      const shown = issues.slice(0, limit);
       const chips = shown.map((iss, i) => issueChip(iss, i === 0 && !item.ready && iss.severity !== "info"));
-      const rest = issues.slice(CHIP_LIMIT);
+      const rest = issues.slice(limit);
       if (rest.length) {
         chips.push(
           h("span", { class: "seo-chip tone-muted seo-chip-more", title: rest.map((iss) => issueText(iss)).join("\n") }, t("more_issues", { n: rest.length })),
         );
       }
       return chips;
+    }
+
+    // One line of whole chips, as in the video: when a row is too narrow for all of them,
+    // the last ones join the "+N" pill (its tooltip lists them) instead of being cut
+    // mid-word. Checked again whenever the row's width changes. (Below 1360 px the CSS
+    // lets the chips wrap, so they always fit there.)
+    const chipRows = new WeakMap(); // .seo-chips element -> {item, width}
+    const chipObserver =
+      typeof ResizeObserver === "function"
+        ? new ResizeObserver((entries) => {
+            for (const entry of entries) {
+              const info = chipRows.get(entry.target);
+              const width = Math.round(entry.contentRect.width);
+              if (!info || !width || width === info.width) continue;
+              info.width = width;
+              fitChips(entry.target, info.item);
+            }
+          })
+        : null;
+
+    function fitChips(box, item) {
+      const count = (item.issues || []).length;
+      box.classList.remove("is-tight");
+      if (!count) return; // "Sorun bulunamadı" alone
+      for (let n = Math.min(CHIP_LIMIT, count); n >= 1; n--) {
+        mount(box, issueChips(item, n));
+        if (box.scrollWidth <= box.clientWidth + 1) return;
+      }
+      box.classList.add("is-tight"); // even one chip and "+N" are too wide: the chip shortens
     }
 
     function animateRing(ring, from, to, delay = 0) {
@@ -347,6 +376,10 @@ export default {
         { class: cx("seo-chips", animate && !REDUCED_MOTION && "is-entering"), style: animate ? { "--d": `${Math.min(index, 8) * 60 + 380}ms` } : null },
         issueChips(item),
       );
+      if (chipObserver) {
+        chipRows.set(chipsEl, { item, width: 0 });
+        chipObserver.observe(chipsEl);
+      }
       const row = h(
         "div",
         {
@@ -1273,6 +1306,7 @@ export default {
 
     return () => {
       researchCache.clear();
+      if (chipObserver) chipObserver.disconnect();
     };
   },
 };

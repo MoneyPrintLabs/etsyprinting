@@ -367,6 +367,23 @@ def test_connecting_end_to_end(web, token_endpoint):
     assert notes[0]["ns"] == "connect" and notes[0]["params"] == {"shop": SHOP_NAME}
 
 
+def test_hidden_names_hide_the_shop_in_the_connected_notification(web, token_endpoint):
+    use_fake_etsy(web, connected=False)
+    web.client.post("/api/prefs", json={"anonymise": True, "language": "tr"})
+    port = _free_port()
+    settings.save({"ETSY_REDIRECT_URI": _local_callback(port)})
+    started = _start(web)
+    assert _come_back(started["url"], port, code="the-code").status_code == 302
+    job = wait_for_job(web, started["job_id"])
+    assert job["status"] == "done" and job["result"]["shop_name"] == "Mağaza 1"
+    listed = web.client.get("/api/notifications")
+    assert listed.json()["items"][0]["params"] == {"shop": "Mağaza 1"}
+    assert SHOP_NAME not in listed.text
+    # The name itself is kept: with the preference off again, the bell names the shop.
+    web.client.post("/api/prefs", json={"anonymise": False})
+    assert web.client.get("/api/notifications").json()["items"][0]["params"] == {"shop": SHOP_NAME}
+
+
 def test_the_connect_job_reports_its_phases(web, token_endpoint):
     use_fake_etsy(web, connected=False)
     port = _free_port()

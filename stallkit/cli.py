@@ -654,7 +654,8 @@ def listings_pull(
     if not rows:
         _warn(f"No {state} listings found.")
         raise typer.Exit(1)
-    columns = listings_mod.LISTING_COLUMNS + ["url", "views", "num_favorers"]
+    # Etsy's ShopListing (OAS) has url and num_favorers but no view count: no "views".
+    columns = listings_mod.LISTING_COLUMNS + ["url", "num_favorers"]
     csvio.write_rows(out, rows, columns=columns)
     _ok(f"Exported {len(rows)} listing(s) to {out}")
 
@@ -1125,7 +1126,9 @@ def seo_suggest(
 ) -> None:
     """Audit one listing, then suggest tags drawn from what ranks for its keyword."""
     with _client() as client:
-        listing = client.get(f"/listings/{listing_id}")
+        # Through client.listing, so the title and tags are decoded plain text (Etsy
+        # sends them HTML-escaped); the signed-in view also covers the seller's drafts.
+        listing = client.listing(listing_id, authed=True)
         audit = seo_mod.audit_listing(listing)
 
         colour = {"good": "green", "fair": "yellow", "poor": "red"}[audit.grade]
@@ -1251,12 +1254,45 @@ def drop_template(
     )
 
 
+_MOCKUPS_HELP = (
+    "Use only the first N of the chosen mockups. Default: every mockup switched on in the "
+    "app's Mockups page, in its order (the first is the main image), at most 19."
+)
+
+
+def _drop_mockups(ws: workspace_mod.Workspace, count: Optional[int]) -> list[Path]:
+    """The mockups a drop run composites onto: the app's selection and order (Mockuplar).
+
+    `--mockups N` keeps the first N of them. Says once which ones are used.
+    """
+    use = catalog_mod.usage(ws)
+    chosen = catalog_mod.enabled_mockups(ws)
+    if count is not None:
+        chosen = chosen[: max(0, count)]
+    available = len(ws.mockup_files())
+    if available:
+        off = use["total"] - use["enabled"]
+        notes = [f"main image {chosen[0].name}"] if chosen else []
+        if off:
+            notes.append(f"{off} switched off")
+        if use["over_limit"]:
+            notes.append(f"{len(use['over_limit'])} over the {use['max']}-mockup limit")
+        if count is not None and len(chosen) < len(use["used"]):
+            notes.append(f"--mockups {count} keeps the first {len(chosen)}")
+        console.print(
+            f"[dim]Mockups: {len(chosen)} of {available} used"
+            + (f" ({'; '.join(notes)})" if notes else "")
+            + ". Choose and order them in the app's Mockups page.[/]"
+        )
+        if not chosen:
+            _warn("No mockup is switched on: transparent designs get only the flat render.")
+    return chosen
+
+
 @drop_app.command("run")
 def drop_run(
     path: Optional[Path] = typer.Option(None, "--path"),
-    mockups: int = typer.Option(
-        5, "--mockups", help="Mockups per product. With the flat render this must fit Etsy's 10."
-    ),
+    mockups: Optional[int] = typer.Option(None, "--mockups", min=0, help=_MOCKUPS_HELP),
     no_flat: bool = typer.Option(False, "--no-flat", help="Do not append the flat artwork."),
     sample: int = typer.Option(200, "--sample", help="Listings to sample per concept."),
     no_cache: bool = typer.Option(False, "--no-cache", help="Ignore cached research."),
@@ -1281,7 +1317,8 @@ def drop_run(
     except StallKitError as exc:
         _warn(f"Running without market research ({exc.args[0].splitlines()[0]}).")
 
-    images_each = min(mockups, len(ws.mockup_files())) + (0 if no_flat else 1)
+    chosen = _drop_mockups(ws, mockups)
+    images_each = len(chosen) + (0 if no_flat else 1)
     console.print(
         f"[dim]{len(designs)} design(s), about {images_each} image(s) each. "
         f"Creating the drafts later will cost roughly "
@@ -1295,7 +1332,7 @@ def drop_run(
                 ws,
                 tmpl,
                 client=client,
-                mockups_per_product=mockups,
+                mockups=chosen,
                 include_flat=not no_flat,
                 sample=sample,
                 use_cache=not no_cache,
@@ -1558,15 +1595,17 @@ def _print_print_areas(
 def drop_auto(
     path: Optional[Path] = typer.Option(None, "--path", help="Etsy Studio folder."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Prepare and validate offline, without uploading."),
+    mockups: Optional[int] = typer.Option(None, "--mockups", min=0, help=_MOCKUPS_HELP),
 ) -> None:
     """Prepare new products and upload Etsy drafts. Previously attempted products are skipped."""
     ws = _workspace(path).require()
     tmpl = template_mod.Template.from_dict(ws.read_template())
+    chosen = _drop_mockups(ws, mockups)
     if dry_run:
-        report = automation.run(ws, tmpl, dry_run=True)
+        report = automation.run(ws, tmpl, dry_run=True, mockups=chosen)
     else:
         with _client() as client:
-            report = automation.run(ws, tmpl, client=client)
+            report = automation.run(ws, tmpl, client=client, mockups=chosen)
     if report.prepared and report.prepared.csv_path:
         console.print(f"Review: {report.prepared.csv_path}")
         for product in report.prepared.ready:

@@ -22,7 +22,8 @@ The guarantees of `drop auto` hold here too, because they are the same code:
 
 Events: `on_event(name, step, status, data)`, always with `data["index"]`.
 - step in STEPS, status in running | done | warn | error; data may carry `images`
-  (paths relative to the workspace root), `mode`, `title`, `tags`, `sampled`,
+  (paths relative to the workspace root), `flat` (the one of them that is the plain
+  design, not a mockup), `mode`, `title`, `tags`, `sampled`,
   `images_uploaded` / `images_total`, `listing_id`, `problem` ({code, message, ...}).
 - step "item": the product's outcome or waiting state; status in waiting | ok |
   partial | error | cancelled | checked (a dry run's good product).
@@ -121,6 +122,7 @@ class StreamItem:
     tags: list[str] = field(default_factory=list)
     description: str = ""
     images: list[Path] = field(default_factory=list)
+    flat: Path | None = None  # the plain design among `images` (not a mockup)
     evidence: list[str] = field(default_factory=list)
     warnings: list[Problem] = field(default_factory=list)
     error: Problem | None = None
@@ -519,6 +521,7 @@ class _Run:
             "title": item.title,
             "tags": list(item.tags),
             "images": [self._rel(p) for p in item.images],
+            "flat": self._rel(item.flat) if item.flat is not None else None,
             "mode": item.mode,
             "listing_id": item.listing_id,
             "images_uploaded": item.images_uploaded,
@@ -599,7 +602,22 @@ class _Run:
                 "mockup",
             ))
         warned = len(item.warnings)
+        # A design too large to decode safely (a 13000 px square needs gigabytes per
+        # copy) is this product's problem, found before any work; the others go on.
+        huge = pipeline.oversized(item.photos or [item.source])
+        if huge is not None:
+            path, (width, height) = huge
+            raise _ProductFailed(Problem(
+                "too_many_pixels",
+                f"{path.name} is {width}x{height} px; images can be at most "
+                f"{catalog.MAX_EDGE} px on a side and {catalog.MAX_PIXELS // 1_000_000} million "
+                "pixels. Make it smaller.",
+                "mockup",
+                {"name": path.name, "width": width, "height": height,
+                 "max_edge": catalog.MAX_EDGE, "max_mp": catalog.MAX_PIXELS // 1_000_000},
+            ))
         images: list[Path] = []
+        flat_image: Path | None = None
         if item.photos:
             item.mode = "photos"
             if len(item.photos) > MAX_LISTING_IMAGES:
@@ -643,11 +661,13 @@ class _Run:
                 self._check_halt()
                 flat = self.out_dir / self._output_name(item.source, None)
                 try:
-                    images.append(mockup.flatten_design(item.source, flat))
+                    flat_image = mockup.flatten_design(item.source, flat)
+                    images.append(flat_image)
                 except Exception as exc:  # noqa: BLE001
                     self._warn(item, "flat_failed", f"flat render failed: {exc}", "mockup")
 
-        # Etsy takes JPG, PNG and GIF only; anything else is converted, and said so.
+        # Etsy takes JPG, PNG and GIF only; anything else is converted, and said so. A
+        # file over Etsy's 20 MB limit is made smaller, and said so too.
         convert_dir = self.out_dir / (item.source.name if item.photos else item.source.stem)
         uploadable: list[Path] = []
         for image in images:
@@ -663,7 +683,22 @@ class _Run:
                            f"{image.name} was converted to {converted.name}: Etsy accepts only "
                            "JPG, PNG and GIF listing images", "mockup",
                            name=image.name, to=converted.name)
-            uploadable.append(converted)
+            try:
+                size = converted.stat().st_size
+                fitted = pipeline.fit_for_etsy(converted, convert_dir)
+            except Exception as exc:  # noqa: BLE001
+                self._warn(item, "convert_failed",
+                           f"{converted.name} could not be made smaller for Etsy: {exc}",
+                           "mockup", name=converted.name)
+                continue
+            if fitted != converted:
+                self._warn(item, "shrunk",
+                           f"{converted.name} was {size / 1024 / 1024:.1f} MB, over Etsy's 20 MB "
+                           f"image limit; it was made smaller as {fitted.name}", "mockup",
+                           name=converted.name, mb=round(size / 1024 / 1024, 1))
+            if image == flat_image:
+                item.flat = fitted
+            uploadable.append(fitted)
         if not uploadable:
             raise _ProductFailed(Problem(
                 "no_images",
@@ -673,7 +708,8 @@ class _Run:
             ))
         item.images = uploadable
         self._step(item, "mockup", WARN if len(item.warnings) > warned else DONE,
-                   images=[self._rel(p) for p in uploadable], mode=item.mode)
+                   images=[self._rel(p) for p in uploadable], mode=item.mode,
+                   flat=self._rel(item.flat) if item.flat is not None else None)
 
     def _market(self, concept: str) -> tuple[MarketReport | None, Problem | None]:
         """One research per concept, however many products share it."""
@@ -745,8 +781,22 @@ class _Run:
         """Steps 3 and 4: the title, then thirteen tags and the description."""
         assert item.seed is not None
         self._step(item, "title", RUNNING)
-        item.title = generate.build_title(item.seed, item.market)
-        self._step(item, "title", DONE, title=item.title)
+        built = generate.build_title(item.seed, item.market)
+        # Etsy refuses a title with an emoji or a "$", or with a second "&" (see
+        # pipeline.TITLE_ONCE); a file name can carry any of them into the concept.
+        item.title = pipeline.clean_title(built)
+        if not item.title:
+            raise _ProductFailed(Problem(
+                "invalid_title",
+                f"No title Etsy accepts could be made from {item.name!r}; rename the file.",
+                "title",
+            ))
+        if item.title != built:
+            self._warn(item, "title_cleaned",
+                       "characters Etsy does not accept were taken out of the title", "title")
+            self._step(item, "title", WARN, title=item.title)
+        else:
+            self._step(item, "title", DONE, title=item.title)
 
         self._check_halt()
         self._step(item, "tags", RUNNING)
@@ -784,6 +834,9 @@ class _Run:
         prepared = listings.prepare([row], base_dir=self.out_dir)[0]
         if prepared.result.failed:
             raise _ProductFailed(Problem("invalid_row", prepared.result.message, "check"))
+        title_problems = pipeline.title_problems(item.title)
+        if title_problems:
+            raise _ProductFailed(Problem("invalid_title", "; ".join(title_problems), "check"))
         warned = False
         for message in prepared.result.warnings:
             code = "no_shipping_profile" if "shipping_profile_id" in message else "check_warning"
@@ -916,6 +969,7 @@ def item_summary(item: StreamItem, root: Path) -> dict[str, Any]:
         "title": item.title,
         "tags": list(item.tags),
         "images": [rel(p) for p in item.images],
+        "flat": rel(item.flat) if item.flat is not None else None,
         "listing_id": item.listing_id,
         "warnings": [w.to_dict() for w in item.warnings],
         "error": item.error.to_dict() if item.error else None,

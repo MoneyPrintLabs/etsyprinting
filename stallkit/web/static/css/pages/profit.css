@@ -341,6 +341,18 @@
   flex-direction: column;
   gap: 10px;
 }
+/* The month had more orders than are read: a quiet line, not a warning box. */
+.page-profit .pf-partial {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: -2px 0 0 4px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.page-profit .pf-partial .icon {
+  flex: none;
+}
 .pf-cta {
   display: flex;
   align-items: center;
@@ -972,6 +984,25 @@
   }
   .pf-kpi .pf-net-card .stat-value {
     font-size: 28px;
+  }
+}
+/* Side by side with the chart on a laptop-sized window the product card is narrow:
+   tighter number columns leave the product name room (inline widths need !important). */
+@media (min-width: 1361px) and (max-width: 1700px) {
+  .pf-products .tbl colgroup col:nth-child(2) {
+    width: 52px !important;
+  }
+  .pf-products .tbl colgroup col:nth-child(3) {
+    width: 88px !important;
+  }
+  .pf-products .tbl colgroup col:nth-child(4) {
+    width: 90px !important;
+  }
+  .pf-products .tbl colgroup col:nth-child(5) {
+    width: 82px !important;
+  }
+  .pf-products .tbl colgroup col:nth-child(6) {
+    width: 86px !important;
   }
 }
 @media (max-width: 1360px) {

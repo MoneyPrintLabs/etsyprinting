@@ -447,3 +447,28 @@ def test_only_a_success_is_sent_back_to_the_app(handler):
     assert refused.status_code in (200, 400) and "location" not in refused.headers
     assert both.status_code in (200, 400) and "location" not in both.headers
     assert ok.status_code == 302 and ok.headers["location"] == "http://localhost:3000/oauth-done"
+
+
+# --- one event stream per browser ---------------------------------------------------------------
+
+
+def test_the_tabs_of_a_browser_share_one_event_stream(web):
+    """A browser gives a host about 6 connections for all its tabs; a stream per tab used
+    them up with six tabs open. events.js elects one leader tab (Web Locks) that holds
+    the stream and relays it over a BroadcastChannel; the server's event ids let a tab
+    drop the doubles while two leaders overlap."""
+    src = (JS_DIR / "events.js").read_text(encoding="utf-8")
+    for needle in ("navigator.locks", "BroadcastChannel", "steal: true", "lastEventId",
+                   'new EventSource("/api/events")'):
+        assert needle in src, needle
+    assert src.count("new EventSource(") == 1
+    # Only the events client opens a stream; pages subscribe through ctx.events.
+    for path in JS_DIR.rglob("*.js"):
+        if path.name != "events.js":
+            assert "EventSource" not in path.read_text(encoding="utf-8"), path.name
+    sub = web.ctx.events.subscribe()
+    try:
+        web.ctx.notify("common", "n")
+        assert re.match(r"event: notification\nid: \d+\ndata: ", sub.get(timeout=2))
+    finally:
+        sub.close()

@@ -1,5 +1,9 @@
 import io
 import json
+import os
+import subprocess
+import sys
+import threading
 
 import pytest
 from PIL import Image
@@ -323,3 +327,321 @@ def test_a_variation_failure_leaves_the_draft_partial_not_ok(studio):
     result = report.uploaded.results[0]
     assert result.status == "partial"
     assert "variations could not be set" in result.message
+
+
+# --- history writes on Windows (history-replace-windows) -------------------------------------
+
+
+@pytest.fixture
+def quick_retries(monkeypatch):
+    monkeypatch.setattr(automation, "REPLACE_FIRST_PAUSE", 0.001)
+    monkeypatch.setattr(automation, "REPLACE_MAX_PAUSE", 0.002)
+
+
+def test_a_busy_history_file_is_retried_not_given_up(tmp_path, monkeypatch, quick_retries):
+    # Windows refuses os.replace while another program has the file open ("Access
+    # denied"): the save waits a moment and tries again.
+    path = tmp_path / "upload-history.json"
+    real = automation.os.replace
+    failures = {"n": 3}
+
+    def busy_replace(src, dst):
+        if failures["n"]:
+            failures["n"] -= 1
+            raise PermissionError(13, "Access denied")
+        return real(src, dst)
+
+    monkeypatch.setattr(automation.os, "replace", busy_replace)
+    automation.save_history(path, {"123": {"a.png": {"status": "pending"}}})
+    assert failures["n"] == 0
+    assert json.loads(path.read_text(encoding="utf-8")) == {"123": {"a.png": {"status": "pending"}}}
+    assert not path.with_suffix(".tmp").exists()
+
+
+def test_a_history_file_that_stays_busy_is_written_in_place(tmp_path, monkeypatch, quick_retries):
+    # Never lose a draft's record: when the file cannot be replaced at all, it is
+    # overwritten where it is (a program that only reads it still lets that happen).
+    path = tmp_path / "upload-history.json"
+    path.write_text(json.dumps({"123": {"old.png": {"status": "ok"}}}) + " " * 500,
+                    encoding="utf-8")
+
+    def always_busy(src, dst):
+        raise PermissionError(13, "Access denied")
+
+    monkeypatch.setattr(automation.os, "replace", always_busy)
+    state = {"123": {"old.png": {"status": "ok"},
+                     "new.png": {"status": "pending", "listing_id": 1000001}}}
+    automation.save_history(path, state)
+    assert automation.load_history(path) == state
+
+
+def test_another_error_still_stops_the_run(tmp_path, monkeypatch):
+    def broken(src, dst):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(automation.os, "replace", broken)
+    with pytest.raises(ValidationError, match="Cannot save upload history"):
+        automation.save_history(tmp_path / "upload-history.json", {})
+
+
+def test_saves_survive_a_reader_that_holds_the_file_open(tmp_path):
+    # The review's reproduction: another thread reads the file (as the status check
+    # and İlanlar do, without any lock) while it is being replaced over and over.
+    path = tmp_path / "upload-history.json"
+    automation.save_history(path, {"123": {}})
+    stop = threading.Event()
+    reads = {"n": 0}
+
+    def reader():
+        while not stop.is_set():
+            try:
+                path.read_text(encoding="utf-8")
+                reads["n"] += 1
+            except OSError:
+                pass
+
+    thread = threading.Thread(target=reader, daemon=True)
+    thread.start()
+    try:
+        for n in range(150):
+            state = {"123": {f"design-{i}.png": {"status": "ok"} for i in range(n % 7)}}
+            automation.save_history(path, state)
+    finally:
+        stop.set()
+        thread.join(5)
+    assert automation.load_history(path) == state
+    assert reads["n"] > 0
+
+
+def test_readers_in_the_app_share_the_writers_lock(tmp_path):
+    path = tmp_path / "upload-history.json"
+    errors: list = []
+
+    def read_many():
+        for _ in range(150):
+            try:
+                automation.read_history(tmp_path)
+                automation.load_history(path)
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+    threads = [threading.Thread(target=read_many) for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    for n in range(150):
+        automation.save_history(path, {"123": {"x.png": {"status": "ok", "n": n}}})
+    for thread in threads:
+        thread.join(10)
+    assert errors == []
+    assert automation.read_history(tmp_path)["123"]["x.png"]["n"] == 149
+
+
+def test_a_progress_save_that_fails_does_not_cost_the_draft_its_images(studio, monkeypatch):
+    ws, template = studio
+    client = Client(ws)
+    real = automation.save_history
+    calls = {"n": 0}
+
+    def flaky(path, state):
+        calls["n"] += 1
+        # 1: intent, 2: the draft id, 3-5: after each image (3 and 4 fail), 6: the outcome.
+        if calls["n"] in (3, 4):
+            raise ValidationError("Cannot save upload history; stopped to avoid duplicates.")
+        return real(path, state)
+
+    monkeypatch.setattr(automation, "save_history", flaky)
+    report = automation.run(ws, template, client=client)
+    assert report.uploaded.results[0].status == "ok"
+    assert len(client.images) == 3, "every image still went up"
+    state = json.loads((ws.root / "upload-history.json").read_text())
+    entry = state["123"]["mountain sunset shirt"]
+    assert entry["status"] == "ok" and entry["listing_id"] == 900
+    assert entry["images_uploaded"] == 3
+
+
+# --- the upload lock (lock-removed-midrun) --------------------------------------------------
+
+
+def test_a_lock_removed_during_the_run_does_not_turn_it_into_an_error(studio):
+    ws, template = studio
+    lock = ws.root / ".auto-upload.lock"
+
+    class Unlocking(Client):
+        def create_draft_listing(self, fields):
+            lock.unlink()  # what the workspace README tells a user with a stuck run to do
+            return super().create_draft_listing(fields)
+
+    report = automation.run(ws, template, client=Unlocking(ws))
+    assert report.uploaded.created == 1
+    assert not lock.exists()
+
+
+def test_a_lock_another_run_took_meanwhile_is_left_to_it(tmp_path):
+    with automation.upload_lock(tmp_path):
+        lock = automation.lock_path(tmp_path)
+        lock.write_text("4242\nother-host\nsomeone-elses-token\n", encoding="utf-8")
+    assert lock.read_text(encoding="utf-8").startswith("4242")
+
+
+def test_the_lock_says_whose_it_is(tmp_path):
+    assert automation.lock_info(tmp_path) is None
+    with automation.upload_lock(tmp_path):
+        info = automation.lock_info(tmp_path)
+        assert info["pid"] == os.getpid() and info["alive"] is True and info["stale"] is False
+    assert not automation.lock_path(tmp_path).exists()
+
+
+def test_a_crashed_runs_lock_is_stale(tmp_path):
+    ended = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"],
+                           capture_output=True, text=True, check=True)
+    # The old format: the PID alone.
+    automation.lock_path(tmp_path).write_text(ended.stdout.strip(), encoding="utf-8")
+    info = automation.lock_info(tmp_path)
+    assert info["pid"] == int(ended.stdout) and info["alive"] is False and info["stale"] is True
+
+
+def test_a_lock_from_another_computer_is_never_called_stale(tmp_path):
+    automation.lock_path(tmp_path).write_text("999999\nsome-other-pc\ntoken\n", encoding="utf-8")
+    info = automation.lock_info(tmp_path)
+    assert info["alive"] is None and info["stale"] is False
+    automation.lock_path(tmp_path).write_text("another process", encoding="utf-8")
+    assert automation.lock_info(tmp_path)["pid"] is None
+
+
+# --- mockups for `drop run` / `drop auto`: the app's selection and order -----------------------
+
+
+@pytest.fixture
+def three_mockups(studio):
+    from stallkit.drop import catalog
+
+    ws, template = studio
+    for name in ("a-tshirt-white.jpg", "b-mug-white.jpg", "c-tote-cream.jpg"):
+        Image.new("RGB", (60, 60), (240, 240, 240)).save(ws.mockups / name)
+    catalog.arrange(ws, order=["c-tote-cream.jpg", "a-tshirt-white.jpg", "b-mug-white.jpg"],
+                    enabled=["c-tote-cream.jpg", "a-tshirt-white.jpg"])
+    return ws, template
+
+
+def _capture(monkeypatch, module, report):
+    seen: dict = {}
+
+    def fake(workspace, *args, **kwargs):
+        seen.update(kwargs)
+        return report(workspace)
+
+    monkeypatch.setattr(module, "run", fake)
+    return seen
+
+
+def _drop_report(ws):
+    return pipeline.DropReport(batch="b", out_dir=ws.drafts / "b")
+
+
+@pytest.mark.parametrize("extra, expected", [
+    ([], ["c-tote-cream.jpg", "a-tshirt-white.jpg"]),
+    (["--mockups", "1"], ["c-tote-cream.jpg"]),
+    (["--mockups", "9"], ["c-tote-cream.jpg", "a-tshirt-white.jpg"]),
+])
+def test_drop_run_uses_the_saved_mockup_selection_and_order(three_mockups, monkeypatch, extra,
+                                                            expected):
+    ws, _ = three_mockups
+    seen = _capture(monkeypatch, pipeline, _drop_report)
+    result = CliRunner().invoke(app, ["drop", "run", "--path", str(ws.root), *extra])
+    assert [p.name for p in seen["mockups"]] == expected, result.output
+    assert "Mockups:" in result.output and "1 switched off" in result.output
+
+
+def test_drop_auto_uses_the_saved_mockup_selection_and_order(three_mockups, monkeypatch):
+    ws, _ = three_mockups
+    seen = _capture(monkeypatch, automation, lambda ws: automation.AutoReport())
+    result = CliRunner().invoke(app, ["drop", "auto", "--path", str(ws.root), "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert [p.name for p in seen["mockups"]] == ["c-tote-cream.jpg", "a-tshirt-white.jpg"]
+    seen.clear()
+    CliRunner().invoke(app, ["drop", "auto", "--path", str(ws.root), "--dry-run",
+                             "--mockups", "1"])
+    assert [p.name for p in seen["mockups"]] == ["c-tote-cream.jpg"]
+
+
+def test_automation_run_defaults_to_the_saved_selection(three_mockups, monkeypatch):
+    ws, template = three_mockups
+    seen = _capture(monkeypatch, pipeline, _drop_report)
+    automation.run(ws, template, dry_run=True)
+    assert [p.name for p in seen["mockups"]] == ["c-tote-cream.jpg", "a-tshirt-white.jpg"]
+
+
+def test_pipeline_composites_onto_the_given_mockups_in_their_order(three_mockups, monkeypatch):
+    from stallkit.drop import catalog, mockup
+
+    ws, template = three_mockups
+    art = Image.new("RGBA", (40, 40), (0, 0, 0, 0))
+    art.putpixel((20, 20), (200, 30, 30, 255))
+    art.save(ws.products / "retro-mountain-sunset.png")
+    used = []
+
+    def fake_compose(design, template_image, out, *, area=None, **_kw):
+        used.append(template_image.name)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (20, 20)).save(out, "JPEG")
+        return out
+
+    monkeypatch.setattr(mockup, "compose", fake_compose)
+    report = pipeline.run(ws, template, mockups=catalog.enabled_mockups(ws))
+    assert used == ["c-tote-cream.jpg", "a-tshirt-white.jpg"]
+    row = next(r for r in report.rows if r.source.name == "retro-mountain-sunset.png")
+    assert not any("were not used" in w for w in row.warnings)
+
+
+# --- what Etsy accepts: titles, pixels, file size ---------------------------------------------
+
+
+@pytest.mark.parametrize("title, cleaned", [
+    ("Retro Mountain Sunset Shirt, Hiking Tee", "Retro Mountain Sunset Shirt, Hiking Tee"),
+    ("Salt & Pepper & Co, Kitchen Gift", "Salt & Pepper and Co, Kitchen Gift"),
+    ("Mom + Dad + Me: Family: Tee", "Mom + Dad plus Me: Family - Tee"),
+    ("\U0001f338 Flower Power, $5 Tee, 100° Hot", "Flower Power, 5 Tee, 100 Hot"),
+    ("Café Latte Mug", "Café Latte Mug"),
+    ("\U0001f338\U0001f338", ""),
+])
+def test_titles_are_cleaned_to_what_etsy_accepts(title, cleaned):
+    assert pipeline.clean_title(title) == cleaned
+    assert pipeline.title_problems(cleaned) == []
+
+
+def test_title_problems_name_the_rule():
+    problems = pipeline.title_problems("Salt & Pepper & Co $")
+    assert any("'$'" in p for p in problems) and any("'&' 2 times" in p for p in problems)
+    assert pipeline.title_problems("Mom's Mug | Tea & Coffee ™") == []
+
+
+def test_a_design_with_too_many_pixels_is_skipped_not_crashed(studio):
+    ws, template = studio
+    Image.new("1", (12001, 50)).save(ws.products / "huge-mountain-poster.png")
+    report = pipeline.run(ws, template)
+    row = next(r for r in report.rows if r.source.name == "huge-mountain-poster.png")
+    assert row.skipped and any("12001x50" in w for w in row.warnings)
+    assert pipeline.oversized([ws.products / "huge-mountain-poster.png"])[1] == (12001, 50)
+
+
+def test_a_photo_over_etsys_limit_is_made_smaller(tmp_path):
+    noisy = Image.effect_noise((600, 600), 90).convert("RGB")
+    big = tmp_path / "ocean-waves.png"
+    noisy.save(big)
+    limit = big.stat().st_size // 3
+    out = pipeline.fit_for_etsy(big, tmp_path / "out", limit=limit)
+    assert out != big and out.suffix == ".jpg" and out.stat().st_size <= limit
+    with Image.open(out) as check:
+        check.load()
+    small = tmp_path / "small.jpg"
+    noisy.resize((50, 50)).save(small)
+    assert pipeline.fit_for_etsy(small, tmp_path / "out") == small
+
+
+def test_the_estimate_counts_variations_and_real_image_counts():
+    assert pipeline.estimate_requests(8, 8, 7) == 16 + 8 + 56
+    # The review's first demo run: 8 creates, 8 inventory updates, 56 images, 16 research
+    # pages and the template's inventory.
+    assert pipeline.estimate_requests(8, 8, images=56, has_variations=True,
+                                      template_inventory=True) == 89
+    assert pipeline.estimate_requests(0, 0, images=0, template_inventory=True) == 0

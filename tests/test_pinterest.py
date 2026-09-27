@@ -462,3 +462,75 @@ def test_listening_for_the_code_waits_past_a_forged_answer():
     assert pin._listen_for_code(config, "mine", timeout=15) == "real"
     assert answers[0].status_code == 400 and answers[1].status_code == 200
     assert pin._Callback.expected_state is None
+
+
+# --- Pins queued before Etsy's text was decoded ------------------------------------------
+
+OLD_ENTRY = {
+    "key": "1000001:1:b1",
+    "listing_id": 1000001,
+    "rank": 1,
+    "due": "2026-10-01",
+    "status": "pending",
+    "pin_id": None,
+    "message": "",
+    "payload": {
+        "board_id": "b1",
+        "title": "Mom&#39;s &quot;Best&quot; Mug &amp; Gift",
+        "description": "Mom&#39;s &quot;Best&quot; Mug &amp; Gift. mother&#39;s day",
+        "link": "https://www.etsy.com/listing/1000001/moms-best-mug",
+        "alt_text": "Mom&#39;s &quot;Best&quot; Mug &amp; Gift",
+        "media_source": {"source_type": "image_url", "url": "https://i/1000001/1.jpg?a=1&amp;b=2"},
+    },
+}
+PLAIN_TITLE = "Mom's \"Best\" Mug & Gift"
+
+
+def test_an_old_queue_entry_is_posted_as_plain_text(tmp_path):
+    # Queued by 0.2.0 with Etsy's escaped title: the Pin must not say "&#39;".
+    path = tmp_path / "q.json"
+    path.write_text(json.dumps([OLD_ENTRY]), encoding="utf-8")
+    queue = pin.Queue.load(path)
+    client = _Recorder([{"id": "p1"}])
+    done = pin.post_due(client, queue, today=date(2026, 10, 1))
+    assert [e["status"] for e in done] == ["posted"]
+    sent = client.sent[0]
+    assert sent["title"] == sent["alt_text"] == PLAIN_TITLE
+    assert sent["description"] == f"{PLAIN_TITLE}. mother's day"
+    # Only the text is decoded: the link and the image address go out untouched.
+    assert sent["link"] == OLD_ENTRY["payload"]["link"]
+    assert sent["media_source"] == OLD_ENTRY["payload"]["media_source"]
+    saved = json.loads(path.read_text(encoding="utf-8"))[0]
+    assert saved["payload"]["title"] == PLAIN_TITLE and saved["plain_text"] is True
+
+
+def test_an_old_entry_is_decoded_at_post_time_even_when_built_by_hand(tmp_path):
+    queue = pin.Queue(tmp_path / "q.json", [json.loads(json.dumps(OLD_ENTRY))])
+    client = _Recorder([{"id": "p1"}])
+    pin.post_due(client, queue, today=date(2026, 10, 1))
+    assert client.sent[0]["title"] == PLAIN_TITLE
+
+
+def test_reading_the_queue_shows_old_titles_plain_and_saves_them_once(tmp_path):
+    path = tmp_path / "q.json"
+    path.write_text(json.dumps([OLD_ENTRY]), encoding="utf-8")
+    queue = pin.Queue.load(path)
+    assert queue.entries[0]["payload"]["title"] == PLAIN_TITLE
+    assert "&#39;" in path.read_text(encoding="utf-8")  # reading alone writes nothing
+    queue.save()
+    again = pin.Queue.load(path).entries[0]
+    assert again["payload"]["title"] == PLAIN_TITLE and again["plain_text"] is True
+
+
+def test_a_new_pin_is_not_decoded_a_second_time(tmp_path):
+    # The listing title is already plain (the client decoded it). A seller's literal
+    # "&amp;" in it must reach Pinterest as typed.
+    listing = dict(LISTING, title="R&amp;B Vinyl Wall Art")
+    pins = pin.pins_for_listing(listing, IMAGES, "b1", ranks={1})
+    queue = pin.Queue(tmp_path / "q.json")
+    added = queue.add(pins, start=date(2026, 10, 1), per_day=1)
+    assert added[0]["plain_text"] is True
+    queue.save()
+    client = _Recorder([{"id": "p1"}])
+    pin.post_due(client, pin.Queue.load(tmp_path / "q.json"), today=date(2026, 10, 1))
+    assert client.sent[0]["title"] == "R&amp;B Vinyl Wall Art"

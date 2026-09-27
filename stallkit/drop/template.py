@@ -14,8 +14,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..client import unescape_text
 from ..config import LISTING_TYPES, MAX_QUANTITY, WHEN_MADE, WHO_MADE
 from ..errors import ValidationError
+
+# product.json files saved before 0.3.0 hold the listing's text exactly as Etsy sent it,
+# HTML-escaped ("Mom&#39;s Mug &amp; Gift"), and every draft built from one would copy
+# the entities onto Etsy. The text is now decoded where it is read from Etsy, and
+# to_dict marks the file with this key. from_dict decodes the text of an unmarked file
+# (once, as it reads it) and leaves a marked one alone, so a seller's own literal
+# "&amp;" in a newer file stays what they typed.
+PLAIN_TEXT = "plain_text"
 
 # Copied verbatim onto every draft. Anything not in this list is derived per product.
 INHERITED_FIELDS = (
@@ -63,18 +72,26 @@ class Template:
             "materials": self.materials,
             "description": self.description,
             "tags": self.tags,
+            PLAIN_TEXT: True,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Template:
+        if not isinstance(data, dict):
+            raise ValidationError("product.json is malformed: not a JSON object")
+        plain = data.get(PLAIN_TEXT) is True
+
+        def text(value: Any) -> Any:
+            return value if plain else unescape_text(value)
+
         try:
             return cls(
                 source_listing_id=int(data["source_listing_id"]),
-                source_title=str(data.get("source_title", "")),
+                source_title=str(text(data.get("source_title", ""))),
                 fields=dict(data.get("fields") or {}),
-                materials=list(data.get("materials") or []),
-                description=str(data.get("description", "")),
-                tags=list(data.get("tags") or []),
+                materials=[text(m) for m in data.get("materials") or []],
+                description=str(text(data.get("description", ""))),
+                tags=[text(t) for t in data.get("tags") or []],
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValidationError(f"product.json is malformed: {exc}") from exc

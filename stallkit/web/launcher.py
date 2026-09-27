@@ -2,7 +2,10 @@
 
 Double-clicking stallkit a second time does not start a second server: the first
 one is found through `~/.stallkit/web.json` and a ping, and the browser is simply
-pointed at it again. The server stops by itself once no tab has been open (and no
+pointed at it again. Two launches at the same moment (a double double-click) take
+turns through a lock file (`~/.stallkit/web.lock`), so the second one finds the
+first. After an update, a still running older version is asked to quit first (not
+while it runs a task). The server stops by itself once no tab has been open (and no
 task running) for a while, so closing the browser is all it takes to quit.
 """
 
@@ -15,6 +18,7 @@ import secrets
 import sys
 import threading
 import time
+import urllib.parse
 import webbrowser
 from datetime import date
 from pathlib import Path
@@ -30,6 +34,11 @@ log = logging.getLogger("stallkit.web")
 PORTS = (3000, 3001, 3002, 3004, 3005, 3006, 3007, 3008, 3009, 3010, 0)
 RESERVED_PORTS = frozenset({3003, 8085})
 STATE_FILE = "web.json"
+LOCK_FILE = "web.lock"
+# How long a launch waits for another one that is starting at the same moment.
+LOCK_WAIT = 30.0
+# How long an older version gets to stop after it was asked to quit.
+QUIT_WAIT = 15.0
 PING_TIMEOUT = 1.5
 IDLE_TIMEOUT = 90.0
 START_GRACE = 180.0
@@ -53,8 +62,8 @@ def instance_of(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
 
 
-def ping(port: int, token: str, timeout: float = PING_TIMEOUT) -> bool:
-    """True when our app, started with `token`, answers on `port`."""
+def probe(port: int, token: str, timeout: float = PING_TIMEOUT) -> dict[str, Any] | None:
+    """/api/ping's answer when our app, started with `token`, answers on `port`."""
     import httpx
 
     try:
@@ -63,17 +72,27 @@ def ping(port: int, token: str, timeout: float = PING_TIMEOUT) -> bool:
             resp = http.get(f"http://127.0.0.1:{port}/api/ping")
         data = resp.json()
     except (httpx.HTTPError, ValueError):
-        return False
-    return (
+        return None
+    if (
         resp.status_code == 200
         and isinstance(data, dict)
         and data.get("app") == "stallkit"
         and data.get("instance") == instance_of(token)
-    )
+    ):
+        return data
+    return None
+
+
+def ping(port: int, token: str, timeout: float = PING_TIMEOUT) -> bool:
+    """True when our app, started with `token`, answers on `port`."""
+    return probe(port, token, timeout) is not None
 
 
 def find_running() -> dict[str, Any] | None:
-    """The web.json of a server that is up and answering, or None."""
+    """The web.json of a server that is up and answering, or None.
+
+    Its "version" is the one the server itself reports.
+    """
     try:
         data = read_json(state_path())
     except ConfigError:
@@ -83,7 +102,122 @@ def find_running() -> dict[str, Any] | None:
     port, token = data.get("port"), data.get("token")
     if not isinstance(port, int) or not isinstance(token, str) or not token:
         return None
-    return data if ping(port, token) else None
+    answer = probe(port, token)
+    if answer is None:
+        return None
+    return {**data, "version": answer.get("version")}
+
+
+def ask_to_quit(running: dict[str, Any], *, wait: float = QUIT_WAIT) -> str:
+    """Ask a running server (an older version) to stop, as its Quit button would.
+
+    "stopped" once it has let go of web.json, "busy" when it is running a task (it is
+    left alone), "failed" when it did not answer or did not stop in `wait` seconds.
+    """
+    import httpx
+
+    from .server import COOKIE
+
+    port, token = running["port"], running["token"]
+    try:
+        with httpx.Client(trust_env=False, verify=False, timeout=5.0) as http:
+            resp = http.post(
+                f"http://127.0.0.1:{port}/api/quit",
+                json={},
+                headers={"X-Stallkit": "1", "Cookie": f"{COOKIE}={token}"},
+            )
+    except httpx.HTTPError:
+        return "failed"
+    if resp.status_code == 409:
+        return "busy"
+    if resp.status_code != 200:
+        return "failed"
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline:
+        try:
+            data = read_json(state_path())
+        except ConfigError:
+            data = None
+        gone = not (isinstance(data, dict) and data.get("token") == token)
+        if gone and not ping(port, token, timeout=0.5):
+            return "stopped"
+        time.sleep(0.1)
+    return "failed"
+
+
+class LaunchLock:
+    """An exclusive lock on `~/.stallkit/web.lock`, held while a launch looks for a
+    running server and, finding none, starts its own and writes web.json.
+
+    The operating system drops it when the process ends, however it ends, so a
+    crashed launch never blocks the next one. The file itself stays.
+    """
+
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = path or base_home() / LOCK_FILE
+        self._fd: int | None = None
+
+    def acquire(self, timeout: float = LOCK_WAIT) -> bool:
+        """True once held; False after `timeout` seconds (or if locking is impossible)."""
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(str(self.path), os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError:
+            log.warning("could not open %s", self.path)
+            return False
+        deadline = time.monotonic() + timeout
+        while True:
+            if _try_lock(fd):
+                self._fd = fd
+                return True
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                return False
+            time.sleep(0.05)
+
+    def release(self) -> None:
+        fd, self._fd = self._fd, None
+        if fd is None:
+            return
+        try:
+            _unlock(fd)
+        finally:
+            os.close(fd)
+
+    @property
+    def held(self) -> bool:
+        return self._fd is not None
+
+
+def _try_lock(fd: int) -> bool:
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
+
+
+def _unlock(fd: int) -> None:
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
 
 
 def write_state(port: int, token: str) -> None:
@@ -240,14 +374,23 @@ def _stop_logging(handler: logging.Handler | None) -> None:
         handler.close()
 
 
-def _open_browser(url: str) -> None:
+def _open_browser(url: str, *, wait: bool = False) -> None:
+    """Point the browser at `url`. The full address (with its ?k= key) is printed as
+    well: it is the way in when no browser opens (none registered, --no-browser)."""
+
     def run() -> None:
         try:
-            webbrowser.open(url)
+            opened = webbrowser.open(url)
         except Exception:  # noqa: BLE001 — the printed address is the fallback
+            opened = False
+        if not opened:
             log.warning("could not open the browser")
+            print("No browser opened by itself: open the address above in one.", flush=True)
 
-    threading.Thread(target=run, name="stallkit-browser", daemon=True).start()
+    if wait:
+        run()
+    else:
+        threading.Thread(target=run, name="stallkit-browser", daemon=True).start()
 
 
 def launch(
@@ -285,14 +428,63 @@ def _run(
     ports: list[int] | None,
     ready: Any,
 ) -> int:
-    running = find_running()
-    if running is not None:
-        url = browser_url(running["port"], running["token"])
-        print(f"stallkit is already running at http://localhost:{running['port']}/", flush=True)
-        if open_browser:
-            webbrowser.open(url)
-        return 0
+    lock = LaunchLock()
+    if not lock.acquire():
+        log.warning("another launch kept %s for too long; starting anyway", lock.path)
+    try:
+        running = find_running()
+        if running is not None and running.get("version") != __version__:
+            running = _replace_older(running, open_browser=open_browser)
+            if running is not None:
+                return 0  # it stays: it is running a task (the person was told)
+        if running is not None:
+            url = browser_url(running["port"], running["token"])
+            print(f"stallkit is already running at {url}", flush=True)
+            if open_browser:
+                _open_browser(url, wait=True)
+            return 0
+        started = _start(port, ports)
+    finally:
+        lock.release()  # web.json names the new server (or there is none): next, please
+    if started is None:
+        return 1
+    ctx, server, token = started
+    return _serve(ctx, server, token, open_browser=open_browser, idle_timeout=idle_timeout,
+                  grace=grace, watch_interval=watch_interval, ready=ready)
 
+
+def _replace_older(running: dict[str, Any], *, open_browser: bool) -> dict[str, Any] | None:
+    """An older (or newer) version is running: ask it to quit so this one can start.
+
+    Returns None once it has stopped; otherwise `running`, which then stays open (it
+    is running a task, or did not stop) and the browser is pointed at it with a note
+    that this version is waiting.
+    """
+    old = running.get("version") or "?"
+    outcome = ask_to_quit(running)
+    if outcome == "stopped":
+        log.info("stopped the running stallkit %s to start %s", old, __version__)
+        print(f"Stopped stallkit {old} to start {__version__}.", flush=True)
+        return None
+    url = browser_url(running["port"], running["token"])
+    if outcome == "busy":
+        log.warning("stallkit %s is running a task: %s not started", old, __version__)
+        print(f"stallkit {old} is still running a task, so {__version__} did not start. "
+              "Start stallkit again once the task has finished.", flush=True)
+    else:
+        log.warning("stallkit %s did not stop: %s not started", old, __version__)
+        print(f"stallkit {old} is still running and did not stop, so {__version__} did not "
+              "start. Quit it (shop menu > Quit), then start stallkit again.", flush=True)
+    print(f"stallkit {old} is at {url}", flush=True)
+    if open_browser:
+        # The page it opens tells the person why (app.js reads ?newer=).
+        waiting = f"{url}&newer={urllib.parse.quote(__version__)}"
+        _open_browser(waiting, wait=True)
+    return running
+
+
+def _start(port: int | None, ports: list[int] | None) -> tuple[Any, Any, str] | None:
+    """A new context and server, bound, with web.json written; None if no port."""
     from .context import AppContext
 
     token = secrets.token_urlsafe(32)
@@ -302,18 +494,38 @@ def _run(
     except (OSError, ValueError) as exc:
         ctx.close()
         print(f"stallkit could not start its local server: {exc}", flush=True)
-        return 1
+        return None
+    try:
+        write_state(server.port, token)
+    except (OSError, ConfigError) as exc:
+        log.warning("could not write %s: %s", STATE_FILE, exc)
+    return ctx, server, token
+
+
+def _serve(
+    ctx: Any,
+    server: Any,
+    token: str,
+    *,
+    open_browser: bool,
+    idle_timeout: float,
+    grace: float,
+    watch_interval: float,
+    ready: Any,
+) -> int:
     ctx.on_quit = server.stop
     watchdog = IdleWatchdog(
         ctx, server.stop, idle_timeout=idle_timeout, grace=grace, interval=watch_interval
     )
     try:
-        write_state(server.port, token)
-        print(f"stallkit is running at http://localhost:{server.port}/", flush=True)
+        url = browser_url(server.port, token)
+        # The whole address, key included: without the key the page cannot be used,
+        # and this terminal is the person's own.
+        print(f"stallkit is running at {url}", flush=True)
         print("Close the browser tab to stop it, or press Ctrl+C here.", flush=True)
         watchdog.start()
         if open_browser:
-            _open_browser(browser_url(server.port, token))
+            _open_browser(url)
         if server.companion is not None:
             threading.Thread(target=server.companion.serve_forever, kwargs={"poll_interval": 0.5},
                              name="stallkit-ipv6", daemon=True).start()

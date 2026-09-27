@@ -60,6 +60,20 @@ CHECKING, KEYS, BAD_KEYS, DISCONNECTED, CONNECTED, RECONNECT, OFFLINE, ERROR = (
     "checking", "keys", "bad_keys", "disconnected", "connected", "reconnect", "offline", "error",
 )
 STATUS_DEBOUNCE = 10.0
+# A request that failed with a connection-wide error (see errors.STATUS_CODES) asks for
+# a re-check; checks it asks for are at least this far apart.
+SUSPECT_GAP = 5.0
+# Which states already explain such an error (no re-check needed while one is shown).
+SUSPECT_EXPLAINED = {
+    "reconnect": frozenset({"reconnect"}),
+    "offline": frozenset({"offline"}),
+    "bad_keys": frozenset({"bad_keys", "keys"}),
+    "setup_needed": frozenset({"keys", "bad_keys", "disconnected", "checking"}),
+}
+# While Etsy cannot be reached (offline / error), the status is checked again by
+# itself after these many seconds (then the last one, over and over), so the
+# banner's "stallkit will try again shortly" is true and it clears on its own.
+RETRY_DELAYS = (20.0, 40.0, 80.0, 120.0)
 SWITCH_WAIT = 10.0
 NOTIFICATIONS_FILE = "notifications.json"
 KEEP_NOTIFICATIONS = 50
@@ -178,6 +192,8 @@ class AppContext:
         self._status_generation = 0
         self._first_check = threading.Event()
         self._soon_timer: threading.Timer | None = None
+        self._soon_due = 0.0
+        self._retries = 0  # automatic re-checks in a row while Etsy is unreachable
         self._notify_lock = threading.Lock()
         self._change_lock = threading.Lock()
         self._on_change: dict[str, list[tuple[str, Callable[[AppContext], Any]]]] = {}
@@ -480,26 +496,65 @@ class AppContext:
         self._first_check.set()
         if _without_time(previous) != _without_time(status):
             self.events.publish("status", self.public_status())
+        self._plan_retry(status["state"])
         return self.public_status()
 
+    def _plan_retry(self, state: str) -> None:
+        """Etsy unreachable: look again later by itself (slower each time)."""
+        if state not in (OFFLINE, ERROR):
+            self._retries = 0
+            return
+        delay = RETRY_DELAYS[min(self._retries, len(RETRY_DELAYS) - 1)]
+        self._retries += 1
+        self.set_status_soon(delay)
+
     def set_status_soon(self, delay: float = 0.3) -> None:
-        """Re-check the status in the background shortly (calls within `delay` merge)."""
+        """Re-check the status in the background shortly.
+
+        Calls merge: a check already planned for sooner than `delay` answers this one
+        too, and a later one is brought forward.
+        """
         if self.closed:
             return
+        due = time.monotonic() + max(0.0, delay)
         with self._status_lock:
-            if self._soon_timer is not None:
-                return
-            timer = threading.Timer(delay, self._status_soon)
+            old = self._soon_timer
+            if old is not None:
+                if self._soon_due <= due + 0.05:
+                    return
+                old.cancel()
+            timer = threading.Timer(max(0.0, delay), self._status_soon)
+            timer.args = (timer,)
             timer.daemon = True
             self._soon_timer = timer
+            self._soon_due = due
         timer.start()
 
-    def _status_soon(self) -> None:
+    def _status_soon(self, timer: threading.Timer | None = None) -> None:
         with self._status_lock:
+            if timer is not None and self._soon_timer is not timer:
+                return  # replaced by a sooner check (which runs instead)
             self._soon_timer = None
         if self.closed:
             return
         self.refresh_status(force=True)
+
+    def status_suspect(self, code: str) -> None:
+        """A request just failed with `code` (reconnect, offline, bad_keys, setup_needed):
+        unless the status already says so, check it again soon, so the shop card, the
+        banner and Mağaza Bağlantısı stop saying "connected". Never raises."""
+        explained = SUSPECT_EXPLAINED.get(code)
+        if explained is None or self.closed:
+            return
+        with self._status_lock:
+            state = self._status["state"]
+            checked = self._status["checked_at"]
+        if state in explained:
+            return
+        delay = 0.3
+        if checked is not None:
+            delay = max(delay, SUSPECT_GAP - (time.time() - checked))
+        self.set_status_soon(delay)
 
     def publish_status(self) -> None:
         """Push the current status again (e.g. after the hide-names preference changed)."""
@@ -642,9 +697,21 @@ class AppContext:
         return home_dir() / NOTIFICATIONS_FILE
 
     def notifications(self) -> list[dict[str, Any]]:
-        """The open shop's notifications, newest first."""
+        """The open shop's notifications, newest first, as the browser may show them."""
         with self._notify_lock:
-            return list(reversed(self._read_notifications()))
+            items = list(reversed(self._read_notifications()))
+        return [self.shown_notification(item) for item in items]
+
+    def shown_notification(self, item: dict[str, Any]) -> dict[str, Any]:
+        """`item` as it may be shown now: with the hide-names preference on, a shop name
+        in its params (`shop`) becomes "Mağaza N". Applied when read, not when stored,
+        so older notifications follow the preference too."""
+        params = item.get("params")
+        if not (isinstance(params, dict) and params.get("shop") and self.anonymise_names):
+            return item
+        shown = dict(item)
+        shown["params"] = {**params, "shop": self.shop_label(self.shop_index())}
+        return shown
 
     def _read_notifications(self) -> list[dict[str, Any]]:
         try:
@@ -672,7 +739,11 @@ class AppContext:
         tone: str = "info",
         link: str | None = None,
     ) -> dict[str, Any]:
-        """Store a notification for the bell and push it. The UI shows t(ns + ":" + key)."""
+        """Store a notification for the bell and push it. The UI shows t(ns + ":" + key).
+
+        A shop name goes in `params["shop"]` as it is: it is hidden when shown, while
+        the hide-names preference is on (see shown_notification). Returns it as shown.
+        """
         item = {
             "id": uuid.uuid4().hex[:12],
             "ns": ns,
@@ -687,8 +758,9 @@ class AppContext:
             items = self._read_notifications()
             items.append(item)
             self._write_notifications(items)
-        self.events.publish("notification", item)
-        return item
+        shown = self.shown_notification(item)
+        self.events.publish("notification", shown)
+        return shown
 
     def mark_notifications_read(self, ids: list[str] | None = None) -> int:
         """Mark some (or all) notifications read; returns how many are still unread."""

@@ -483,6 +483,50 @@ def test_a_template_round_trips_through_json():
     assert Template.from_dict(tmpl.to_dict()).fields == tmpl.fields
 
 
+def test_an_old_product_json_with_etsy_entities_is_read_as_plain_text():
+    # Saved before 0.3.0: the text is exactly as Etsy sent it, HTML-escaped. Every
+    # draft copies the description, so it must come out plain.
+    old = {
+        "source_listing_id": 1000001,
+        "source_title": "Mom&#39;s &quot;Best&quot; Mug &amp; Gift",
+        "fields": {"taxonomy_id": 1633, "price": 24.0},
+        "materials": ["ceramic &amp; glaze"],
+        "description": "Mom&#39;s favourite mug &amp; saucer.",
+        "tags": ["mother&#39;s day", "mom &amp; dad"],
+    }
+    tmpl = Template.from_dict(old)
+    assert tmpl.source_title == 'Mom\'s "Best" Mug & Gift'
+    assert tmpl.description == "Mom's favourite mug & saucer."
+    assert tmpl.tags == ["mother's day", "mom & dad"]
+    assert tmpl.materials == ["ceramic & glaze"]
+    assert tmpl.fields == {"taxonomy_id": 1633, "price": 24.0}
+    # Saved again, the file is marked plain, and reading it back changes nothing.
+    saved = tmpl.to_dict()
+    assert saved["plain_text"] is True
+    assert Template.from_dict(json.loads(json.dumps(saved))) == tmpl
+
+
+def test_a_new_product_json_is_not_decoded_a_second_time():
+    # The seller typed a literal "&amp;": the client decoded Etsy's "&amp;amp;" once,
+    # and product.json written since carries the mark, so it stays what was typed.
+    tmpl = capture({**LISTING, "title": "R&amp;B Mug", "description": "Tom &amp; Jerry",
+                    "tags": ["r&amp;b"]})
+    back = Template.from_dict(json.loads(json.dumps(tmpl.to_dict())))
+    assert back.source_title == "R&amp;B Mug"
+    assert back.description == "Tom &amp; Jerry" and back.tags == ["r&amp;b"]
+    # Plain text without the mark (and without entities) is left as it is too.
+    unmarked = {k: v for k, v in tmpl.to_dict().items() if k != "plain_text"}
+    unmarked.update(source_title="Salt & Pepper Mug", description="Plain & simple")
+    assert Template.from_dict(unmarked).source_title == "Salt & Pepper Mug"
+    assert Template.from_dict(unmarked).description == "Plain & simple"
+
+
+@pytest.mark.parametrize("data", [[], "x", None, {"fields": {}}, {"source_listing_id": "abc"}])
+def test_a_malformed_product_json_is_a_validation_error(data):
+    with pytest.raises(ValidationError, match="malformed"):
+        Template.from_dict(data)
+
+
 # --- end to end: folder in, pushable CSV out ------------------------------------
 
 

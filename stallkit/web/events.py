@@ -5,6 +5,11 @@
 Each subscriber has its own bounded queue; a tab that stops reading is dropped
 rather than allowed to hold memory. Topics (see the build spec, 4.1): hello,
 status, shop, job, job-event, notification.
+
+Every published frame carries an `id:` (a number that only grows). A browser keeps
+one stream for all its stallkit tabs (a leader tab relays the events to the others,
+see static/js/events.js); while the leader changes, two streams overlap for a moment
+and the id lets a tab drop an event it has already seen.
 """
 
 from __future__ import annotations
@@ -53,10 +58,11 @@ class Subscription:
         self.hub.unsubscribe(self)
 
 
-def encode(topic: str, data: Any) -> str:
+def encode(topic: str, data: Any, event_id: int | None = None) -> str:
     """One SSE frame. JSON never contains a raw newline, so one data line suffices."""
     payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"), default=json_default)
-    return f"event: {topic}\ndata: {payload}\n\n"
+    id_line = f"id: {event_id}\n" if event_id is not None else ""
+    return f"event: {topic}\n{id_line}data: {payload}\n\n"
 
 
 class EventHub:
@@ -67,6 +73,7 @@ class EventHub:
         # When the last subscriber left (or the hub was made), for the idle watchdog.
         self.idle_since = time.monotonic()
         self.ever_connected = False
+        self._seq = 0
 
     def subscribe(self) -> Subscription:
         sub = Subscription(self)
@@ -93,10 +100,11 @@ class EventHub:
 
     def publish(self, topic: str, data: Any = None) -> None:
         """Send `data` (anything JSON-able) to every open tab under `topic`."""
-        frame = encode(topic, {} if data is None else data)
-        with self._lock:
-            subs = list(self._subs)
-        dropped = [sub for sub in subs if not sub.put(frame)]
+        payload = {} if data is None else data
+        with self._lock:  # numbered and queued in one go: every tab sees the same order
+            self._seq += 1
+            frame = encode(topic, payload, self._seq)
+            dropped = [sub for sub in self._subs if not sub.put(frame)]
         for sub in dropped:
             self.unsubscribe(sub)
 

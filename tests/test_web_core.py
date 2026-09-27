@@ -34,9 +34,11 @@ from stallkit.errors import (
     EtsyApiError,
     ValidationError,
 )
+from stallkit.web import context as context_mod
+from stallkit.web import events as events_mod
 from stallkit.web import files as files_mod
 from stallkit.web.context import ShopLock
-from stallkit.web.errors import to_api_error
+from stallkit.web.errors import describe, to_api_error
 from stallkit.web.router import ApiError, Request, Response, Router
 
 
@@ -128,6 +130,108 @@ def test_status_refresh_is_debounced_unless_forced(web):
     assert len(fake.calls) == 1
     forced = web.client.post("/api/status/refresh", json={"force": True}).json()
     assert forced["checked_at"] >= first["checked_at"] and len(fake.calls) == 2
+
+
+def _wait(predicate, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return bool(predicate())
+
+
+def _revoked(fake, monkeypatch):
+    """Etsy refuses the access token and the refresh token: the sign-in was revoked."""
+    fake.error("GET", "/users/me", 401, "invalid_token")
+    fake.error("GET", f"/shops/{ETSY_SHOP_ID}", 401, "invalid_token")
+
+    def refused(token, config):
+        raise AuthError("Token endpoint rejected the request (400): invalid_grant")
+
+    monkeypatch.setattr(auth, "refresh", refused)
+
+
+def test_a_request_that_finds_the_sign_in_revoked_rechecks_the_status(web, monkeypatch):
+    monkeypatch.setattr(context_mod, "SUSPECT_GAP", 0.0)
+    fake = use_fake_etsy(web)
+    assert status(web)["state"] == "connected"
+    _revoked(fake, monkeypatch)
+    web.server.router.get("/api/test/shop", lambda req: req.ctx.client().shop())
+
+    def ask():
+        resp = web.client.get("/api/test/shop")
+        assert resp.json()["error"]["code"] == "reconnect"
+
+    def pushed(events):
+        return any(t == "status" and d["state"] == "reconnect" for t, d in events)
+
+    # Nobody pressed a refresh button: the failed request alone flips the status, and
+    # every tab hears it (shop card, banner, Mağaza Bağlantısı's reconnect button).
+    assert pushed(read_events(web, pushed, after_connect=ask))
+    assert web.client.get("/api/status").json()["state"] == "reconnect"
+
+
+def test_a_request_that_finds_etsy_offline_rechecks_and_then_keeps_trying(web, monkeypatch):
+    monkeypatch.setattr(context_mod, "SUSPECT_GAP", 0.0)
+    monkeypatch.setattr(context_mod, "RETRY_DELAYS", (0.3,))
+    fake = use_fake_etsy(web)
+    assert status(web)["state"] == "connected"
+    web.server.router.get("/api/test/shop", lambda req: req.ctx.client().shop())
+    fake.offline = True
+    assert web.client.get("/api/test/shop").json()["error"]["code"] == "offline"
+    assert _wait(lambda: web.ctx.status["state"] == "offline")
+    # Etsy is back: the status clears by itself, as the banner promises.
+    fake.offline = False
+    assert _wait(lambda: web.ctx.status["state"] == "connected")
+
+
+def test_a_problem_the_status_already_shows_is_not_checked_again(web, monkeypatch):
+    fake = use_fake_etsy(web)
+    fake.offline = True
+    assert status(web)["state"] == "offline"
+    asked = []
+    monkeypatch.setattr(web.ctx, "set_status_soon", lambda delay=0.3: asked.append(delay))
+
+    def fail(code):
+        def handler(req):
+            raise ApiError(503 if code == "offline" else 401, code, "from a test")
+        return handler
+
+    web.server.router.get("/api/test/offline", fail("offline"))
+    web.server.router.get("/api/test/reconnect", fail("reconnect"))
+    web.server.router.get("/api/test/other", fail("not_found"))
+    assert web.client.get("/api/test/offline").status_code == 503
+    assert web.client.get("/api/test/other").status_code == 401
+    assert asked == []
+    assert web.client.get("/api/test/reconnect").status_code == 401
+    assert len(asked) == 1 and asked[0] <= context_mod.SUSPECT_GAP
+
+
+def test_an_error_a_page_shows_inside_its_answer_counts_too(web, monkeypatch):
+    use_fake_etsy(web)
+    assert status(web)["state"] == "connected"
+    asked = []
+    monkeypatch.setattr(web.ctx, "set_status_soon", lambda delay=0.3: asked.append(delay))
+    # Like the Panel's tiles: each one's error is described, the answer is a 200.
+    web.server.router.get("/api/test/tiles",
+                          lambda req: {"orders": {"error": describe(AuthError("revoked"))}})
+    assert web.client.get("/api/test/tiles").status_code == 200
+    assert len(asked) == 1
+    # Outside a request (a job, a script) nothing is scheduled from here.
+    to_api_error(AuthError("revoked"))
+    assert len(asked) == 1
+
+
+def test_a_sooner_status_check_replaces_a_later_one(web):
+    use_fake_etsy(web, connected=False)
+    web.ctx.set_status_soon(60.0)
+    web.ctx.set_status_soon(0.05)
+    assert _wait(lambda: web.ctx.status["checked_at"] is not None, 3)
+    first = web.ctx.status["checked_at"]
+    web.ctx.set_status_soon(0.05)
+    web.ctx.set_status_soon(60.0)  # a later one does not push the sooner one back
+    assert _wait(lambda: web.ctx.status["checked_at"] != first, 3)
 
 
 def test_hidden_names_replace_the_shop_name_everywhere(web):
@@ -483,6 +587,31 @@ def test_notifications_are_stored_per_shop_and_marked_read(web):
     assert web.client.get("/api/notifications").json() == {"items": [], "unread": 0}
 
 
+def test_a_shop_name_in_a_notification_follows_the_hide_names_preference(web):
+    use_fake_etsy(web)
+    status(web)
+    web.ctx.notify("connect", "notify.connected", {"shop": SHOP_NAME}, tone="success")
+    assert web.client.get("/api/notifications").json()["items"][0]["params"] == {"shop": SHOP_NAME}
+
+    # Turned on later (to take a screenshot, say): older notifications are hidden too.
+    web.client.post("/api/prefs", json={"anonymise": True, "language": "tr"})
+    assert web.client.get("/api/notifications").json()["items"][0]["params"] == {"shop": "Mağaza 1"}
+    for answer in (web.client.get("/api/notifications"), web.client.get("/api/dashboard"),
+                   web.client.post("/api/notifications/read", json={})):
+        assert SHOP_NAME not in answer.text
+
+    def pushed(events):
+        return any(t == "notification" for t, _ in events)
+
+    events = read_events(web, pushed, after_connect=lambda: web.ctx.notify(
+        "connect", "notify.connected", {"shop": SHOP_NAME}))
+    assert next(d for t, d in events if t == "notification")["params"] == {"shop": "Mağaza 1"}
+
+    # Stored as it was: turned off again, the name comes back.
+    web.client.post("/api/prefs", json={"anonymise": False})
+    assert web.client.get("/api/notifications").json()["items"][0]["params"] == {"shop": SHOP_NAME}
+
+
 def test_only_the_last_50_notifications_are_kept(web):
     for n in range(55):
         web.ctx.notify("common", "n", {"n": n})
@@ -591,6 +720,27 @@ def test_the_event_stream_says_hello_then_sends_the_status(web):
     events = read_events(web, lambda e: len(e) >= 2)
     assert events[0] == ("hello", {"instance": web.ctx.instance, "version": web.ctx.version})
     assert events[1][0] == "status" and "state" in events[1][1]
+
+
+def test_published_events_carry_growing_ids(web):
+    # The tabs of one browser share one stream (a leader relays it); while the leader
+    # changes, two streams overlap and the id drops the doubles.
+    sub = web.ctx.events.subscribe()
+    try:
+        web.ctx.events.publish("job", {"n": 1})
+        web.ctx.events.publish("notification", {"n": 2})
+        frames = [sub.get(timeout=1), sub.get(timeout=1)]
+    finally:
+        sub.close()
+    ids = []
+    for frame, (topic, data) in zip(frames, [("job", {"n": 1}), ("notification", {"n": 2})]):
+        lines = frame.rstrip("\n").split("\n")
+        assert lines[0] == f"event: {topic}" and lines[1].startswith("id: ")
+        assert json.loads(lines[2][len("data: "):]) == data
+        ids.append(int(lines[1][len("id: "):]))
+    assert ids[1] == ids[0] + 1
+    # The frames a new stream starts with are its own: no id.
+    assert "id:" not in events_mod.encode("hello", {})
 
 
 def test_status_changes_are_pushed(web):

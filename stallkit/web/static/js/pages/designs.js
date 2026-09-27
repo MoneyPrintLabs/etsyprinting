@@ -15,6 +15,8 @@ import { money, duration, relative, bytes, number } from "../format.js";
 const STEPS = ["mockup", "research", "title", "tags", "check", "draft"];
 const STEP_ICONS = { mockup: "image", research: "search", title: "sparkles", tags: "tag", check: "shield-check", draft: "upload" };
 const FINAL = new Set(["ok", "partial", "error", "cancelled", "checked"]);
+// Problems whose translated line already says everything (the English detail is left out).
+const SELF_EXPLAINED = new Set(["junk_name", "too_many_pixels", "too_many_images", "no_images", "invalid_image", "stopped"]);
 const JOB_FINAL = new Set(["done", "error", "cancelled"]);
 const ACCEPT = ".png,.jpg,.jpeg,.webp,.gif,.bmp,.tif,.tiff";
 const MAX_FILES = 500;
@@ -59,6 +61,22 @@ function baseName(path) {
   return String(path || "").split("/").pop();
 }
 
+/** "Retro Mountain Sunset Shirt, Vintage Hiking Tee, ..." -> "Retro Mountain Sunset Shirt". */
+function shortTitle(title) {
+  const text = String(title || "");
+  const first = text.split(/\s*[,|]\s*|\s+[-–—]\s+/)[0];
+  return first.length >= 8 ? first : text;
+}
+
+/** The plain design among a product's images (the rest are mockups). */
+function flatPath(item) {
+  if (!item) return null;
+  if (item.flat) return item.flat;
+  // Runs saved before the flat image was marked: the stream names it "<design>--flat".
+  if (item.mode !== "composited") return null;
+  return (item.images || []).find((p) => /--flat(-\d+)?\.jpg$/i.test(p)) || null;
+}
+
 class DesignsPage {
   constructor(el, ctx) {
     this.el = el;
@@ -93,6 +111,22 @@ class DesignsPage {
       if (prev && s && s.state === prev.state && s.setup?.designs_pending === prev.setup?.designs_pending) return;
       clearTimeout(this.statusDebounce);
       this.statusDebounce = setTimeout(() => this.loadPending(), 400);
+    });
+    // Leaving mid-upload (a link, Back, a shop switch, a language change) would cut the
+    // upload off and leave half a product folder behind: ask first. setDirty makes a
+    // reload or closing the tab ask too.
+    ctx.onBeforeLeave(async () => {
+      const up = this.uploading;
+      if (!up) return true;
+      const ok = await ctx.confirm({
+        title: this.t("leave.title"),
+        message: this.t("leave.msg", { done: up.done, total: up.rows.length }),
+        confirmLabel: this.t("leave.confirm"),
+        cancelLabel: this.t("leave.stay"),
+        danger: true,
+      });
+      if (ok && this.uploading === up) up.controller.abort();
+      return ok;
     });
     this.el.classList.add("dz-page");
     let jobs = [];
@@ -156,6 +190,11 @@ class DesignsPage {
     }
     if (t.has(key)) return t(key, { ...(problem.params || {}), message: problem.message || "" });
     return problem.message || problem.code;
+  }
+
+  /** Whether the library's own (English) words add anything to the translated line. */
+  problemDetail(problem) {
+    return !!(problem && problem.message && !SELF_EXPLAINED.has(problem.code) && this.t.has(`problem.${problem.code}`));
   }
 
   warnText(w) {
@@ -276,12 +315,17 @@ class DesignsPage {
     const over = p && p.mockups.over_limit ? h("span", { class: "dz-chip-extra" }, t("chip.mockup_over", { n: p.mockups.switched_on })) : null;
     const mockupChip = chip("image", null, p ? (mockups ? t("chip.mockup_value", { n: mockups }) : t(p.mockups.total ? "chip.mockup_none" : "chip.mockup_empty")) : null, [over, h("span", { class: "dz-chip-go", "aria-hidden": "true" }, icon("arrow-right", { size: 13 }))], p && !mockups ? "warn" : null, () => this.ctx.navigate("/kurulum/mockuplar"));
     mockupChip.title = t("chip.mockup_hint");
-    const template = p ? (p.template && p.template.title) || (p.template ? t("chip.template_unnamed") : null) : null;
+    // The template listing's full title is up to 140 characters; the chip shows its
+    // first part, as the video does, and the whole title on hover.
+    const fullTemplate = p && p.template && p.template.title ? p.template.title : null;
+    const template = p ? (fullTemplate && shortTitle(fullTemplate)) || (p.template ? t("chip.template_unnamed") : null) : null;
     const shop = p ? p.shop : null;
     const shopOk = shop && shop.connected;
+    const templateChip = chip("file", t("chip.template"), p ? template || t("chip.template_none") : null, null, p && !p.template ? "warn" : null, p && (!p.template || p.blockers.includes("template_invalid")) ? () => this.ctx.navigate("/kurulum/sablon") : null);
+    if (fullTemplate) templateChip.title = fullTemplate;
     const row = [
       mockupChip,
-      chip("file", t("chip.template"), p ? template || t("chip.template_none") : null, null, p && !p.template ? "warn" : null, p && (!p.template || p.blockers.includes("template_invalid")) ? () => this.ctx.navigate("/kurulum/sablon") : null),
+      templateChip,
       chip(
         "link",
         t("chip.shop"),
@@ -410,7 +454,7 @@ class DesignsPage {
         infoNote({
           tone: "warning",
           icon: "lock",
-          text: t("blocked.locked"),
+          text: this.lockText(p),
           action: button({ label: t("blocked.unlock"), size: "sm", onClick: () => this.unlock() }),
         }),
       );
@@ -480,18 +524,27 @@ class DesignsPage {
         ),
       );
     }
+    const startBtn = button({ label: t("ready.start"), icon: "zap", variant: "primary", size: "sm", onClick: () => this.openStart() });
+    this.startButtons = [startBtn];
+    this.syncStartButtons();
     return card({
       class: "dz-pending",
       title: t("pending.title"),
       subtitle: t("pending.sub", { n: p.count }),
       icon: "layers",
       iconTone: "accent",
-      actions: [
-        button({ label: t("pending.open"), icon: "folder", variant: "ghost", size: "sm", onClick: () => this.openFolder("products") }),
-        button({ label: t("ready.start"), icon: "zap", variant: "primary", size: "sm", onClick: () => this.openStart() }),
-      ],
+      actions: [button({ label: t("pending.open"), icon: "folder", variant: "ghost", size: "sm", onClick: () => this.openFolder("products") }), startBtn],
       body: h("div", { class: "dz-tiles" }, tiles),
     });
+  }
+
+  /** Başlat waits while files are still uploading: a run started now would miss them. */
+  syncStartButtons() {
+    const busy = !!this.uploading;
+    for (const b of this.startButtons || []) {
+      b.setDisabled(busy);
+      b.title = busy ? this.t("ready.wait_upload") : "";
+    }
   }
 
   async openFolder(which) {
@@ -624,6 +677,8 @@ class DesignsPage {
       done: 0,
     };
     this.uploading = state;
+    this.ctx.setDirty(true); // a reload or a closed tab would cut the upload off: ask
+    this.syncStartButtons();
     if (this.dz) {
       this.dz.setDisabled(true);
       this.dz.hidden = true; // the upload list takes the drop zone's place meanwhile
@@ -737,7 +792,10 @@ class DesignsPage {
       }
     }
     this.uploading = null;
-    if (this.destroyed || this.view !== "idle") return;
+    if (this.destroyed) return;
+    this.ctx.setDirty(false);
+    this.syncStartButtons();
+    if (this.view !== "idle") return;
     panel.classList.remove("is-active");
     if (this.dz) {
       this.dz.setDisabled(false);
@@ -774,6 +832,10 @@ class DesignsPage {
 
   async openStart(given) {
     const { t } = this;
+    if (this.uploading) {
+      this.ctx.toast({ tone: "info", title: t("ready.wait_upload") });
+      return;
+    }
     let p = given;
     if (!p) {
       p = await this.loadPending();
@@ -797,7 +859,7 @@ class DesignsPage {
         ? t("ready.estimate", { n: number(p.estimate_requests), left: number(p.quota_remaining) })
         : t("ready.estimate_nq", { n: number(p.estimate_requests) }),
     );
-    const templateTitle = (p.template && p.template.title) || t("chip.template_unnamed");
+    const templateTitle = (p.template && p.template.title && shortTitle(p.template.title)) || t("chip.template_unnamed");
     // Which mockups the drafts get: the same count as the chip, and the way to change it.
     const mk = p.mockups;
     if (mk.enabled) {
@@ -869,7 +931,7 @@ class DesignsPage {
       else if (b === "locked") action = button({ label: t("blocked.unlock"), size: "sm", onClick: () => { m.close(); this.unlock(); } });
       else if (b === "offline") action = button({ label: t("blocked.retry"), size: "sm", icon: "refresh", autoLoading: true, onClick: async () => { await this.ctx.refreshStatus(true).catch(() => null); m.close(); this.openStart(); } });
       else if (b === "running") action = button({ label: t("blocked.show_run"), size: "sm", onClick: async () => { m.close(); await this.showActive(); } });
-      const text = b === "template_invalid" ? t("blocked.template_invalid", { message: (p.template && p.template.invalid) || "" }) : t(`blocked.${b}`);
+      const text = b === "template_invalid" ? t("blocked.template_invalid", { message: (p.template && p.template.invalid) || "" }) : b === "locked" ? this.lockText(p) : t(`blocked.${b}`);
       return infoNote({ tone: b === "empty" ? "info" : "warning", icon: b === "empty" ? "info" : "alert", text, action });
     });
     const onlyEmpty = blockers.length === 1 && (blockers[0] === "empty" || blockers[0] === "junk_only");
@@ -890,17 +952,41 @@ class DesignsPage {
     }
   }
 
+  /** The lock note: a crashed run's lock, or one a running process still holds. */
+  lockText(p) {
+    const lock = p && p.lock;
+    if (lock && lock.stale) return this.t("blocked.locked_stale");
+    if (lock && lock.alive && lock.pid) return this.t("blocked.locked_active", { pid: lock.pid });
+    return this.t("blocked.locked");
+  }
+
   async unlock() {
     const { t } = this;
-    const ok = await this.ctx.confirm({ title: t("unlock.title"), message: t("unlock.msg"), confirmLabel: t("blocked.unlock"), danger: true });
+    const lock = this.pending && this.pending.lock;
+    const active = !!(lock && lock.alive && lock.pid);
+    // A lock whose process still runs gets the stronger question straight away.
+    const ok = await this.ctx.confirm(
+      active
+        ? { title: t("unlock.active_title"), message: t("unlock.active_msg", { pid: lock.pid }), confirmLabel: t("blocked.unlock"), danger: true }
+        : { title: t("unlock.title"), message: t("unlock.msg"), confirmLabel: t("blocked.unlock"), danger: true },
+    );
     if (!ok) return;
     try {
-      await this.api.post("/api/designs/unlock", { confirm: true });
+      try {
+        await this.api.post("/api/designs/unlock", active ? { confirm: true, force: true } : { confirm: true });
+      } catch (err) {
+        if (!err || err.code !== "lock_active") throw err;
+        // The process that holds the lock still runs (or its id went to another program).
+        const sure = await this.ctx.confirm({ title: t("unlock.active_title"), message: t("unlock.active_msg", { pid: (err.params && err.params.pid) || "?" }), confirmLabel: t("blocked.unlock"), danger: true });
+        if (!sure) return;
+        await this.api.post("/api/designs/unlock", { confirm: true, force: true });
+      }
       this.ctx.toast({ tone: "success", title: t("unlock.done") });
     } catch (err) {
       this.toastError(err);
+    } finally {
+      await this.loadPending();
     }
-    await this.loadPending();
   }
 
   async startRun(dryRun) {
@@ -928,43 +1014,54 @@ class DesignsPage {
     const p = this.pending;
     if (!p || !p.review || !p.review.length) return;
     let m = null;
-    const rows = p.review.map((r) =>
-      h(
+    const rows = p.review.map((r) => {
+      // The library's own words (English) are only the muted detail; what happened is
+      // said with a translated code: partial / drafted / uncertain.
+      const problem = r.problem || (r.status === "partial" ? "partial" : r.listing_id ? "drafted" : "uncertain");
+      const open = () => {
+        if (m) m.close();
+        this.ctx.navigate(`/ilanlar/${r.listing_id}`);
+      };
+      // A design with a draft on Etsy is never offered for a retry: that would be a
+      // second draft of it. The draft is opened instead, to finish it by hand.
+      const action = r.listing_id
+        ? button({ label: t("review.open_draft"), size: "sm", variant: "secondary", iconRight: "arrow-right", onClick: open })
+        : button({
+            label: t("review.retry"),
+            size: "sm",
+            icon: "refresh",
+            onClick: async () => {
+              const ok = await this.ctx.confirm({ title: t("review.retry_title", { name: r.name }), message: t("review.retry_msg"), confirmLabel: t("review.retry"), danger: true });
+              if (!ok) return;
+              try {
+                await this.api.post("/api/designs/review/forget", { name: r.name, confirm: true });
+                this.ctx.toast({ tone: "success", title: t("review.retried", { name: r.name }) });
+                m.close();
+                await this.loadPending();
+              } catch (err) {
+                this.toastError(err);
+              }
+            },
+          });
+      return h(
         "div",
         { class: "dz-review-row" },
         h(
           "div",
           { class: "dz-review-text" },
-          h("strong", { class: "ellipsis" }, r.name),
+          h("strong", { class: "ellipsis", title: r.name }, r.name),
           h(
             "span",
             { class: "dz-review-meta" },
-            badge({ text: t(`review.status.${r.status}`) || r.status, tone: r.status === "partial" ? "warning" : "danger", size: "sm" }),
-            r.listing_id ? h("a", { href: `/ilanlar/${r.listing_id}`, onClick: () => m && m.close() }, t("review.listing", { id: r.listing_id })) : null,
+            badge({ text: t(`review.badge.${problem}`), tone: problem === "uncertain" ? "danger" : "warning", size: "sm" }),
+            r.listing_id ? h("span", { class: "dz-review-id num" }, t("review.listing", { id: r.listing_id })) : null,
           ),
+          h("span", { class: "dz-review-why" }, t(`review.problem.${problem}`)),
           r.message ? h("span", { class: "dz-review-msg", title: r.message }, r.message) : null,
         ),
-        r.status !== "partial"
-          ? button({
-              label: t("review.retry"),
-              size: "sm",
-              icon: "refresh",
-              onClick: async () => {
-                const ok = await this.ctx.confirm({ title: t("review.retry_title", { name: r.name }), message: t("review.retry_msg"), confirmLabel: t("review.retry"), danger: true });
-                if (!ok) return;
-                try {
-                  await this.api.post("/api/designs/review/forget", { name: r.name, confirm: true });
-                  this.ctx.toast({ tone: "success", title: t("review.retried", { name: r.name }) });
-                  m.close();
-                  await this.loadPending();
-                } catch (err) {
-                  this.toastError(err);
-                }
-              },
-            })
-          : null,
-      ),
-    );
+        action,
+      );
+    });
     m = this.ctx.modal({
       title: t("review.title"),
       width: 600,
@@ -977,16 +1074,21 @@ class DesignsPage {
 
   async showJob(jobId, summary) {
     let job = null;
+    this.run = null;
+    this.earlyEvents = [];
     try {
       job = await this.api.get(`/api/jobs/${encodeURIComponent(jobId)}`, null, { signal: this.ctx.signal });
     } catch (err) {
       if (this.api.isAbort(err)) return;
       if (summary) job = { ...summary, state: {} };
       else {
+        this.earlyEvents = null;
         await this.showIdle();
         return;
       }
     }
+    const early = this.earlyEvents || [];
+    this.earlyEvents = null;
     if (this.destroyed) return;
     const model = this.modelFromJob(job);
     if (JOB_FINAL.has(model.status) && !model.items.length && !model.error) {
@@ -996,6 +1098,10 @@ class DesignsPage {
       return;
     }
     this.run = model;
+    // Events that came while the state was on its way: the newer of the two wins, per
+    // product (updated_at), so a product that finished meanwhile is not shown running.
+    for (const ev of early) this.onJobEvent(ev);
+    this.dirtyRows.clear();
     this.enterRun();
   }
 
@@ -1136,9 +1242,17 @@ class DesignsPage {
   }
 
   onJobEvent(ev) {
-    if (!ev || ev.kind !== "designs" || !this.run || ev.job_id !== this.run.jobId) return;
+    if (!ev || ev.kind !== "designs") return;
+    if (!this.run) {
+      // The run is being loaded (GET /api/jobs/{id}): an event now is newer than, or as
+      // new as, the state that request returns. Kept, and applied once it has arrived.
+      if (this.earlyEvents && this.earlyEvents.length < 2000) this.earlyEvents.push(ev);
+      return;
+    }
+    if (ev.job_id !== this.run.jobId) return;
     const data = ev.data || {};
     if (ev.type === "batch") {
+      if (this.run.items.length) return; // once per run: the loaded state already has it
       this.run.items = Array.isArray(data.items) ? data.items : [];
       if (data.state) this.run.counts = { ...this.run.counts, ...data.state };
       this.pipeEls = null;
@@ -1148,6 +1262,8 @@ class DesignsPage {
     if (ev.type === "item" && data.item) {
       const item = data.item;
       if (typeof item.index !== "number") return;
+      const mine = this.run.items[item.index];
+      if (mine && (mine.updated_at || 0) > (item.updated_at || 0)) return; // older than what is shown
       this.run.items[item.index] = item;
       if (data.state) this.run.counts = { ...this.run.counts, ...data.state };
       if (this.run.status === "queued") this.run.status = "running";
@@ -1168,7 +1284,12 @@ class DesignsPage {
   renderRun() {
     if (!this.run) return;
     const grid = this.el.querySelector(".dr-grid");
-    if (grid) grid.hidden = !this.run.items.length && !this.isRunning();
+    if (grid) {
+      grid.hidden = !this.run.items.length && !this.isRunning();
+      // The cards share a bottom edge, except when the whole list is shown: the side
+      // card then keeps its own height, its "Taslağı aç" in reach.
+      grid.classList.toggle("is-expanded", this.expanded);
+    }
     this.renderHead();
     this.renderPipe();
     this.renderSide();
@@ -1210,17 +1331,21 @@ class DesignsPage {
     this.ctx.setHeader({ actions: [folder, badge({ ...spec, size: "lg" })].filter(Boolean) });
   }
 
+  /**
+   * How far the run is, 0..1: the products finished (the headline's count, plus any
+   * that failed), and the images of the draft being sent now. Products being prepared
+   * ahead do not count yet, so "1 / 8" never stands next to "%46" (video t220: 18/50, %35).
+   */
   progressFraction() {
     const r = this.run;
     const total = Math.max(r.counts.total || r.items.length, 1);
-    const per = r.dryRun ? 5 : 6;
     let done = 0;
     for (const it of r.items) {
       if (!it) continue;
-      if (FINAL.has(it.status)) done += per;
-      else done += STEPS.slice(0, per).filter((s) => it.steps[s] === "done" || it.steps[s] === "warn").length;
+      if (FINAL.has(it.status)) done += 1;
+      else if (it.step === "draft" && it.images_total) done += 0.9 * Math.min(1, (it.images_uploaded || 0) / it.images_total);
     }
-    return Math.min(1, done / (total * per));
+    return Math.min(1, done / total);
   }
 
   elapsedSeconds() {
@@ -1277,8 +1402,8 @@ class DesignsPage {
       this.headCount.textContent = String(doneCount);
       this.headTotal.textContent = `/ ${c.total || r.items.length}`;
       const pct = this.progressFraction();
-      this.headPct.textContent = `%${Math.round(pct * 100)}`;
-      if (this.ctx.lang === "en") this.headPct.textContent = `${Math.round(pct * 100)}%`;
+      const shown = Math.floor(pct * 100);
+      this.headPct.textContent = this.ctx.lang === "en" ? `${shown}%` : `%${shown}`;
       this.headBar.update(Math.round(pct * 1000) / 10, 100);
       this.tickElapsed();
       return;
@@ -1511,7 +1636,7 @@ class DesignsPage {
       const s = STEPS[i];
       const notes = [];
       if (states[i] === "warn") for (const w of it.warnings || []) if (w.step === s) notes.push(this.warnText(w));
-      if (states[i] === "error" && it.error) notes.push(this.problemText(it.error) + (it.error.message && it.error.code !== "junk_name" ? ` — ${it.error.message}` : ""));
+      if (states[i] === "error" && it.error) notes.push(this.problemText(it.error) + (this.problemDetail(it.error) ? ` — ${it.error.message}` : ""));
       if (notes.length) node.title = `${t(`step.${s}`)}: ${notes.join(" · ")}`;
     });
     return h(
@@ -1580,6 +1705,7 @@ class DesignsPage {
             this.expanded = !this.expanded;
             this.pipeEls.order = "";
             this.pipeEls.footKey = "";
+            this.el.querySelector(".dr-grid")?.classList.toggle("is-expanded", this.expanded);
             this.renderPipe();
           },
           title: this.expanded ? t("pipe.show_less") : t("pipe.show_all"),
@@ -1650,14 +1776,20 @@ class DesignsPage {
         ? button({ label: t("side.follow"), size: "sm", variant: "ghost", icon: "play", onClick: () => this.select(this.selected) })
         : null;
 
-    // Mockups
-    const images = it.images || [];
-    const expected = it.mode === "composited" && this.run.mockups ? (this.run.mockups.enabled || 0) + 1 : images.length;
+    // Mockups: for a design, only the composites count and show here (the plain design
+    // goes up too, but it is not a mockup: "6/6" with 6 mockups, as in the video t240);
+    // a ready photo or a folder of photos shows its photos under "Görseller".
+    const composited = it.mode === "composited" || (!it.mode && it.kind !== "folder");
+    const flat = flatPath(it);
+    const images = (it.images || []).filter((p) => p !== flat);
+    const expected = composited && this.run.mockups && typeof this.run.mockups.enabled === "number" ? this.run.mockups.enabled : images.length;
     const mockupDone = it.steps.mockup === "done" || it.steps.mockup === "warn";
     const grid = h("div", { class: "dr-mockups" });
-    const shown = images.slice(0, 4);
+    // No mockup switched on: the plain design is all there is to show.
+    const pictures = images.length || !flat ? images : [flat];
+    const shown = pictures.slice(0, 4);
     shown.forEach((path, i) => {
-      const extra = i === 3 && images.length > 4 ? images.length - 4 : 0;
+      const extra = i === 3 && pictures.length > 4 ? pictures.length - 4 : 0;
       grid.appendChild(
         h(
           "a",
@@ -1668,8 +1800,9 @@ class DesignsPage {
       );
     });
     for (let i = shown.length; i < 4 && !mockupDone && !final; i += 1) grid.appendChild(h("span", { class: "dr-mockup is-empty" }, i === shown.length && it.steps.mockup === "running" ? spinner({ size: 18 }) : null));
-    const mockCount = mockupDone
-      ? h("span", { class: "dr-count is-ok num" }, icon("check", { size: 12, strokeWidth: 2.6 }), `${images.length}/${images.length}`)
+    const short = composited && images.length < expected;
+    const mockCount = mockupDone && (images.length || expected)
+      ? h("span", { class: cx("dr-count num", short ? "is-warn" : "is-ok") }, icon(short ? "alert" : "check", { size: 12, strokeWidth: 2.6 }), `${images.length}/${composited ? expected : images.length}`)
       : images.length
         ? h("span", { class: "dr-count num" }, `${images.length}/${expected}`)
         : null;
@@ -1699,7 +1832,7 @@ class DesignsPage {
 
     // Problems of this product
     const notes = [];
-    if (it.error) notes.push(infoNote({ tone: it.status === "cancelled" ? "neutral" : "danger", icon: "alert", text: [h("b", null, this.problemText(it.error)), it.error.message && it.error.code !== "junk_name" ? h("span", { class: "dr-detail" }, ` ${it.error.message}`) : null] }));
+    if (it.error) notes.push(infoNote({ tone: it.status === "cancelled" ? "neutral" : "danger", icon: "alert", text: [h("b", null, this.problemText(it.error)), this.problemDetail(it.error) ? h("span", { class: "dr-detail" }, ` ${it.error.message}`) : null] }));
     const warns = it.warnings || [];
     if (warns.length) {
       notes.push(
@@ -1743,8 +1876,8 @@ class DesignsPage {
         h(
           "div",
           { class: "dr-section" },
-          h("div", { class: "dr-section-head" }, icon("image", { size: 14 }), h("span", null, t("side.mockups")), h("span", { class: "spacer" }), mockCount),
-          images.length || !final ? grid : h("p", { class: "muted dr-none" }, "–"),
+          h("div", { class: "dr-section-head" }, icon("image", { size: 14 }), h("span", null, composited ? t("side.mockups") : t("side.images")), h("span", { class: "spacer" }), mockCount),
+          pictures.length || !final ? grid : h("p", { class: "muted dr-none" }, "–"),
         ),
         h(
           "div",

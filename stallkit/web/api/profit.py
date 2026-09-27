@@ -2,8 +2,10 @@
 
     GET  /api/profit?month=YYYY-MM[&refresh=1]  the month's P&L plus the 6-month chart; when
                                                 Etsy data is missing or stale a "profit" job
-                                                fetches it and the answer is {"state": "loading"}
-    GET  /api/profit/costs[?month=YYYY-MM]      costs.json + the product types / products to price
+                                                fetches it and the answer is {"state": "loading"};
+                                                a malformed or out-of-range month serves this
+                                                month with "month_refused" set (no error)
+    GET  /api/profit/costs[?month=YYYY-MM]    costs.json + the product types / products to price
     POST /api/profit/costs {"set": {key: number|null}, "currency"?: "USD"}
     GET  /api/profit/fx                         today's TCMB rate (fetched at most once a day)
     POST /api/profit/fx {"rate": number|null} | {"refresh": true}
@@ -79,6 +81,7 @@ MAX_COST = 1_000_000.0
 # its revenue is marked partial rather than shown as if it were complete.
 MAX_LEDGER_ENTRIES = 20_000
 MAX_RECEIPTS = 20_000
+MAX_REFUSED_MONTH = 40  # characters of a refused ?month= echoed back to the page
 REFUND_SKIPPED = ("failed", "canceled", "cancelled")
 
 TCMB_URL = "https://www.tcmb.gov.tr/kurlar/today.xml"
@@ -1023,6 +1026,7 @@ def compute_month(
         "revenue": _r2(revenue),
         # True when the month had more paid orders than could be read (see MAX_RECEIPTS).
         "partial": bool(raw.get("orders_truncated")),
+        "partial_limit": MAX_RECEIPTS if raw.get("orders_truncated") else None,
         "items_revenue": _r2(raw.get("items_revenue") or 0),
         "shipping_charged": _r2(raw.get("shipping_charged") or 0),
         "gift_wrap": _r2(raw.get("gift_wrap") or 0),
@@ -1062,6 +1066,19 @@ def _month_param(req: Request, name: str = "month") -> str:
     if ahead > 0 or ahead < -(OLDEST_MONTHS - 1):
         raise ApiError(422, "invalid", f"{name} is out of range", field=name)
     return value
+
+
+def _month_or_latest(req: Request) -> tuple[str, str | None]:
+    """The asked month, or this month when the asked one is malformed or out of range.
+
+    An old bookmark (?month=2019-01) then opens the latest month with a notice on the
+    page instead of an error. Returns (month, the refused value or None).
+    """
+    try:
+        return _month_param(req), None
+    except ApiError:
+        refused = (req.query.get("month") or "").strip()
+        return current_month(), refused[:MAX_REFUSED_MONTH]
 
 
 def _shop_key(ctx: AppContext, client: Any) -> str:
@@ -1183,7 +1200,7 @@ def _costs_view(costs: dict[str, Any], currency: str) -> dict[str, Any]:
 def get_profit(req: Request) -> dict[str, Any]:
     ctx = req.ctx
     assert ctx is not None
-    month = _month_param(req)
+    month, refused = _month_or_latest(req)
     refresh = req.bool_query("refresh")
     client = ctx.client()
     shop_key = _shop_key(ctx, client)
@@ -1196,6 +1213,8 @@ def get_profit(req: Request) -> dict[str, Any]:
     pair = fx_pair(fx, currency) if fx.get("rates") or fx.get("manual") else None
     base = {
         "month": month,
+        # The ?month= that could not be shown (the latest month is served instead).
+        "month_refused": refused,
         "months": recent_months(current_month(now), SELECT_MONTHS)[::-1],
         "currency": currency,
         "display": _display(ctx),

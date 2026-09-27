@@ -24,7 +24,7 @@ import {
   thumb,
 } from "../ui.js";
 import { icon } from "../icons.js";
-import { date, money, relative, time } from "../format.js";
+import { date, dateTime, money, relative, time } from "../format.js";
 
 const TABS = ["unshipped", "shipped", "delivered", "all"];
 const SETUP_STATES = new Set(["keys", "bad_keys", "disconnected"]);
@@ -36,6 +36,31 @@ const COUNTRIES = ["TR", "US", "GB", "CA", "AU", "DE", "FR", "NL", "IT", "ES", "
   "SE", "DK", "FI", "NO", "PT", "GR", "UA", "IN", "JP", "MX", "NZ"];
 const ROW_H = 57;
 const CONFIRM_PREVIEW = 8;
+// What each ship job this tab started sends (job id -> [{receipt_id, carrier_name,
+// tracking_code}]). A job waiting behind another one (a long Tasarım Yükle run) has no
+// state on the server until it starts, so a page that comes back meanwhile takes its rows
+// from here; once the job runs, the server's own state.queue is read instead. Also kept
+// in sessionStorage (this tab only) so a reload finds them; the page works without it.
+const SENT_KEY = "stallkit.orders.sent";
+const SENT_QUEUES = new Map(readSent());
+
+function readSent() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(SENT_KEY) || "{}");
+    return saved && typeof saved === "object" ? Object.entries(saved).filter(([, q]) => Array.isArray(q)) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeSent() {
+  try {
+    if (SENT_QUEUES.size) sessionStorage.setItem(SENT_KEY, JSON.stringify(Object.fromEntries(SENT_QUEUES)));
+    else sessionStorage.removeItem(SENT_KEY);
+  } catch {
+    /* private window or storage off: in-page memory only */
+  }
+}
 
 /** Rows per page: as many as fit without scrolling, 8 at least (the video's 790 px). */
 function pageSize() {
@@ -91,6 +116,7 @@ export default {
       defaultCarrier: "",
       job: null,
       jobIds: [],
+      queueFetch: null, // id of the job whose state.queue is being read
       finished: new Set(), // ids of ship jobs already wrapped up
       lastDone: null,
       loadSeq: 0,
@@ -230,7 +256,8 @@ export default {
       ctx.setDirty(unsentCount() > 0);
       if (S.job) {
         const p = S.job.progress || {};
-        sendBtn.setLabel(t("send.progress", { done: p.done || 0, total: p.total || S.jobIds.length || "?" }));
+        const total = p.total || S.jobIds.length || (S.job.params && S.job.params.n) || "?";
+        sendBtn.setLabel(t("send.progress", { done: p.done || 0, total }));
         sendBtn.setCount(null);
         sendBtn.setLoading(true);
         stopBtn.hidden = !S.job.cancellable;
@@ -360,7 +387,7 @@ export default {
         "div",
         { class: "o-cell" },
         h("span", { class: "o-no num" }, `#${row.receipt_id}`),
-        h("span", { class: "o-sub num" }, row.created ? `${date(row.created)} · ${time(row.created)}` : "–"),
+        h("span", { class: "o-sub o-date num", title: row.created ? dateTime(row.created) : null }, row.created ? `${date(row.created)} · ${time(row.created)}` : "–"),
       );
     }
 
@@ -816,6 +843,7 @@ export default {
     async function finishJob(job) {
       if (S.finished.has(job.id)) return;
       S.finished.add(job.id);
+      if (SENT_QUEUES.delete(job.id)) writeSent();
       let full = job;
       if (!job.result || job.status !== "done") {
         try {
@@ -878,6 +906,7 @@ export default {
         if (ACTIVE.has(job.status)) {
           syncSend();
           if (S.data) renderRows();
+          if (job.status === "running" && !S.jobIds.length) restoreQueue(job.id);
         } else finishJob(job);
       } else if (!S.job && ACTIVE.has(job.status) && !S.finished.has(job.id)) {
         attachJob(job, []); // started a moment ago (the answer is on its way) or in another tab
@@ -890,20 +919,51 @@ export default {
       if (S.data) renderRows();
     });
 
+    /** Show which rows a job sends (the fields filled, "Sırada" / "Gönderiliyor"). */
+    function useQueue(queue) {
+      for (const q of queue) {
+        const id = Number(q.receipt_id);
+        if (!S.results.has(id)) S.edits.set(id, { carrier_name: q.carrier_name, tracking_code: q.tracking_code });
+      }
+      return queue.map((q) => Number(q.receipt_id));
+    }
+
+    /** A job attached without its rows (started in another tab, or found queued): read
+     *  them from the server once it runs. One request at a time. */
+    async function restoreQueue(jobId) {
+      if (S.queueFetch === jobId) return;
+      S.queueFetch = jobId;
+      try {
+        const full = await ctx.api.get(`/api/jobs/${jobId}`, null, { signal: ctx.signal });
+        const queue = (full.state && full.state.queue) || [];
+        if (!queue.length || !S.job || S.job.id !== jobId || S.jobIds.length) return;
+        S.jobIds = useQueue(queue);
+        syncSend();
+        if (S.data) renderRows();
+      } catch (err) {
+        if (!ctx.api.isAbort(err) && !(err instanceof ctx.api.ApiError)) console.warn("[orders] job", err);
+      } finally {
+        if (S.queueFetch === jobId) S.queueFetch = null;
+      }
+    }
+
     async function resumeJob() {
       try {
         const jobs = await ctx.api.get("/api/jobs", { kind: "orders" }, { signal: ctx.signal });
-        const latest = Array.isArray(jobs) ? jobs[0] : null;
+        const list = Array.isArray(jobs) ? jobs : [];
+        // Remembered rows of jobs that ended while this page was away are not needed.
+        const active = new Set(list.filter((j) => ACTIVE.has(j.status)).map((j) => j.id));
+        const gone = [...SENT_QUEUES.keys()].filter((id) => !active.has(id));
+        for (const id of gone) SENT_QUEUES.delete(id);
+        if (gone.length) writeSent();
+        const latest = list[0] || null;
         if (!latest) return;
         const full = await ctx.api.get(`/api/jobs/${latest.id}`, null, { signal: ctx.signal });
         for (const r of (full.state && full.state.rows) || []) applyResult(r);
         if (ACTIVE.has(full.status)) {
-          const queue = (full.state && full.state.queue) || [];
-          for (const q of queue) {
-            const id = Number(q.receipt_id);
-            if (!S.results.has(id)) S.edits.set(id, { carrier_name: q.carrier_name, tracking_code: q.tracking_code });
-          }
-          attachJob(full, queue.map((q) => Number(q.receipt_id)));
+          // A queued job has no state yet: the rows this tab sent are remembered.
+          const queue = (full.state && full.state.queue) || SENT_QUEUES.get(full.id) || [];
+          attachJob(full, useQueue(queue));
         }
         else if (full.status === "done" && full.result) S.lastDone = full.result;
         renderBanner();
@@ -962,6 +1022,8 @@ export default {
           confirm: true,
         });
         if (!S.finished.has(job.id)) {
+          SENT_QUEUES.set(job.id, list.map((x) => ({ receipt_id: x.receipt_id, carrier_name: x.carrier_name, tracking_code: x.tracking_code })));
+          writeSent();
           S.lastDone = null;
           renderBanner();
           attachJob(job, ids);

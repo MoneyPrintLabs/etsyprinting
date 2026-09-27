@@ -617,8 +617,10 @@ def _connect(
         log.warning("could not remember the shop name")
     ctx.refresh_status(force=True)
     shown = ctx.anonymise(name) if name else None
-    if shown:
-        ctx.notify("connect", "notify.connected", {"shop": shown}, tone="success",
+    if name:
+        # The real name is stored: the bell and the Panel hide it when they show it,
+        # for as long as the hide-names preference is on (also for older notifications).
+        ctx.notify("connect", "notify.connected", {"shop": name}, tone="success",
                    link="/kurulum/magaza")
     else:
         ctx.notify("connect", "notify.connected_plain", tone="success", link="/kurulum/magaza")
