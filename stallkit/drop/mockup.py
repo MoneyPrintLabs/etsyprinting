@@ -30,6 +30,10 @@ DEFAULT_AREA = (0.30, 0.26, 0.40, 0.36)
 
 # Etsy recommends the shortest side be at least 2000px so the zoom viewer works.
 OUTPUT_MIN_EDGE = 2000
+# The flat render of a DIGITAL product's design: it is the file being sold, and Etsy
+# serves a listing photo at up to 3000 px a side (url_fullxfull), so the public photo
+# of it is a preview, small enough that it cannot stand in for the download.
+DIGITAL_PREVIEW_EDGE = 1200
 JPEG_QUALITY = 92
 
 # Full-resolution colour (4:4:4). libjpeg's default halves chroma in both directions,

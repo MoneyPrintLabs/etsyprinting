@@ -1,6 +1,7 @@
 """Entry point PyInstaller freezes into the downloadable app.
 
-No arguments opens the window; any arguments run the command line tool.
+No arguments starts the web app and opens it in the browser; any arguments run the
+command line tool.
 """
 
 from stallkit.desktop import main

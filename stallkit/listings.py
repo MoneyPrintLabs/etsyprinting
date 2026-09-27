@@ -7,12 +7,13 @@ and the exact field. Rows are independent — one bad row does not stop the batc
 
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from .client import EtsyClient, image_problem
+from .client import MAX_LISTING_FILES, EtsyClient, file_problem, image_problem
 from .config import (
     LISTING_TYPES,
     MAX_LISTING_IMAGES,
@@ -27,6 +28,7 @@ from .config import (
 )
 from .csvio import as_bool, as_float, as_int, resolve_paths, split_multi
 from .errors import EtsyApiError, ValidationError
+from .seo import tag_key  # seo imports only client and config: no cycle
 
 # The CSV contract. `listing_id` empty means "create"; filled means "update".
 LISTING_COLUMNS = [
@@ -58,8 +60,35 @@ LISTING_COLUMNS = [
     "item_height",
     "item_dimensions_unit",
     "images",
+    "files",
     "state",
 ]
+
+# The column after `images`: the files a buyer downloads from a new `download` or `both`
+# draft, separated like images, relative to the CSV. Empty for a physical listing. It is
+# optional to read: a CSV written before it existed pushes exactly as before.
+FILES_COLUMN = "files"
+
+# Listing types that are delivered as files, and the ones that are shipped.
+DIGITAL_TYPES = frozenset({"download", "both"})
+SHIPPED_TYPES = frozenset({"physical", "both"})
+
+# What a digital download is never sent, because nothing is shipped: Etsy's
+# createDraftListing requires shipping_profile_id only "when listing type is physical",
+# and a processing profile is only returned for physical listings (OAS).
+SHIPPING_ONLY_FIELDS = (
+    "shipping_profile_id", "readiness_state_id", "processing_min", "processing_max",
+    "item_weight", "item_weight_unit", "item_length", "item_width", "item_height",
+    "item_dimensions_unit",
+)
+
+# Etsy's title rule (createDraftListing in the Open API spec): "valid title strings
+# contain only letters, numbers, punctuation marks, mathematical symbols, whitespace
+# characters, ™, ©, and ®" — regex /[^\p{L}\p{Nd}\p{P}\p{Sm}\p{Zs}™©®]/u — and "you can
+# only use the %, :, & and + characters once each". The drop pipeline cleans its titles
+# with the same rule (drop.pipeline re-exports these); a CSV is checked with it here.
+TITLE_SYMBOLS = "™©®"
+TITLE_ONCE = {"&": "and", "+": "plus", "%": "percent", ":": "-"}
 
 # Fields Etsy accepts on PATCH. `quantity` and `price` are deliberately absent:
 # on a listing with variations they live in the inventory endpoint, and sending
@@ -92,6 +121,7 @@ class RowResult:
     title: str = ""
     message: str = ""
     images_uploaded: int = 0
+    files_uploaded: int = 0
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -142,6 +172,33 @@ class PushReport:
     def images(self) -> int:
         return sum(r.images_uploaded for r in self.results)
 
+    @property
+    def files(self) -> int:
+        return sum(r.files_uploaded for r in self.results)
+
+
+def title_char_ok(ch: str) -> bool:
+    """Whether Etsy accepts this character in a title (see TITLE_SYMBOLS)."""
+    if ch in TITLE_SYMBOLS:
+        return True
+    category = unicodedata.category(ch)
+    return category[0] in "LP" or category in ("Nd", "Sm", "Zs")
+
+
+def title_problems(title: str) -> list[str]:
+    """Why Etsy would refuse this title's characters (the length is checked elsewhere)."""
+    problems: list[str] = []
+    bad = sorted({ch for ch in title if not title_char_ok(ch)})
+    if bad:
+        problems.append(
+            "title contains characters Etsy does not accept: " + " ".join(repr(c) for c in bad)
+        )
+    for ch in TITLE_ONCE:
+        count = title.count(ch)
+        if count > 1:
+            problems.append(f"title uses {ch!r} {count} times; Etsy allows it once")
+    return problems
+
 
 def bad_tag_chars(tag: str) -> set[str]:
     """Characters Etsy will reject. str.isalnum() is Unicode-aware, so 'çiçek' passes."""
@@ -158,7 +215,8 @@ def validate_tags(tags: Sequence[str]) -> list[str]:
         bad = bad_tag_chars(tag)
         if bad:
             problems.append(f"tag {tag!r} contains disallowed character(s): {''.join(sorted(bad))}")
-    lowered = [t.lower() for t in tags]
+    # "İstanbul poster" and "istanbul poster" are one tag to a buyer (seo.tag_key).
+    lowered = [tag_key(t) for t in tags]
     dupes = {t for t in lowered if lowered.count(t) > 1}
     if dupes:
         problems.append(f"duplicate tags: {', '.join(sorted(dupes))}")
@@ -179,6 +237,9 @@ def build_payload(
     if title:
         if len(title) > MAX_TITLE_LEN:
             problems.append(f"title is {len(title)} chars, max {MAX_TITLE_LEN}")
+        # The character rule too: Etsy refuses "Salt & Pepper & Co" or an emoji with a 400
+        # that names neither, after the row was counted as sent.
+        problems.extend(title_problems(title))
         payload["title"] = title
     elif not is_update:
         problems.append("title is required")
@@ -315,12 +376,25 @@ def build_payload(
         # writes them, so silently ignore them rather than failing a round trip on
         # this tool's own output.
 
+    # A digital download is not shipped: Etsy requires a shipping profile only "when
+    # listing type is physical" and a processing profile only exists for physical
+    # listings (OAS), so a new download draft is created without them. A row that fills
+    # them in (a physical CSV turned into a printable) is told what was left out.
+    if not is_update and payload.get("type") == "download":
+        dropped = [name for name in SHIPPING_ONLY_FIELDS if name in payload]
+        for name in dropped:
+            del payload[name]
+        if dropped and warnings is not None:
+            warnings.append(
+                f"type is download, so nothing is shipped: {', '.join(dropped)} not sent"
+            )
+
     # stallkit only ever creates drafts, and Etsy does not require a shipping profile
     # on a draft — so this is a warning, not a blocker. A seller who has not built a
     # profile yet can still stage 300 drafts; they just cannot publish them.
     if (
         not is_update
-        and payload.get("type", "physical") in {"physical", "both"}
+        and payload.get("type", "physical") in SHIPPED_TYPES
         and "shipping_profile_id" not in payload
         and warnings is not None
     ):
@@ -362,12 +436,92 @@ class PreparedRow:
     is_update: bool = False
     payload: dict[str, Any] = field(default_factory=dict)
     image_paths: list[Path] = field(default_factory=list)
+    file_paths: list[Path] = field(default_factory=list)  # a digital draft's downloads
+
+
+ImageResolver = Callable[[str], Path]
+"""Turns one `images` cell value into a path, or raises ValidationError to refuse it.
+
+The CLI reads a CSV the seller keeps next to their pictures, so it takes any path
+(csvio.resolve_paths). The web app's CSV arrives as an upload with no folder of its
+own and may come from anywhere, so it passes a resolver that keeps every image inside
+the workspace and refuses the rest before the filesystem is touched.
+"""
+
+
+def _image_paths(
+    values: list[str], base_dir: Path, resolver: ImageResolver | None
+) -> list[Path]:
+    if resolver is None:
+        return resolve_paths(values, base_dir)
+    return [resolver(value) for value in values]
+
+
+def _file_paths(
+    row: dict[str, str],
+    payload: dict[str, Any],
+    result: RowResult,
+    *,
+    is_update: bool,
+    base_dir: Path,
+    resolver: ImageResolver | None,
+) -> list[Path]:
+    """The `files` column of one row, validated; ValidationError says why it cannot go.
+
+    Files go only onto a NEW draft of type download or both. On an update they are
+    left out with a warning: attaching a file to a live physical listing would turn it
+    digital and drop its shipping and variations (OAS uploadListingFile).
+    """
+    values = split_multi(row.get(FILES_COLUMN, "") or "")
+    listing_type = payload.get("type", "physical" if not is_update else None)
+    if not values:
+        # A made-to-order digital listing is activated without a file (updateListing
+        # in the Open API spec): the seller sends what was made after the order.
+        if (not is_update and listing_type in DIGITAL_TYPES
+                and payload.get("when_made") != "made_to_order"):
+            result.warnings.append(
+                f"type is {listing_type} but no files are given — the draft is created, "
+                "but Etsy needs its download file before it can be published"
+            )
+        return []
+    if is_update:
+        result.warnings.append(
+            "files are only attached to new drafts; not sent on an update (add them in Etsy)"
+        )
+        return []
+    if listing_type not in DIGITAL_TYPES:
+        raise ValidationError(
+            "files are given but type is physical — set type to download or both, or "
+            "empty the files column"
+        )
+    paths = _image_paths(values, base_dir, resolver)
+    if len(paths) > MAX_LISTING_FILES:
+        raise ValidationError(
+            f"{len(paths)} files given, Etsy allows {MAX_LISTING_FILES} per listing. "
+            "Nothing was dropped — zip them together or remove some."
+        )
+    missing = [p for p in paths if not p.is_file()]
+    if missing:
+        raise ValidationError(f"file not found: {', '.join(str(p) for p in missing[:3])}")
+    rejected = [problem for p in paths if (problem := file_problem(p))]
+    if rejected:
+        raise ValidationError("; ".join(rejected[:3]))
+    return paths
 
 
 def prepare(
-    rows: Sequence[dict[str, str]], *, base_dir: Path, upload_images: bool = True
+    rows: Sequence[dict[str, str]],
+    *,
+    base_dir: Path,
+    upload_images: bool = True,
+    image_resolver: ImageResolver | None = None,
+    upload_files: bool = True,
 ) -> list[PreparedRow]:
-    """Validate every row. Pure local work — no network, no writes, no side effects."""
+    """Validate every row. Pure local work — no network, no writes, no side effects.
+
+    `upload_files` covers the optional `files` column (a digital draft's downloads);
+    the same resolver keeps those paths where it keeps the images.
+    """
     prepared: list[PreparedRow] = []
 
     for index, row in enumerate(rows, start=2):  # row 1 is the header
@@ -393,11 +547,19 @@ def prepare(
             prepared.append(PreparedRow(result, is_update))
             continue
 
-        image_paths = resolve_paths(split_multi(row.get("images", "")), base_dir)
         # Only the run that will actually upload them cares how many there are, or
         # whether they exist. Under --no-images nothing is sent, and failing a row over
         # a column this run ignores would stop a seller fixing their titles.
         if upload_images:
+            try:
+                image_paths = _image_paths(
+                    split_multi(row.get("images", "")), base_dir, image_resolver
+                )
+            except ValidationError as exc:
+                result.status = "error"
+                result.message = str(exc)
+                prepared.append(PreparedRow(result, is_update, payload))
+                continue
             if len(image_paths) > MAX_LISTING_IMAGES:
                 # Etsy accepts the create and then refuses the eleventh upload, leaving
                 # a draft stallkit has no delete scope to undo — the one state this tool
@@ -429,12 +591,27 @@ def prepare(
         else:
             image_paths = []
 
-        prepared.append(PreparedRow(result, is_update, payload, image_paths))
+        # The downloads are checked here with the images, for the same reason: they go
+        # up after the draft exists, so a file Etsy refuses must be found before it.
+        file_paths: list[Path] = []
+        if upload_files:
+            try:
+                file_paths = _file_paths(row, payload, result, is_update=is_update,
+                                         base_dir=base_dir, resolver=image_resolver)
+            except ValidationError as exc:
+                result.status = "error"
+                result.message = str(exc)
+                prepared.append(PreparedRow(result, is_update, payload, image_paths))
+                continue
+
+        prepared.append(PreparedRow(result, is_update, payload, image_paths, file_paths))
 
     return prepared
 
 
-def inventory_for_copy(inventory: dict[str, Any]) -> dict[str, Any]:
+def inventory_for_copy(
+    inventory: dict[str, Any], *, readiness_state_id: int | None = None
+) -> dict[str, Any]:
     """Turn a getListingInventory response into an updateListingInventory body.
 
     The two are nearly the same shape and not quite: the read carries ids the write
@@ -442,6 +619,12 @@ def inventory_for_copy(inventory: dict[str, Any]) -> dict[str, Any]:
     in as a plain number, and deleted offerings are listed but must not be recreated.
     Everything that defines the options — properties, their values and which of them
     drive price, quantity, SKU and processing time — is carried across unchanged.
+
+    `readiness_state_id` on every offering is required by updateListingInventory
+    (OAS: required [price, quantity, is_enabled, readiness_state_id], nullable), but
+    getListingInventory only returns it for an active physical listing. An offering
+    without one gets `readiness_state_id` (the template listing's processing profile)
+    here, or None, which `_write_row` fills from the new draft's own profile.
     """
     products = []
     for product in inventory.get("products") or []:
@@ -454,13 +637,13 @@ def inventory_for_copy(inventory: dict[str, Any]) -> dict[str, Any]:
             price = offering.get("price")
             if isinstance(price, dict):
                 price = price.get("amount", 0) / (price.get("divisor") or 100)
+            readiness = offering.get("readiness_state_id")
             entry = {
                 "price": round(float(price), 2),
                 "quantity": int(offering.get("quantity") or 0),
                 "is_enabled": bool(offering.get("is_enabled", True)),
+                "readiness_state_id": readiness if readiness is not None else readiness_state_id,
             }
-            if offering.get("readiness_state_id") is not None:
-                entry["readiness_state_id"] = offering["readiness_state_id"]
             offerings.append(entry)
         if not offerings:
             continue
@@ -491,6 +674,28 @@ def has_variations(inventory: dict[str, Any] | None) -> bool:
     return bool(inventory) and any(p.get("property_values") for p in inventory["products"])
 
 
+def inventory_with_readiness(
+    inventory: dict[str, Any], readiness_state_id: Any
+) -> dict[str, Any]:
+    """A copy of an updateListingInventory body whose offerings all name a profile.
+
+    An offering that has none takes the new listing's own `readiness_state_id` (the one
+    its create payload carried); every offering keeps the key, None at worst, because
+    the endpoint requires it. The shared body is never changed: one run copies it onto
+    many drafts.
+    """
+    products = []
+    for product in inventory.get("products") or []:
+        offerings = []
+        for offering in product.get("offerings") or []:
+            entry = dict(offering)
+            if entry.get("readiness_state_id") is None:
+                entry["readiness_state_id"] = readiness_state_id
+            offerings.append(entry)
+        products.append({**product, "offerings": offerings})
+    return {**inventory, "products": products}
+
+
 def push(
     client: EtsyClient | None,
     rows: Sequence[dict[str, str]],
@@ -501,6 +706,8 @@ def push(
     allow_partial: bool = False,
     on_progress: Callable[[RowResult], None] | None = None,
     inventory: dict[str, Any] | None = None,
+    image_resolver: ImageResolver | None = None,
+    upload_files: bool = True,
 ) -> PushReport:
     """Apply a CSV to the shop.
 
@@ -517,7 +724,10 @@ def push(
         raise ValidationError("A client is required unless dry_run is set.")
 
     report = PushReport()
-    prepared = prepare(rows, base_dir=base_dir, upload_images=upload_images)
+    prepared = prepare(
+        rows, base_dir=base_dir, upload_images=upload_images, image_resolver=image_resolver,
+        upload_files=upload_files,
+    )
     invalid = [p for p in prepared if p.result.failed]
 
     if dry_run:
@@ -526,6 +736,7 @@ def push(
                 item.result.status = "dry-run"
                 item.result.message = (
                     f"{len(item.payload)} fields, {len(item.image_paths)} image(s)"
+                    + (f", {len(item.file_paths)} file(s)" if item.file_paths else "")
                 )
             _emit(report, item.result, on_progress)
         return report
@@ -603,7 +814,10 @@ def _write_row(
     # update never replaces options a seller may have tuned by hand.
     if inventory and not item.is_update and result.listing_id:
         try:
-            client.update_listing_inventory(result.listing_id, inventory)
+            client.update_listing_inventory(
+                result.listing_id,
+                inventory_with_readiness(inventory, item.payload.get("readiness_state_id")),
+            )
             result.message = f"{result.message} with {len(inventory['products'])} variations"
         except (EtsyApiError, ValidationError, OSError, ValueError) as exc:
             result.status = "partial"
@@ -612,24 +826,61 @@ def _write_row(
                 f"be set: {exc}. The listing IS in your shop — add the options in Etsy."
             )
 
-    if not (upload_images and item.image_paths and result.listing_id):
-        return
+    image_failed = False
+    if upload_images and item.image_paths and result.listing_id:
+        for rank, image in enumerate(item.image_paths, start=1):
+            try:
+                client.upload_listing_image(result.listing_id, image, rank=rank)
+                result.images_uploaded += 1
+            except (EtsyApiError, ValidationError, OSError, ValueError) as exc:
+                # The listing already exists. Reporting a plain "error" would send the
+                # seller hunting for a draft they already have — and stallkit holds no
+                # delete scope on purpose, so there is nothing to roll back to.
+                result.status = "partial"
+                result.message = (
+                    f"{result.message} (id {result.listing_id}), but image {rank} of "
+                    f"{len(item.image_paths)} failed: {exc}. The listing IS in your shop — "
+                    "add the remaining images in Etsy, or fix and re-run just this row."
+                )
+                image_failed = True
+                break
 
-    for rank, image in enumerate(item.image_paths, start=1):
+    # A digital draft's downloads go on last, after its photos: only ever onto the draft
+    # this row just created (prepare() refuses files anywhere else). They still go when a
+    # photo failed: a draft with its download and a photo missing is closer to done, and
+    # the message then says what happened to the download as well.
+    if item.is_update or not item.file_paths or not result.listing_id:
+        return
+    total = len(item.file_paths)
+    for rank, path in enumerate(item.file_paths, start=1):
         try:
-            client.upload_listing_image(result.listing_id, image, rank=rank)
-            result.images_uploaded += 1
+            client.upload_listing_file(result.listing_id, path, rank=rank)
+            result.files_uploaded += 1
         except (EtsyApiError, ValidationError, OSError, ValueError) as exc:
-            # The listing already exists. Reporting a plain "error" would send the
-            # seller hunting for a draft they already have — and stallkit holds no
-            # delete scope on purpose, so there is nothing to roll back to.
-            result.status = "partial"
-            result.message = (
-                f"{result.message} (id {result.listing_id}), but image {rank} of "
-                f"{len(item.image_paths)} failed: {exc}. The listing IS in your shop — "
-                "add the remaining images in Etsy, or fix and re-run just this row."
-            )
+            if image_failed:
+                result.message = (
+                    f"{result.message} Download file {rank} of {total} ({path.name}) "
+                    f"failed too: {exc}. Add the download file in Etsy before publishing it."
+                )
+            else:
+                result.status = "partial"
+                result.message = (
+                    f"{result.message} (id {result.listing_id}), but file {rank} of "
+                    f"{total} ({path.name}) failed: {exc}. The listing IS in "
+                    "your shop — add the download file in Etsy before publishing it."
+                )
             return
+    one = result.files_uploaded == 1
+    if result.status == "ok":
+        result.message = (
+            f"{result.message}; {result.files_uploaded} download file{'' if one else 's'} "
+            "attached"
+        )
+    elif image_failed:
+        result.message = (
+            f"{result.message} Its {result.files_uploaded} download file{'' if one else 's'} "
+            f"{'was' if one else 'were'} attached."
+        )
 
 
 def pull(client: EtsyClient, *, state: str = "active", max_items: int | None = None) -> list[dict[str, Any]]:
@@ -671,7 +922,7 @@ def pull(client: EtsyClient, *, state: str = "active", max_items: int | None = N
                 "images": "",  # Etsy serves images by URL; re-uploading them is never wanted.
                 "state": listing.get("state", ""),
                 "url": listing.get("url", ""),
-                "views": listing.get("views", ""),
+                # No "views": ShopListing (OAS) has no such field, so it was always empty.
                 "num_favorers": listing.get("num_favorers", ""),
             }
         )

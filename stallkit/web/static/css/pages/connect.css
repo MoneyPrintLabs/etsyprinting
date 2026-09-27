@@ -1,0 +1,1142 @@
+/* Mağaza Bağlantısı (frame t160) and the consent tab's landing page (/oauth-done). */
+
+.page-connect {
+  gap: 20px;
+}
+
+/* ---- stepper: steps 3 and 4 lead to their pages */
+.page-connect .cx-stepper {
+  padding: 16px 22px;
+}
+.page-connect .cx-stepper .step.is-link {
+  cursor: pointer;
+  border-radius: 10px;
+}
+.page-connect .cx-stepper .step.is-link:hover .step-label {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--border-2);
+  text-underline-offset: 3px;
+}
+
+/* ---- two columns: the action card and the status card */
+.page-connect .cx-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.64fr) minmax(300px, 1fr);
+  gap: 20px;
+  align-items: stretch;
+}
+.page-connect .cx-main {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 34px 34px 30px;
+  min-width: 0;
+}
+.page-connect .cx-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.page-connect .cx-tile {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 46px;
+  height: 46px;
+  border-radius: 11px;
+  color: var(--tone, var(--accent-2));
+  background: color-mix(in srgb, var(--tone, var(--accent)) 13%, #121320);
+  border: 1px solid color-mix(in srgb, var(--tone, var(--accent)) 26%, transparent);
+}
+.page-connect .cx-title {
+  font-size: 27px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.page-connect .cx-lead {
+  margin-top: -2px;
+  font-size: 15.5px;
+  line-height: 1.55;
+  color: var(--text-2);
+}
+.page-connect .cx-main > .section-title {
+  margin: 6px 0 -8px;
+}
+.page-connect .cx-main .note {
+  font-size: 13.5px;
+}
+.page-connect .cx-detail {
+  color: var(--text);
+  word-break: break-word;
+}
+.page-connect .cx-loading {
+  padding: 8px 0 24px;
+}
+.page-connect .cx-head-skel {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---- the permissions box */
+.page-connect .cx-perms {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0;
+  border-radius: var(--radius);
+  background: #161921;
+  border: 1px solid var(--border);
+}
+.page-connect .cx-perm {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 56px;
+  padding: 8px 20px;
+  font-size: 15.5px;
+  font-weight: 550;
+  color: var(--text);
+}
+.page-connect .cx-perm-check {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  color: var(--success);
+  background: var(--success-soft);
+}
+.page-connect .cx-perm-text {
+  flex: 1;
+  min-width: 0;
+}
+.page-connect .cx-perm-note {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 450;
+  color: var(--muted);
+}
+.page-connect .cx-perm.is-new .cx-perm-check {
+  color: var(--accent-2);
+  background: var(--accent-soft);
+}
+.page-connect .cx-scope {
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--panel-3);
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+/* "Silme izni istemiyoruz": the blue-green note under the list */
+.page-connect .note.tone-info {
+  min-height: 58px;
+  padding: 12px 18px;
+  background: #111c28;
+  border-color: #1f3a4f;
+  color: var(--text-2);
+  font-size: 15px;
+}
+.page-connect .note.tone-info .note-icon {
+  color: #7cc4ea;
+  background: #16344d;
+}
+
+/* ---- the action row at the bottom of the card */
+.page-connect .cx-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.page-connect .cx-connect-row {
+  margin-top: auto;
+  padding-top: 26px;
+}
+.page-connect .cx-connect-btn,
+.page-connect .cx-main .btn-primary.btn-lg {
+  height: 52px;
+  min-width: 200px;
+  padding: 0 26px;
+  font-size: 16px;
+  border-radius: 11px;
+}
+/* Busy, the button dims to the video's darker violet and loses its glow. */
+.page-connect .cx-main .cx-connect-btn[aria-busy="true"] {
+  min-width: 254px;
+  opacity: 1;
+  background: #5d52c8;
+  border-color: rgba(255, 255, 255, 0.05);
+  box-shadow: none;
+  color: #f1efff;
+}
+.page-connect .cx-main .cx-connect-btn[aria-busy="true"] .spinner {
+  border-color: rgba(255, 255, 255, 0.25);
+  border-top-color: #fff;
+}
+.page-connect .cx-hint {
+  font-size: 13px;
+  color: var(--muted);
+}
+.page-connect .cx-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  width: 316px;
+  max-width: 100%;
+}
+.page-connect .cx-progress-top {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.page-connect .cx-phase {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.page-connect .cx-progress .progress {
+  height: 5px;
+}
+.page-connect .cx-progress-links {
+  display: inline-flex;
+  gap: 12px;
+  flex: none;
+}
+.page-connect .cx-link-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--accent-2);
+  cursor: pointer;
+}
+.page-connect button.cx-link-btn {
+  color: var(--muted);
+}
+.page-connect .cx-link-btn:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+.page-connect .cx-danger-ghost {
+  color: #ff8a8a;
+}
+.page-connect .cx-danger-ghost:hover:not(:disabled) {
+  color: #ffa3a3;
+  background: var(--danger-soft);
+}
+.page-connect .cx-meta {
+  margin-top: -6px;
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* ---- keys: how to make the app */
+.page-connect .cx-howto {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  counter-reset: none;
+}
+.page-connect .cx-how {
+  display: flex;
+  gap: 14px;
+}
+.page-connect .cx-how-num {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  margin-top: 1px;
+  border-radius: 50%;
+  border: 1.5px solid var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-2);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+.page-connect .cx-how-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.page-connect .cx-how-body > p {
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text-2);
+}
+.page-connect .cx-how-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.page-connect .cx-how-body .copy-field {
+  width: 100%;
+  max-width: 460px;
+}
+.page-connect .cx-ext {
+  text-decoration: none;
+}
+.page-connect .cx-why {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 10px 10px 14px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border-2);
+}
+.page-connect .cx-why-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-2);
+  user-select: all;
+}
+.page-connect .cx-why .btn.is-done {
+  color: var(--success);
+}
+.page-connect details > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--text-2);
+  border-radius: 6px;
+}
+.page-connect details > summary::-webkit-details-marker {
+  display: none;
+}
+.page-connect details > summary .icon {
+  color: var(--muted);
+  transition: transform 0.15s var(--ease);
+}
+.page-connect details[open] > summary .icon {
+  transform: rotate(90deg);
+}
+.page-connect details > summary:hover {
+  color: var(--text);
+}
+.page-connect .cx-howto-wrap[open] > .cx-howto {
+  margin-top: 14px;
+}
+
+/* ---- keys: the form */
+.page-connect .cx-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.page-connect .cx-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.page-connect .cx-secret {
+  padding-right: 4px;
+}
+.page-connect .cx-secret .btn {
+  flex: none;
+}
+.page-connect .cx-adv-body {
+  margin-top: 10px;
+  max-width: 460px;
+}
+.page-connect .cx-result:empty {
+  display: none;
+}
+.page-connect .cx-local {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+/* ---- the right card: Bağlantı durumu */
+.page-connect .cx-side {
+  display: flex;
+  flex-direction: column;
+  padding: 24px 24px 18px;
+  min-width: 0;
+}
+.page-connect .cx-side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.page-connect .cx-side-title {
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.page-connect .cx-side-badge .badge {
+  height: 24px;
+  font-size: 12px;
+}
+.page-connect .cx-diagram {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 36px 20px 30px;
+  border-radius: 14px;
+  background: radial-gradient(120% 90% at 18% 38%, rgba(124, 108, 246, 0.1), transparent 55%), #0d0e13;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.page-connect .cx-node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+  width: 104px;
+  text-align: center;
+}
+.page-connect .cx-node-tile {
+  display: grid;
+  place-items: center;
+  width: 90px;
+  height: 90px;
+  margin-bottom: 10px;
+  border-radius: 20px;
+  background: #181a22;
+  border: 1px solid #2a2c36;
+  color: #c9ccd6;
+}
+.page-connect .cx-node-tile.is-app {
+  background: linear-gradient(160deg, #262744 0%, #1a1b2c 100%);
+  border-color: #3a3a5c;
+  box-shadow: 0 0 44px -6px rgba(124, 108, 246, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+.page-connect .cx-node-tile .logo-tile {
+  border-radius: 12px;
+}
+.page-connect .cx-node-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text);
+}
+.page-connect .cx-node-sub {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.page-connect .cx-link {
+  position: relative;
+  flex: 1;
+  min-width: 60px;
+  height: 90px;
+  display: flex;
+  align-items: center;
+}
+.page-connect .cx-link-dot {
+  position: absolute;
+  left: -4px;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: #6d6f7c;
+  z-index: 1;
+}
+.page-connect .cx-link-line {
+  flex: 1;
+  height: 2px;
+  background: repeating-linear-gradient(90deg, #3b3e4a 0 7px, transparent 7px 12px);
+}
+.page-connect .cx-link-lock {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  margin: 0 6px;
+  border-radius: 50%;
+  background: #15161d;
+  border: 1px solid #2c2e38;
+  color: var(--muted);
+}
+.page-connect .cx-diagram.is-connecting .cx-link-dot {
+  background: #fff;
+  box-shadow: 0 0 0 4px rgba(155, 140, 255, 0.28), 0 0 16px 3px rgba(155, 140, 255, 0.75);
+  animation: cx-pulse 1.6s ease-in-out infinite;
+}
+.page-connect .cx-diagram.is-connecting .cx-link-line {
+  background: repeating-linear-gradient(90deg, #5a5480 0 7px, transparent 7px 12px);
+  background-size: 24px 2px;
+  animation: cx-flow 0.9s linear infinite;
+}
+.page-connect .cx-diagram.is-connected .cx-link-dot {
+  background: var(--success);
+  box-shadow: 0 0 12px 2px rgba(52, 211, 153, 0.45);
+}
+.page-connect .cx-diagram.is-connected .cx-link-line {
+  background: color-mix(in srgb, var(--success) 55%, transparent);
+}
+.page-connect .cx-diagram.is-connected .cx-link-lock {
+  color: #06291d;
+  background: var(--success);
+  border-color: var(--success);
+}
+.page-connect .cx-diagram.is-connected .cx-node-tile.is-shop {
+  border-color: color-mix(in srgb, var(--success) 40%, #2a2c36);
+  color: var(--text);
+}
+@keyframes cx-pulse {
+  50% {
+    box-shadow: 0 0 0 6px rgba(155, 140, 255, 0.16), 0 0 22px 5px rgba(155, 140, 255, 0.55);
+  }
+}
+@keyframes cx-flow {
+  to {
+    background-position: 24px 0;
+  }
+}
+
+.page-connect .cx-flow {
+  display: flex;
+  flex-direction: column;
+  padding: 26px 0 8px 10px;
+}
+.page-connect .cx-flow-step {
+  position: relative;
+  display: flex;
+  gap: 16px;
+  min-height: 61px;
+}
+.page-connect .cx-flow-step:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  top: 26px;
+  bottom: 4px;
+  width: 1px;
+  background: var(--border-2);
+}
+.page-connect .cx-flow-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 21px;
+  height: 21px;
+  border-radius: 50%;
+  border: 1px solid var(--border-2);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+.page-connect .cx-flow-step.is-running .cx-flow-mark {
+  border-color: transparent;
+  background: var(--accent-soft);
+}
+.page-connect .cx-flow-ring {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid rgba(155, 140, 255, 0.25);
+  border-top-color: var(--accent-2);
+  border-right-color: var(--accent-2);
+  animation: sk-spin 0.9s linear infinite;
+}
+.page-connect .cx-flow-step.is-done .cx-flow-mark {
+  border-color: transparent;
+  background: var(--success-soft);
+  color: var(--success);
+}
+.page-connect .cx-flow-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding-top: 1px;
+}
+.page-connect .cx-flow-text b {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.page-connect .cx-flow-step.is-todo .cx-flow-text b {
+  color: var(--text-2);
+}
+.page-connect .cx-flow-text span {
+  font-size: 12px;
+  color: var(--muted);
+}
+.page-connect .cx-flow-step.is-running .cx-flow-text span {
+  color: var(--accent-2);
+}
+.page-connect .cx-side-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+}
+.page-connect .cx-side-foot .icon {
+  flex: none;
+}
+
+/* ---- narrower windows */
+@media (max-width: 1440px) {
+  .page-connect .cx-diagram {
+    padding: 30px 14px 24px;
+  }
+  .page-connect .cx-node {
+    width: 96px;
+  }
+  .page-connect .cx-node-tile {
+    width: 74px;
+    height: 74px;
+    border-radius: 18px;
+  }
+  .page-connect .cx-node-tile .logo-tile {
+    width: 42px !important;
+    height: 42px !important;
+  }
+  .page-connect .cx-node-tile .logo-tile svg {
+    width: 68%;
+    height: 68%;
+  }
+  .page-connect .cx-link {
+    height: 74px;
+    min-width: 48px;
+  }
+  .page-connect .cx-link-lock {
+    margin: 0 3px;
+  }
+}
+@media (max-width: 1180px) {
+  .page-connect .cx-main {
+    padding: 26px 26px 24px;
+  }
+  .page-connect .cx-title {
+    font-size: 23px;
+  }
+}
+@media (max-width: 1000px) {
+  .page-connect .cx-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .page-connect .cx-stepper {
+    overflow-x: auto;
+  }
+}
+@media (max-width: 640px) {
+  .page-connect .cx-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .page-connect .cx-connect-btn {
+    width: 100%;
+  }
+}
+
+/* The key form is long: the status card stays in view beside it. */
+.page-connect .cx-grid.mode-keys .cx-side {
+  position: sticky;
+  top: 0;
+  align-self: start;
+}
+.page-connect .cx-grid.mode-keys .cx-side-foot {
+  margin-top: 10px;
+}
+.page-connect .cx-head .badge {
+  flex: none;
+  margin-left: 4px;
+}
+
+/* ---- the callback address: copy it, where it goes on Etsy, Etsy's rules */
+.page-connect .cx-cb {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  background: #12131b;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+}
+.page-connect .cx-cb.is-compact {
+  padding: 12px 14px;
+}
+/* In the question before the first Bağlan: fewer lines (see callbackGuide). */
+.page-connect .cx-cb.is-dense {
+  gap: 8px;
+  padding: 10px 12px;
+}
+.page-connect .cx-cb.is-dense .cx-cb-foot {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 4px;
+}
+/* The chips and the note flow as one line where they fit. */
+.page-connect .cx-cb.is-dense .cx-cb-rules {
+  display: contents;
+}
+.page-connect .cx-cb.is-dense .cx-cb-note {
+  margin-left: 6px;
+  line-height: 21px;
+}
+.page-connect .cx-cb.is-dense .cx-cb-note .icon {
+  margin-top: 4px;
+}
+.page-connect .cx-cb.is-dense .cx-cb-rule {
+  height: 21px;
+  gap: 4px;
+  padding: 0 7px 0 5px;
+  font-size: 11.5px;
+}
+.page-connect .cx-cb.is-dense .cx-cb-path li + li::before {
+  margin: 0 6px;
+}
+.page-connect .cx-cb-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.page-connect .cx-cb-head b {
+  font-size: 14px;
+  font-weight: 650;
+}
+.page-connect .cx-cb-head span {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.page-connect .cx-cb .copy-field {
+  width: 100%;
+  max-width: none;
+}
+.page-connect .cx-cb-copy .copy-input {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: 0.01em;
+}
+.page-connect .cx-cb-copy .btn {
+  flex: none;
+}
+.page-connect .cx-cb-where {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.page-connect .cx-cb-label {
+  flex: none;
+  font-size: 11.5px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.page-connect .cx-cb-path {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 0;
+  list-style: none;
+}
+.page-connect .cx-cb-path li {
+  line-height: 1.6;
+}
+.page-connect .cx-cb-path li + li::before {
+  content: "›";
+  margin: 0 8px;
+  color: var(--muted);
+}
+.page-connect .cx-cb-path b {
+  color: var(--text);
+  font-weight: 600;
+}
+.page-connect .cx-cb-apps {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  color: var(--accent-2);
+}
+.page-connect .cx-cb-apps:hover {
+  text-decoration: underline;
+}
+.page-connect .cx-kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  margin: 0 2px;
+  padding: 0 4px;
+  border-radius: 5px;
+  border: 1px solid var(--border-2);
+  background: var(--panel-3);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+}
+.page-connect .cx-cb-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.page-connect .cx-cb-rules {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+}
+.page-connect .cx-cb-rule {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 9px 0 7px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--text-2);
+  background: var(--success-soft);
+  border: 1px solid color-mix(in srgb, var(--success) 22%, transparent);
+}
+.page-connect .cx-cb-rule .icon {
+  color: var(--success);
+}
+.page-connect .cx-cb-rule.is-bad {
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+}
+.page-connect .cx-cb-rule.is-bad .icon {
+  color: var(--danger);
+}
+.page-connect .cx-cb-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.page-connect .cx-cb-note .icon {
+  flex: none;
+  margin-top: 2px;
+}
+
+/* ---- Keystring vs Shared secret */
+.page-connect .cx-which {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+}
+.page-connect .cx-which-item {
+  display: flex;
+  gap: 10px;
+  padding: 11px 13px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border-2);
+}
+.page-connect .cx-which-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  color: var(--accent-2);
+  background: var(--accent-soft);
+}
+.page-connect .cx-which-item b {
+  font-size: 13.5px;
+  font-weight: 650;
+}
+.page-connect .cx-which-item p {
+  margin-top: 2px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.page-connect .cx-form-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: -4px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.page-connect .cx-form-hint .icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--accent-2);
+}
+
+/* ---- "did you add the callback?" before the first Bağlan */
+.page-connect .cx-gate {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 7%, #13141a);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+.page-connect .cx-gate.is-done {
+  border-color: color-mix(in srgb, var(--success) 38%, var(--border));
+  background: color-mix(in srgb, var(--success) 5%, #13141a);
+}
+.page-connect .cx-gate-head {
+  display: flex;
+  gap: 12px;
+}
+.page-connect .cx-gate-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  color: var(--accent-2);
+  background: var(--accent-soft);
+}
+.page-connect .cx-gate.is-done .cx-gate-icon {
+  color: var(--success);
+  background: var(--success-soft);
+}
+.page-connect .cx-gate-title {
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+.page-connect .cx-gate-text p {
+  margin-top: 3px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.page-connect .cx-gate .cx-cb {
+  background: #101118;
+}
+.page-connect .cx-gate-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.page-connect .cx-gate-check {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.page-connect .cx-gate-skip {
+  font-size: 12px;
+}
+/* A shop's first connect or a reconnect: Bağlan before the permissions (connectView),
+   a little tighter so the question and the button fit a 1280x720 window. */
+.page-connect .cx-main.action-first {
+  gap: 15px;
+  padding-top: 28px;
+}
+.page-connect .cx-main.action-first .cx-gate {
+  gap: 10px;
+  padding: 13px 16px 14px;
+}
+.page-connect .cx-main.action-first .cx-connect-row {
+  margin-top: 0;
+  padding-top: 0;
+}
+.page-connect .cx-main.action-first .cx-connect-row + .section-title,
+.page-connect .cx-main.action-first .cx-connect-row + .cx-cb-meta + .section-title {
+  margin-top: 14px;
+}
+.page-connect .cx-connect-row .cx-hint {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.page-connect .cx-connect-row .cx-hint + .spacer {
+  display: none;
+}
+.page-connect .cx-hint.is-warn {
+  color: var(--warning);
+}
+.page-connect .cx-problems {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.page-connect .cx-problems:empty {
+  display: none;
+}
+.page-connect .cx-problems .note-action {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.page-connect .cx-cb-meta {
+  margin-top: -8px;
+}
+.page-connect .cx-cb-meta .cx-link-btn {
+  display: inline;
+  font-size: 12px;
+}
+
+/* ---- "Etsy bir hata mı gösterdi?" while the connect waits */
+.page-connect .cx-trouble-slot:empty {
+  display: none;
+}
+.page-connect .cx-trouble {
+  border-radius: var(--radius);
+  background: var(--warning-soft);
+  border: 1px solid color-mix(in srgb, var(--warning) 32%, transparent);
+  animation: cx-rise 0.25s ease-out;
+}
+.page-connect .cx-trouble > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 13px 16px;
+  border-radius: var(--radius);
+}
+.page-connect .cx-trouble > summary .icon {
+  color: var(--warning);
+}
+.page-connect .cx-tr-sum {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.page-connect .cx-tr-sum b {
+  font-size: 14.5px;
+  font-weight: 650;
+  color: var(--text);
+}
+.page-connect .cx-tr-sum span {
+  font-size: 12.5px;
+  font-weight: 450;
+  color: var(--muted);
+}
+.page-connect .cx-tr-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 12px 12px;
+  list-style: none;
+}
+.page-connect .cx-tr-item {
+  display: flex;
+  gap: 12px;
+  padding: 12px 10px;
+  border-radius: 10px;
+  background: rgba(11, 12, 15, 0.45);
+}
+.page-connect .cx-tr-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+.page-connect .cx-tr-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+.page-connect .cx-tr-title {
+  font-size: 13.5px;
+  font-weight: 650;
+  line-height: 1.4;
+  color: var(--text);
+}
+.page-connect .cx-tr-body > p {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-2);
+}
+.page-connect .cx-tr-extra {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 6px;
+}
+.page-connect .cx-tr-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+@keyframes cx-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@media (max-width: 640px) {
+  .page-connect .cx-which {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .page-connect .cx-cb,
+  .page-connect .cx-cb.is-compact,
+  .page-connect .cx-gate {
+    padding: 12px;
+  }
+  .page-connect .cx-cb-copy .copy-input {
+    font-size: 12.5px;
+  }
+  .page-connect .cx-tr-list {
+    padding: 0 8px 8px;
+  }
+}
+
+/* A short window (1280x720): the card a little tighter, so Bağlan stays on screen. */
+@media (max-height: 760px) {
+  .page-connect .cx-main {
+    gap: 15px;
+    padding-top: 28px;
+  }
+  .page-connect .cx-perm {
+    min-height: 46px;
+  }
+  .page-connect .note.tone-info {
+    min-height: 48px;
+    padding-top: 9px;
+    padding-bottom: 9px;
+  }
+  .page-connect .cx-connect-row {
+    padding-top: 14px;
+  }
+}

@@ -56,13 +56,17 @@ def _version_tuple() -> tuple[int, int, int, int]:
 def _stamp_bundle_version(app: Path) -> None:
     """PyInstaller's command line cannot set a bundle version, so every .app would
     say 0.0.0. Write the real one, then re-sign: an edited Info.plist breaks the
-    ad-hoc signature, and Gatekeeper calls an unsigned Apple Silicon app damaged."""
+    ad-hoc signature, and Gatekeeper calls an unsigned Apple Silicon app damaged.
+
+    LSUIElement: the app has no window of its own — it lives in the browser — so it
+    gets no Dock icon that would sit there doing nothing."""
     import plistlib
 
     info_path = app / "Contents" / "Info.plist"
     info = plistlib.loads(info_path.read_bytes())
     info["CFBundleShortVersionString"] = __version__
     info["CFBundleVersion"] = __version__
+    info["LSUIElement"] = True
     info_path.write_bytes(plistlib.dumps(info))
     subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(app)], check=True)
 
@@ -91,6 +95,10 @@ def main() -> int:
         # collect both whole rather than trust static analysis to find them.
         "--collect-submodules", "stallkit",
         "--collect-submodules", "rich",
+        # The web UI (stallkit/web/static: HTML, JS, CSS, strings) is data, not code.
+        "--collect-data", "stallkit",
+        # The window is a web page now; Tcl/Tk would only add megabytes.
+        "--exclude-module", "tkinter",
     ]
 
     if system == "Windows":
@@ -100,7 +108,7 @@ def main() -> int:
         version_file.write_text(
             WINDOWS_VERSION_INFO.format(tuple=_version_tuple(), version=__version__), encoding="utf-8"
         )
-        # Windowed, so a double-click opens the window and nothing else. (A console
+        # Windowed, so a double-click opens the browser and nothing else. (A console
         # build with --hide-console would print to terminals natively, but on
         # Windows 11 its console opens in Windows Terminal, which cannot be hidden:
         # pyinstaller/pyinstaller#8022.) Run from a terminal with arguments, the app

@@ -14,6 +14,7 @@ because a duplicate Pin is exactly the thing that burst would have looked like.
 from __future__ import annotations
 
 import base64
+import html
 import http.server
 import json
 import os
@@ -30,8 +31,8 @@ from typing import Any, Callable
 
 import httpx
 
-from .auth import LoopbackServer
-from .client import RateLimiter
+from .auth import FOREIGN_DETAIL, FOREIGN_TITLE, LoopbackServer, listener_page, state_matches
+from .client import RateLimiter, unescape_text
 from .config import home_dir, read_json, write_json_private
 from .errors import AuthError, ConfigError, StallKitError, ValidationError
 
@@ -250,15 +251,56 @@ def code_from_redirect(text: str, expected_state: str) -> str:
 
 class _Callback(http.server.BaseHTTPRequestHandler):
     result: dict[str, str] = {}
+    # The state of the consent request being waited for. Only a request carrying it
+    # is recorded (and sent on to the app); any other is refused and the wait goes on,
+    # so a link or <img> on some web page cannot end the flow or fake a success.
+    # None records any answer (a handler used on its own).
+    expected_state: str | None = None
+    # Where to send the browser once Pinterest answers with a code — the web app's
+    # page that closes the tab. None keeps the plain page below (the CLI).
+    return_url: str | None = None
     timeout = 2  # see auth._CallbackHandler: an idle browser socket must not block Cancel
 
     def do_GET(self) -> None:  # noqa: N802 — name fixed by BaseHTTPRequestHandler
         query = urllib.parse.urlparse(self.path).query
-        type(self).result = {k: v[0] for k, v in urllib.parse.parse_qs(query).items()}
+        params = {k: v[0] for k, v in urllib.parse.parse_qs(query).items()}
+        if "code" not in params and "error" not in params:
+            # The browser's favicon request, or a speculative connection: not Pinterest's
+            # answer, and it must not wipe out an answer that already arrived.
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if not state_matches(params.get("state"), type(self).expected_state):
+            body = listener_page(FOREIGN_TITLE, FOREIGN_DETAIL)
+            self.send_response(400)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        type(self).result = params
+        # Only a success goes back to the app: an error keeps the page below.
+        if "code" in params and "error" not in params and self.return_url:
+            self.send_response(302)
+            self.send_header("Location", self.return_url)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            # The code is in this address: the app's page must not get it as a referrer.
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.end_headers()
+            return
+        if "code" in params:
+            body = b"<p>Pinterest is connected. You can close this tab.</p>"
+        else:
+            reason = html.escape(params.get("error_description") or params["error"])
+            body = f"<p>Pinterest did not connect: {reason}</p>".encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(b"<p>Pinterest is connected. You can close this tab.</p>")
+        self.wfile.write(body)
 
     def log_message(self, *_args: Any) -> None:
         pass
@@ -274,6 +316,7 @@ def _listen_for_code(
         server = LoopbackServer(("127.0.0.1", port), _Callback)
     except OSError as exc:
         raise AuthError(f"Cannot listen on port {port} ({exc}). Use --paste instead.") from exc
+    _Callback.expected_state = state  # a forged answer is refused and the wait goes on
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.4}, daemon=True)
     thread.start()
     deadline = time.time() + timeout
@@ -285,6 +328,7 @@ def _listen_for_code(
     finally:
         server.shutdown()
         server.server_close()
+        _Callback.expected_state = None
     result = dict(_Callback.result)
     if not result and cancel is not None and cancel.is_set():
         raise AuthError("Cancelled before Pinterest sent the browser back. Nothing was changed.")
@@ -560,6 +604,30 @@ def queue_path() -> Path:
     return home_dir() / "pinterest-queue.json"
 
 
+# Pins queued before 0.3.0 carry the listing title as Etsy sent it, HTML-escaped
+# ("Mom&#39;s Mug &amp; Gift"), in their title, description and alt text. Entries queued
+# since hold plain text and carry this key. An entry without it is decoded once (when the
+# queue is read, and before it is sent) and then marked, so a Pin never goes out with
+# "&#39;" in it and a seller's own literal "&amp;" in a newer Pin is left alone.
+PLAIN_TEXT = "plain_text"
+PAYLOAD_TEXT_FIELDS = ("title", "description", "alt_text")
+
+
+def plain_entry(entry: dict[str, Any]) -> bool:
+    """Decode an old queue entry's escaped Pin text in place and mark it.
+
+    True when the entry was an old one (it changed and should be saved)."""
+    if not isinstance(entry, dict) or entry.get(PLAIN_TEXT) is True:
+        return False
+    payload = entry.get("payload")
+    if isinstance(payload, dict):
+        for name in PAYLOAD_TEXT_FIELDS:
+            if isinstance(payload.get(name), str):
+                payload[name] = unescape_text(payload[name])
+    entry[PLAIN_TEXT] = True
+    return True
+
+
 @dataclass
 class Queue:
     path: Path
@@ -576,6 +644,8 @@ class Queue:
             raise ValidationError(f"Cannot read {path}; fix or move it before queueing more.") from exc
         if not isinstance(data, list):
             raise ValidationError(f"{path} is not a Pin queue.")
+        for entry in data:
+            plain_entry(entry)  # in memory; the next save() writes it back decoded
         return cls(path, data)
 
     def save(self) -> None:
@@ -618,6 +688,7 @@ class Queue:
                 "pin_id": None,
                 "message": "",
                 "payload": pin["payload"],
+                PLAIN_TEXT: True,  # built from decoded listing text (see plain_entry)
             }
             self.entries.append(entry)
             load[entry["due"]] = load.get(entry["due"], 0) + 1
@@ -650,6 +721,9 @@ def post_due(
     if limit is not None:
         batch = batch[:limit]
     for entry in batch:
+        # A Pin queued before 0.3.0 holds Etsy's escaped title: decode it before it
+        # goes out (saved with the `sending` mark below).
+        plain_entry(entry)
         if dry_run:
             if on_progress:
                 on_progress(entry)

@@ -1,0 +1,377 @@
+/* İlanlar (frame t250). Everything is scoped under .page-listings. */
+
+.page-listings {
+  gap: 16px;
+}
+
+/* ---------------------------------------------------------------- toolbar */
+.page-listings .lst-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.page-listings .lst-toolbar .tabs {
+  flex: none;
+}
+.page-listings .lst-search {
+  width: 290px;
+  min-width: 180px;
+  flex: 0 1 290px;
+}
+.page-listings .lst-sort {
+  min-width: 196px;
+}
+.page-listings .lst-sort .select-native {
+  font-weight: 650;
+}
+
+/* ---------------------------------------------------------------- table */
+.page-listings .lst-card {
+  overflow: hidden;
+}
+.page-listings .lst-table .tbl th {
+  height: 42px;
+}
+.page-listings .lst-table .tbl td {
+  height: 65px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+.page-listings .lst-table .tbl th:nth-child(2),
+.page-listings .lst-table .tbl td:nth-child(2) {
+  padding-left: 6px;
+  padding-right: 6px;
+}
+.page-listings .lst-table .thumb {
+  background: #f4f1ec;
+  border-color: rgba(255, 255, 255, 0.08);
+}
+.page-listings .lst-table .thumb:not(:has(img)) {
+  background: var(--panel-3);
+}
+.page-listings .lst-title {
+  min-width: 0;
+}
+.page-listings .lst-title .cell-title {
+  display: block;
+  color: var(--text);
+  font-size: 14.5px;
+  font-weight: 650;
+  letter-spacing: -0.005em;
+}
+.page-listings .lst-title .cell-title:hover {
+  color: #fff;
+  text-decoration: none;
+}
+.page-listings .lst-title .cell-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+  min-width: 0;
+}
+.page-listings .lst-type {
+  flex: none;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.page-listings .lst-dot {
+  flex: none;
+  color: var(--muted-2);
+}
+.page-listings .lst-file {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+/* Tags: "13/13" over a 13-segment bar */
+.page-listings .lst-tags {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--tone);
+}
+.page-listings .lst-tags-top {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13.5px;
+  font-weight: 700;
+  line-height: 1;
+}
+.page-listings .lst-tags-bar {
+  display: grid;
+  grid-template-columns: repeat(13, minmax(0, 1fr));
+  gap: 2px;
+  width: 96px;
+}
+.page-listings .lst-seg {
+  height: 4px;
+  border-radius: 1.5px;
+  background: var(--panel-3);
+}
+.page-listings .lst-seg.is-on {
+  background: var(--tone);
+}
+
+/* SEO: small ring + number in a pill */
+.page-listings .lst-seo {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 11px 0 6px;
+  border-radius: 999px;
+  background: var(--tone-soft);
+  border: 1px solid color-mix(in srgb, var(--tone) 28%, transparent);
+  color: var(--tone);
+  font-size: 13px;
+  font-weight: 700;
+}
+.page-listings .lst-seo .score-num {
+  display: none;
+}
+.page-listings .lst-seo .score-fill {
+  fill: transparent;
+}
+.page-listings .lst-seo .score-track {
+  stroke: color-mix(in srgb, var(--tone) 22%, transparent);
+}
+
+.page-listings .lst-price {
+  color: var(--text);
+  font-size: 14.5px;
+  font-weight: 700;
+}
+.page-listings .lst-updated {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.page-listings .lst-updated .icon {
+  color: var(--muted);
+}
+
+/* ---------------------------------------------------------------- footer */
+.page-listings .lst-foot {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 54px;
+  padding: 10px 16px 10px 18px;
+  border-top: 1px solid var(--border);
+}
+.page-listings .lst-selinfo {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--accent-2);
+  font-size: 13px;
+  font-weight: 650;
+}
+.page-listings .lst-range {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+/* ---------------------------------------------------------------- states */
+.page-listings .lst-setup .empty {
+  padding: 64px 24px;
+}
+.page-listings .lst-error {
+  padding: 16px;
+}
+
+/* ---------------------------------------------------------------- running jobs */
+.page-listings .lst-jobs:empty {
+  display: none;
+}
+.page-listings .lst-jobs {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.page-listings .lst-job {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+}
+.page-listings .lst-job-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.page-listings .lst-job-label {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.page-listings .lst-job-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 180px;
+  overflow: auto;
+}
+.page-listings .lst-job-lines:empty {
+  display: none;
+}
+.page-listings .lst-job-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.page-listings .lst-job-line .icon {
+  flex: none;
+  align-self: center;
+  color: var(--tone);
+}
+.page-listings .lst-job-name {
+  flex: 0 1 38%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-weight: 550;
+}
+.page-listings .lst-job-msg {
+  flex: 1;
+  min-width: 0;
+  color: var(--tone);
+}
+
+/* ---------------------------------------------------------------- responsive */
+/* Narrower windows: the fixed columns give room to the title (colgroup widths are
+   inline styles, hence !important). Columns: check, image, title, status, tags, SEO,
+   price, updated. */
+@media (max-width: 1400px) {
+  .page-listings .lst-table col:nth-child(4) {
+    width: 112px !important;
+  }
+  .page-listings .lst-table col:nth-child(5) {
+    width: 120px !important;
+  }
+  .page-listings .lst-table col:nth-child(6) {
+    width: 86px !important;
+  }
+  .page-listings .lst-table col:nth-child(7) {
+    width: 92px !important;
+  }
+  .page-listings .lst-table col:nth-child(8) {
+    width: 116px !important;
+  }
+  .page-listings .lst-table .tbl th,
+  .page-listings .lst-table .tbl td {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+}
+@media (max-width: 1180px) {
+  .page-listings .lst-search {
+    flex: 1 1 200px;
+  }
+}
+
+/* ---------------------------------------------------------------- filter popover and import modal (in <body>) */
+.lst-filter-pop {
+  padding: 14px;
+}
+.lst-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.lst-filter-label {
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.lst-filter-label + .chips,
+.lst-filter-label + .lst-filter-none {
+  margin-bottom: 6px;
+}
+.lst-filter-none {
+  font-size: 12.5px;
+}
+.lst-filter-foot {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.lst-import {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 80px;
+}
+.lst-import-wait {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-2);
+  padding: 20px 0;
+}
+.lst-import-sum {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.lst-import-table {
+  max-height: 340px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.lst-import-table .tbl td {
+  padding: 8px 12px;
+  font-size: 12.5px;
+  vertical-align: top;
+}
+.lst-import-table .tbl th {
+  height: 34px;
+  padding: 0 12px;
+}
+.lst-import-table tr.is-error td {
+  background: rgba(240, 107, 107, 0.04);
+}
+.lst-import-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lst-import-msg {
+  white-space: normal !important;
+}
+.lst-import-ok,
+.lst-import-err,
+.lst-import-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--tone, var(--text-2));
+}
+.lst-import-ok .icon,
+.lst-import-err .icon,
+.lst-import-warn .icon {
+  flex: none;
+  margin-top: 2px;
+}
+.lst-import-warn {
+  margin-top: 4px;
+  color: var(--warning);
+}

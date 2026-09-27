@@ -363,3 +363,174 @@ def test_retry_puts_only_unsettled_pins_back(tmp_path):
     after = pin.Queue.load().entries
     assert [e["status"] for e in after] == ["pending", "posted"]
     assert after[0]["due"] == date.today().isoformat()
+
+
+# --- the redirect listener ------------------------------------------------------
+
+
+def _serve_callback(return_url):
+    import socket
+    import threading
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    pin._Callback.result = {}
+    pin._Callback.return_url = return_url
+    server = pin.LoopbackServer(("127.0.0.1", port), pin._Callback)
+    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
+    return server, f"http://127.0.0.1:{port}"
+
+
+def test_the_listener_sends_the_browser_back_to_the_app_when_asked():
+    server, base = _serve_callback("http://localhost:3000/oauth-done")
+    try:
+        with httpx.Client(trust_env=False) as http:
+            resp = http.get(f"{base}/?code=c1&state=s1")
+            # The favicon request that follows must not wipe out the answer.
+            assert http.get(f"{base}/favicon.ico").status_code == 404
+    finally:
+        server.shutdown()
+        server.server_close()
+        pin._Callback.return_url = None
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "http://localhost:3000/oauth-done"
+    assert pin._Callback.result == {"code": "c1", "state": "s1"}
+
+
+def test_without_a_return_address_the_listener_shows_its_own_page():
+    server, base = _serve_callback(None)
+    try:
+        with httpx.Client(trust_env=False) as http:
+            ok = http.get(f"{base}/?code=c1&state=s1")
+            refused = http.get(f"{base}/?error=access_denied&state=s1")
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert ok.status_code == 200 and "connected" in ok.text
+    assert refused.status_code == 200 and "access_denied" in refused.text
+    assert pin._Callback.result == {"error": "access_denied", "state": "s1"}
+
+
+def test_the_listener_ignores_an_answer_to_another_request():
+    """Review oauth-listener-forged-first-request: a forged request is refused, the real
+    answer still arrives, and nothing is sent on to the app for the forged one."""
+    server, base = _serve_callback("http://localhost:3000/oauth-done")
+    pin._Callback.expected_state = "s1"
+    try:
+        with httpx.Client(trust_env=False) as http:
+            forged = http.get(f"{base}/?code=FORGED&state=nope")
+            no_state = http.get(f"{base}/?code=FORGED")
+            refusal = http.get(f"{base}/?error=access_denied&state=nope")
+            assert pin._Callback.result == {}
+            real = http.get(f"{base}/?code=c1&state=s1")
+    finally:
+        server.shutdown()
+        server.server_close()
+        pin._Callback.return_url = None
+        pin._Callback.expected_state = None
+    for resp in (forged, no_state, refusal):
+        assert resp.status_code == 400 and "location" not in resp.headers
+        assert "FORGED" not in resp.text and "access_denied" not in resp.text
+    assert real.status_code == 302 and real.headers["location"] == "http://localhost:3000/oauth-done"
+    assert pin._Callback.result == {"code": "c1", "state": "s1"}
+
+
+def test_listening_for_the_code_waits_past_a_forged_answer():
+    import socket
+    import threading
+    import time
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    config = pin.PinterestConfig(app_id="a", app_secret="s", redirect_uri=f"http://localhost:{port}/")
+    answers = []
+
+    def browser():
+        with httpx.Client(trust_env=False) as http:
+            for _ in range(100):
+                try:
+                    answers.append(http.get(f"http://127.0.0.1:{port}/?code=FORGED&state=nope"))
+                    break
+                except httpx.ConnectError:
+                    time.sleep(0.05)
+            time.sleep(0.6)
+            answers.append(http.get(f"http://127.0.0.1:{port}/?code=real&state=mine"))
+
+    threading.Thread(target=browser, daemon=True).start()
+    assert pin._listen_for_code(config, "mine", timeout=15) == "real"
+    assert answers[0].status_code == 400 and answers[1].status_code == 200
+    assert pin._Callback.expected_state is None
+
+
+# --- Pins queued before Etsy's text was decoded ------------------------------------------
+
+OLD_ENTRY = {
+    "key": "1000001:1:b1",
+    "listing_id": 1000001,
+    "rank": 1,
+    "due": "2026-10-01",
+    "status": "pending",
+    "pin_id": None,
+    "message": "",
+    "payload": {
+        "board_id": "b1",
+        "title": "Mom&#39;s &quot;Best&quot; Mug &amp; Gift",
+        "description": "Mom&#39;s &quot;Best&quot; Mug &amp; Gift. mother&#39;s day",
+        "link": "https://www.etsy.com/listing/1000001/moms-best-mug",
+        "alt_text": "Mom&#39;s &quot;Best&quot; Mug &amp; Gift",
+        "media_source": {"source_type": "image_url", "url": "https://i/1000001/1.jpg?a=1&amp;b=2"},
+    },
+}
+PLAIN_TITLE = "Mom's \"Best\" Mug & Gift"
+
+
+def test_an_old_queue_entry_is_posted_as_plain_text(tmp_path):
+    # Queued by 0.2.0 with Etsy's escaped title: the Pin must not say "&#39;".
+    path = tmp_path / "q.json"
+    path.write_text(json.dumps([OLD_ENTRY]), encoding="utf-8")
+    queue = pin.Queue.load(path)
+    client = _Recorder([{"id": "p1"}])
+    done = pin.post_due(client, queue, today=date(2026, 10, 1))
+    assert [e["status"] for e in done] == ["posted"]
+    sent = client.sent[0]
+    assert sent["title"] == sent["alt_text"] == PLAIN_TITLE
+    assert sent["description"] == f"{PLAIN_TITLE}. mother's day"
+    # Only the text is decoded: the link and the image address go out untouched.
+    assert sent["link"] == OLD_ENTRY["payload"]["link"]
+    assert sent["media_source"] == OLD_ENTRY["payload"]["media_source"]
+    saved = json.loads(path.read_text(encoding="utf-8"))[0]
+    assert saved["payload"]["title"] == PLAIN_TITLE and saved["plain_text"] is True
+
+
+def test_an_old_entry_is_decoded_at_post_time_even_when_built_by_hand(tmp_path):
+    queue = pin.Queue(tmp_path / "q.json", [json.loads(json.dumps(OLD_ENTRY))])
+    client = _Recorder([{"id": "p1"}])
+    pin.post_due(client, queue, today=date(2026, 10, 1))
+    assert client.sent[0]["title"] == PLAIN_TITLE
+
+
+def test_reading_the_queue_shows_old_titles_plain_and_saves_them_once(tmp_path):
+    path = tmp_path / "q.json"
+    path.write_text(json.dumps([OLD_ENTRY]), encoding="utf-8")
+    queue = pin.Queue.load(path)
+    assert queue.entries[0]["payload"]["title"] == PLAIN_TITLE
+    assert "&#39;" in path.read_text(encoding="utf-8")  # reading alone writes nothing
+    queue.save()
+    again = pin.Queue.load(path).entries[0]
+    assert again["payload"]["title"] == PLAIN_TITLE and again["plain_text"] is True
+
+
+def test_a_new_pin_is_not_decoded_a_second_time(tmp_path):
+    # The listing title is already plain (the client decoded it). A seller's literal
+    # "&amp;" in it must reach Pinterest as typed.
+    listing = dict(LISTING, title="R&amp;B Vinyl Wall Art")
+    pins = pin.pins_for_listing(listing, IMAGES, "b1", ranks={1})
+    queue = pin.Queue(tmp_path / "q.json")
+    added = queue.add(pins, start=date(2026, 10, 1), per_day=1)
+    assert added[0]["plain_text"] is True
+    queue.save()
+    client = _Recorder([{"id": "p1"}])
+    pin.post_due(client, pin.Queue.load(tmp_path / "q.json"), today=date(2026, 10, 1))
+    assert client.sent[0]["title"] == "R&amp;B Vinyl Wall Art"

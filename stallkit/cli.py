@@ -21,9 +21,10 @@ from . import pinterest as pinterest_mod
 from . import seo as seo_mod
 from . import setup as setup_mod
 from . import shops as shops_mod
-from .client import EtsyClient
+from .client import EtsyClient, walk_taxonomy
 from .config import Config, home_dir, split_credential, token_path, write_env_file
 from .drop import automation, pipeline
+from .drop import catalog as catalog_mod
 from .drop import mockup as mockup_mod
 from .drop import template as template_mod
 from .drop import workspace as workspace_mod
@@ -463,19 +464,24 @@ def doctor(
     ),
 ) -> None:
     """The same checklist, without asking anything. Good for scripts."""
-    raise typer.Exit(_run_checklist(interactive=False, workspace=path))
+    # A folder of a workspace (2-PRODUCTS, ...) means that workspace, as for `drop`.
+    workspace = _workspace(path).root if path else None
+    raise typer.Exit(_run_checklist(interactive=False, workspace=workspace))
 
 
 @app.command("desktop")
-def desktop() -> None:
-    """Open the desktop window: every command behind a button, no terminal needed."""
-    try:
-        from .desktop.app import launch
-    except ImportError as exc:  # Python built without Tk, common on Linux
-        _fail(f"The desktop window needs Tk, which this Python does not have ({exc}).")
-        console.print("On Debian/Ubuntu: [cyan]sudo apt install python3-tk[/]")
-        raise typer.Exit(1) from exc
-    launch()
+def desktop(
+    port: Optional[int] = typer.Option(
+        None, "--port", help="Port to serve on (default: 3000, or the next free one)."
+    ),
+    no_browser: bool = typer.Option(
+        False, "--no-browser", help="Start the app without opening the browser."
+    ),
+) -> None:
+    """Open stallkit in your browser: every command behind a button, no terminal needed."""
+    from .web import launch
+
+    raise typer.Exit(launch(port=port, open_browser=not no_browser))
 
 
 # ---------------------------------------------------------------- shop
@@ -572,15 +578,7 @@ def shop_taxonomy(
     with _client(require_auth=False) as client:
         nodes = client.taxonomy_nodes()
 
-    flat: list[tuple[int, str]] = []
-
-    def walk(items: list[dict[str, Any]], trail: list[str]) -> None:
-        for node in items:
-            path = trail + [str(node.get("name", ""))]
-            flat.append((int(node.get("id", 0)), " > ".join(path)))
-            walk(node.get("children") or [], path)
-
-    walk(nodes, [])
+    flat = list(walk_taxonomy(nodes))
     needle = query.lower()
     matches = [(nid, path) for nid, path in flat if needle in path.lower()]
     if not matches:
@@ -634,6 +632,7 @@ def listings_template(
         "item_height": "",
         "item_dimensions_unit": "",
         "images": "photos/mug-1.jpg|photos/mug-2.jpg",
+        "files": "",
         "state": "",
     }
     csvio.write_rows(out, [example], columns=listings_mod.LISTING_COLUMNS)
@@ -641,7 +640,9 @@ def listings_template(
     console.print(
         "  Fill [cyan]shipping_profile_id[/] from `stallkit shop profiles` and "
         "[cyan]taxonomy_id[/] from `stallkit shop taxonomy <word>`.\n"
-        "  Multi-value cells use [cyan]|[/] as the separator. Image paths are relative to the CSV."
+        "  Multi-value cells use [cyan]|[/] as the separator. Image paths are relative to the CSV.\n"
+        "  [cyan]files[/]: what a buyer downloads (type download or both), relative to the CSV "
+        "like images; leave it empty for a physical item."
     )
 
 
@@ -658,7 +659,8 @@ def listings_pull(
     if not rows:
         _warn(f"No {state} listings found.")
         raise typer.Exit(1)
-    columns = listings_mod.LISTING_COLUMNS + ["url", "views", "num_favorers"]
+    # Etsy's ShopListing (OAS) has url and num_favorers but no view count: no "views".
+    columns = listings_mod.LISTING_COLUMNS + ["url", "num_favorers"]
     csvio.write_rows(out, rows, columns=columns)
     _ok(f"Exported {len(rows)} listing(s) to {out}")
 
@@ -744,9 +746,10 @@ def listings_push(
     elif report.aborted:
         _fail(report.aborted_reason)
     else:
+        files = f", {report.files} download file(s)" if report.files else ""
         _ok(
             f"Created {report.created}, updated {report.updated}, "
-            f"uploaded {report.images} image(s), {report.errors} error(s)."
+            f"uploaded {report.images} image(s){files}, {report.errors} error(s)."
         )
         if report.partial:
             _warn(
@@ -768,11 +771,13 @@ def listings_push(
                     "status": r.status,
                     "title": r.title,
                     "images_uploaded": r.images_uploaded,
+                    "files_uploaded": r.files_uploaded,
                     "message": r.message,
                 }
                 for r in report.results
             ],
-            columns=["row", "listing_id", "action", "status", "title", "images_uploaded", "message"],
+            columns=["row", "listing_id", "action", "status", "title", "images_uploaded",
+                     "files_uploaded", "message"],
         )
         _ok(f"Results written to {out}")
 
@@ -796,6 +801,8 @@ def _print_row_result(result: listings_mod.RowResult) -> None:
         )
     else:
         extra = f", {result.images_uploaded} image(s)" if result.images_uploaded else ""
+        if result.files_uploaded:
+            extra += f", {result.files_uploaded} download file(s)"
         console.print(
             f"[green]{TICK} row {result.row}[/] {result.action} "
             f"{_hide(result.listing_id, 'id')} — {_hide(result.title)}{extra}"
@@ -1129,7 +1136,9 @@ def seo_suggest(
 ) -> None:
     """Audit one listing, then suggest tags drawn from what ranks for its keyword."""
     with _client() as client:
-        listing = client.get(f"/listings/{listing_id}")
+        # Through client.listing, so the title and tags are decoded plain text (Etsy
+        # sends them HTML-escaped); the signed-in view also covers the seller's drafts.
+        listing = client.listing(listing_id, authed=True)
         audit = seo_mod.audit_listing(listing)
 
         colour = {"good": "green", "fair": "yellow", "poor": "red"}[audit.grade]
@@ -1204,7 +1213,38 @@ def seo_suggest(
 
 
 def _workspace(path: Optional[Path]) -> workspace_mod.Workspace:
-    return workspace_mod.Workspace(Path(path) if path else workspace_mod.default_root())
+    """The workspace for --path, or the default one.
+
+    A folder of a workspace (1-MOCKUPS, 2-PRODUCTS, 3-DRAFTS, anything inside them) means
+    that workspace, never a second one nested inside it (workspace_mod.root_for).
+    """
+    if not path:
+        return workspace_mod.Workspace(workspace_mod.default_root())
+    chosen = Path(path).expanduser()
+    absolute = Path(os.path.normpath(str(chosen.absolute())))
+    root = workspace_mod.root_for(absolute)
+    if root == absolute:
+        return workspace_mod.Workspace(chosen)
+    if workspace_mod.enclosing_root(absolute) is None:
+        # Only the name: a new "...\2-PRODUCTS" whose parent holds nothing else.
+        _warn(f"{chosen} is named like a workspace folder; its parent {root} is the "
+              "workspace.")
+        return workspace_mod.Workspace(root)
+    _warn(f"{chosen} is a folder of the workspace {root}; using {root}.")
+    if workspace_mod.is_workspace(absolute):
+        # A workspace an older version made inside this one, and worked in: its
+        # template and upload history come along, or its drafts would be made again.
+        try:
+            moved = workspace_mod.adopt_nested(absolute, root)
+        except StallKitError as exc:
+            _warn(f"Its template and upload history could not be carried over: {exc}")
+            raise typer.Exit(1) from exc
+        if moved:
+            what = " and ".join(
+                {"template": "template (product.json)",
+                 "history": "upload history (upload-history.json)"}[m] for m in moved)
+            _ok(f"Carried its {what} over to {root}.")
+    return workspace_mod.Workspace(root)
 
 
 @drop_app.command("init")
@@ -1255,12 +1295,45 @@ def drop_template(
     )
 
 
+_MOCKUPS_HELP = (
+    "Use only the first N of the chosen mockups. Default: every mockup switched on in the "
+    "app's Mockups page, in its order (the first is the main image), at most 19."
+)
+
+
+def _drop_mockups(ws: workspace_mod.Workspace, count: Optional[int]) -> list[Path]:
+    """The mockups a drop run composites onto: the app's selection and order (Mockuplar).
+
+    `--mockups N` keeps the first N of them. Says once which ones are used.
+    """
+    use = catalog_mod.usage(ws)
+    chosen = catalog_mod.enabled_mockups(ws)
+    if count is not None:
+        chosen = chosen[: max(0, count)]
+    available = len(ws.mockup_files())
+    if available:
+        off = use["total"] - use["enabled"]
+        notes = [f"main image {chosen[0].name}"] if chosen else []
+        if off:
+            notes.append(f"{off} switched off")
+        if use["over_limit"]:
+            notes.append(f"{len(use['over_limit'])} over the {use['max']}-mockup limit")
+        if count is not None and len(chosen) < len(use["used"]):
+            notes.append(f"--mockups {count} keeps the first {len(chosen)}")
+        console.print(
+            f"[dim]Mockups: {len(chosen)} of {available} used"
+            + (f" ({'; '.join(notes)})" if notes else "")
+            + ". Choose and order them in the app's Mockups page.[/]"
+        )
+        if not chosen:
+            _warn("No mockup is switched on: transparent designs get only the flat render.")
+    return chosen
+
+
 @drop_app.command("run")
 def drop_run(
     path: Optional[Path] = typer.Option(None, "--path"),
-    mockups: int = typer.Option(
-        5, "--mockups", help="Mockups per product. With the flat render this must fit Etsy's 10."
-    ),
+    mockups: Optional[int] = typer.Option(None, "--mockups", min=0, help=_MOCKUPS_HELP),
     no_flat: bool = typer.Option(False, "--no-flat", help="Do not append the flat artwork."),
     sample: int = typer.Option(200, "--sample", help="Listings to sample per concept."),
     no_cache: bool = typer.Option(False, "--no-cache", help="Ignore cached research."),
@@ -1285,11 +1358,20 @@ def drop_run(
     except StallKitError as exc:
         _warn(f"Running without market research ({exc.args[0].splitlines()[0]}).")
 
-    images_each = min(mockups, len(ws.mockup_files())) + (0 if no_flat else 1)
+    chosen = _drop_mockups(ws, mockups)
+    images_each = len(chosen) + (0 if no_flat else 1)
+    # A digital template's drafts also upload what the buyer downloads, one request each.
+    to_order = pipeline.made_to_order(tmpl)  # a made-to-order draft may go without one
+    files = (
+        sum(len(pipeline.deliverables(source, made_to_order=to_order)[0])
+            for source, _ in designs)
+        if tmpl.digital else 0
+    )
+    downloads = f" and {files} download file(s)" if files else ""
+    estimate = pipeline.estimate_requests(len(designs), len(designs), images_each, files=files)
     console.print(
-        f"[dim]{len(designs)} design(s), about {images_each} image(s) each. "
-        f"Creating the drafts later will cost roughly "
-        f"{pipeline.estimate_requests(len(designs), len(designs), images_each)} requests "
+        f"[dim]{len(designs)} design(s), about {images_each} image(s) each{downloads}. "
+        f"Creating the drafts later will cost roughly {estimate} requests "
         f"of your 5,000 daily allowance.[/]\n"
     )
 
@@ -1299,7 +1381,7 @@ def drop_run(
                 ws,
                 tmpl,
                 client=client,
-                mockups_per_product=mockups,
+                mockups=chosen,
                 include_flat=not no_flat,
                 sample=sample,
                 use_cache=not no_cache,
@@ -1431,22 +1513,23 @@ def drop_calibrate(
         changed = [target]
     elif area:
         new_area = mockup_mod.parse_area(area)
-        targets = [selected[0]]
-        if same_size:
-            size = sizes.get(targets[0].name)
-            if not size:
-                _warn(
-                    f"Cannot read the pixel size of {targets[0].name}, "
-                    "so --same-size has nothing to match."
-                )
-                raise typer.Exit(1)
-            targets = [p for p in mockups if sizes.get(p.name) == size]
+        if same_size and not catalog_mod.same_size_names(ws, selected[0].name, sizes=sizes):
+            _warn(
+                f"Cannot read the pixel size of {selected[0].name}, "
+                "so --same-size has nothing to match."
+            )
+            raise typer.Exit(1)
+        # Writes positions.json itself unless this is a dry run.
+        names = catalog_mod.save_area(
+            ws, selected[0].name, new_area, same_size=same_size, dry_run=dry_run, sizes=sizes
+        )
+        targets = [p for p in mockups if p.name in names]
         for target in targets:
             positions[target.name] = new_area
         changed = targets
         selected = targets
 
-    if changed and not dry_run:
+    if changed and not dry_run and not area:
         mockup_mod.save_positions(ws.positions_path, positions)
 
     _print_print_areas(
@@ -1561,15 +1644,17 @@ def _print_print_areas(
 def drop_auto(
     path: Optional[Path] = typer.Option(None, "--path", help="Etsy Studio folder."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Prepare and validate offline, without uploading."),
+    mockups: Optional[int] = typer.Option(None, "--mockups", min=0, help=_MOCKUPS_HELP),
 ) -> None:
     """Prepare new products and upload Etsy drafts. Previously attempted products are skipped."""
     ws = _workspace(path).require()
     tmpl = template_mod.Template.from_dict(ws.read_template())
+    chosen = _drop_mockups(ws, mockups)
     if dry_run:
-        report = automation.run(ws, tmpl, dry_run=True)
+        report = automation.run(ws, tmpl, dry_run=True, mockups=chosen)
     else:
         with _client() as client:
-            report = automation.run(ws, tmpl, client=client)
+            report = automation.run(ws, tmpl, client=client, mockups=chosen)
     if report.prepared and report.prepared.csv_path:
         console.print(f"Review: {report.prepared.csv_path}")
         for product in report.prepared.ready:

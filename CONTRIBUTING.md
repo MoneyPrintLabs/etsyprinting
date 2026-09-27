@@ -13,7 +13,14 @@ source .venv/bin/activate       # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 pytest
 ruff check .
+stallkit desktop --port 3100     # the app, on a port of your choice
 ```
+
+Python 3.9 to 3.13 are supported, and CI runs 3.9 and 3.13 on Ubuntu and Windows plus
+3.10–3.12 on Ubuntu. On Windows without activating the venv, use
+`.venv\Scripts\python -m pytest` and `.venv\Scripts\stallkit desktop`. Set
+`STALLKIT_HOME` to a scratch folder to try the app without touching your own
+`~/.stallkit`.
 
 **You do not need an Etsy account, an API key, or a network connection to contribute.**
 The whole test suite is offline by design. If a change can only be tested against the
@@ -51,6 +58,25 @@ scope. Adding one needs a very good reason in the pull request.
 No key, token, secret or shop id in a tracked file, a test fixture, a log line or an
 error message. Tests use obvious dummies like `KEY123`.
 
+## The web app
+
+The app is a local web server (`stallkit/web`, standard library only) and a frontend
+in plain ES modules (`stallkit/web/static`). There is no build step, no npm package and
+no CDN. Node is useful to check syntax (`node --check`, on a copy with a `.mjs`
+extension), but it is not a dependency.
+
+- **Every visible string goes through i18n.** Page strings live in
+  `stallkit/web/static/i18n/<page>.json`, with the same keys under `tr` and `en`
+  (Turkish first). `tests/test_web_i18n.py` and `tests/test_web_static.py` fail
+  otherwise, including when an error code the server sends has no words.
+- **Anything that changes the live shop or reaches a buyer asks first:** publishing,
+  editing a live listing, an SEO fix, tracking numbers, Pins. The page shows a confirm
+  dialog, and the server refuses the request without `confirm: true`.
+- **Long or bulk Etsy work runs as a job** (`ctx.jobs.start`), never in a request
+  handler, and uses the shop's shared client so one rate limiter covers everything.
+- **Python 3.9 still counts.** Every module starts with `from __future__ import
+  annotations`; no `match`, no `zip(strict=)`, no `tomllib`.
+
 ## When Etsy's docs and Etsy's behaviour disagree
 
 Several defects in this project came from trusting the prose documentation over what
@@ -69,19 +95,24 @@ change; the next person will otherwise re-derive it the hard way.
 - Add a test that fails without your change. Name it after the failure it prevents.
 - Run `pytest` and `ruff check .` before pushing. CI runs both on Ubuntu and Windows.
 - Windows matters: status markers must survive a redirected, non-UTF-8 console.
-- Update the README in the same commit if you change a command, a flag, or a CSV column.
+- Update the README or [CLI.md](CLI.md) in the same commit if you change a screen, a
+  command, a flag, or a CSV column.
+- Screenshots in issues and pull requests must show invented data, never a real shop.
+  **Ayarlar → Mağaza adını gizle** (or `--anonymise` on the command line) helps.
 
 ## Things that would genuinely help
 
-- Inventory and variations (`updateListingInventory`) — the biggest gap.
 - Digital downloads: `uploadListingFile` and the digital listing flow.
+- Editing variations on existing listings (new drafts already copy them from the template).
 - Shop sections and listing translations.
 - A renewal helper for listings about to expire.
 - Better taxonomy search: the current match is a plain substring.
 
 ## Reporting bugs
 
-Open an issue with the command you ran, the output, your OS, and your Python version.
+Open an issue with what you did (the screen or the command), what happened, your OS,
+and your stallkit and Python versions (**Ayarlar → Hakkında**, or `stallkit --version`).
+The app's log is in `~/.stallkit/logs/`.
 **Redact your keystring, shared secret and tokens** — and if you have already pasted
 one anywhere, rotate it on your Etsy app page.
 

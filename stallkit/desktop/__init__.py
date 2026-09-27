@@ -1,8 +1,10 @@
-"""The desktop window, and the single entry point the downloadable app is built from.
+"""The single entry point the downloadable app is built from.
 
-One executable does both jobs. Double-clicked, with no arguments, it opens the
-window. Given arguments — `stallkit.exe pinterest post` from Task Scheduler, say —
-it is the command line tool, so the download never needs a Python install for either.
+One executable does both jobs. Double-clicked, with no arguments, it starts the
+local web app and opens it in the browser (`stallkit.web.launch`). Given arguments
+— `stallkit.exe pinterest post` from Task Scheduler, say — it is the command line
+tool, so the download never needs a Python install for either. `--self-test`
+checks a packaged build (`stallkit.web.self_test`).
 """
 
 from __future__ import annotations
@@ -26,12 +28,13 @@ def main(argv: list[str] | None = None) -> None:
         _ensure_output()
         sys.exit(_guarded(lambda: _run_as_cli(args)))
     try:
-        from .app import launch
+        from ..web import launch
 
-        launch()
-    except Exception:  # noqa: BLE001 — the window never opened; say why, somewhere visible
+        code = launch()
+    except Exception:  # noqa: BLE001 — the app never started; say why, somewhere visible
         _report_crash(traceback.format_exc())
         sys.exit(1)
+    sys.exit(code)
 
 
 def _guarded(run: Callable[[], int]) -> int:
@@ -67,7 +70,7 @@ def _ensure_output() -> None:
 
 
 def _report_crash(text: str) -> None:
-    """The window could not start: log it, and on Windows say so in a message box."""
+    """The app could not start: log it, and on Windows say so in a message box."""
     try:
         _log_to_file()
         print(text, file=sys.stderr, flush=True)
@@ -168,38 +171,9 @@ def _log_to_file() -> None:
 
 
 def self_test() -> int:
-    """Prove a built executable is complete: every module imports and the window
-    can be built. Run by the release workflow on the packaged app, where a missing
-    data file shows up — not in a source checkout, where it cannot."""
-    import tkinter as tk
+    """Prove a built executable is complete. Run by the release workflow on the
+    packaged app, where a missing module or data file shows up — not in a source
+    checkout, where it cannot. See `stallkit.web.self_test`."""
+    from ..web import self_test as web_self_test
 
-    from .. import __version__, cli  # noqa: F401 — importing is the test
-    from . import app, i18n, icon
-
-    icon.render(64)
-    for language, _name in i18n.LANGUAGES:
-        missing = set(i18n.STRINGS["en"]) ^ set(i18n.STRINGS[language])
-        if missing:
-            print(f"self-test: {language} strings differ: {sorted(missing)}")
-            return 1
-    try:
-        root = tk.Tk()
-    except tk.TclError as exc:
-        # Only a genuinely headless Linux box may skip the window. A missing
-        # init.tcl is exactly the packaging fault this test exists to catch.
-        if "display" in str(exc).lower():
-            print(f"self-test: no display ({exc}); window not built")
-            print(f"stallkit {__version__} self-test passed (without window)")
-            return 0
-        print(f"self-test: Tk failed to start: {exc}")
-        return 1
-    try:
-        root.withdraw()
-        window = app.App(root, language="en")
-        window.build()
-        root.update_idletasks()
-        window.shutdown()
-    finally:
-        root.destroy()
-    print(f"stallkit {__version__} self-test passed")
-    return 0
+    return web_self_test()
