@@ -21,7 +21,6 @@ whenever a job that creates or edits listings (Tasarım Yükle, SEO fixes) has f
 from __future__ import annotations
 
 import csv
-import json
 import math
 import re
 import secrets
@@ -279,11 +278,14 @@ def _product_type(listing: dict[str, Any], paths: dict[int, str]) -> tuple[str, 
 
 
 def _source_names(ctx: AppContext, client: Any) -> dict[int, str]:
-    """listing id -> the design file (or folder) stallkit made it from (upload-history.json)."""
-    try:
-        data = json.loads((ctx.workspace_root() / "upload-history.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+    """listing id -> the design file (or folder) stallkit made it from (upload-history.json).
+
+    Read with the history's own reader, which shares the writer's lock ({} when the file
+    is missing or cannot be read).
+    """
+    from ...drop import automation
+
+    data = automation.read_history(ctx.workspace_root())
     if not isinstance(data, dict):
         return {}
     own = data.get(str(client.shop_id()))

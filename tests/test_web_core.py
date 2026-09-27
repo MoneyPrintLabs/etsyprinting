@@ -268,6 +268,43 @@ def test_setup_facts_count_the_workspace(web):
     assert setup["designs_pending"] == 1
 
 
+def test_the_template_title_of_an_old_product_json_is_plain_text(web):
+    # Saved before Etsy's HTML entities were decoded: no "plain_text" mark yet.
+    ws = web.ctx.workspace()
+    ws.template_path.write_text(json.dumps({
+        "source_listing_id": 1000001,
+        "source_title": "Mom&#39;s &quot;Best&quot; Coffee Mug &amp; Gift",
+    }), encoding="utf-8")
+    assert status(web)["setup"]["template_title"] == 'Mom\'s "Best" Coffee Mug & Gift'
+    ws.template_path.write_text("[1, 2]", encoding="utf-8")  # not a template at all
+    setup = status(web)["setup"]
+    assert setup["template"] is True and setup["template_title"] is None
+
+
+def test_pending_designs_read_the_history_through_its_shared_reader(web, monkeypatch):
+    # automation.read_history holds the lock the writer holds, so a status check never
+    # has the file open while a Tasarım Yükle run replaces it.
+    from stallkit.drop import automation
+
+    ws = web.ctx.workspace()
+    Image.new("RGB", (40, 30)).save(ws.products / "design-one.png")
+    Image.new("RGB", (40, 30)).save(ws.products / "design-two.png")
+    automation.save_history(automation.history_path(ws.root),
+                            {"12345678": {"design-one.png": {"status": "ok"}}})
+    calls = []
+    real = automation.read_history
+
+    def spy(root):
+        calls.append(root)
+        return real(root)
+
+    monkeypatch.setattr(automation, "read_history", spy)
+    assert status(web)["setup"]["designs_pending"] == 1
+    assert calls and set(calls) == {ws.root}
+    (ws.root / "upload-history.json").write_text("{not json", encoding="utf-8")
+    assert status(web)["setup"]["designs_pending"] == 2
+
+
 # --- the shared client -------------------------------------------------------------------
 
 

@@ -761,3 +761,215 @@ def test_the_run_state_marks_the_flat_design(web, fast_images):
     item = final["state"]["items"][0]
     assert item["flat"].endswith("--flat.jpg") and item["flat"] == item["images"][-1]
     assert len(item["images"]) == 3  # two mockups and the flat design
+
+
+# --- digital templates (type download / both) -----------------------------------------------
+
+
+def _digital_template(ws, listing_type="download"):
+    fields = {"taxonomy_id": 2078, "price": 4.5, "quantity": 999, "who_made": "i_did",
+              "when_made": "made_to_order", "type": listing_type}
+    if listing_type == "both":
+        fields["shipping_profile_id"] = 5551
+    ws.write_template(Template(TEMPLATE_ID, source_title="Boho Planner Printable",
+                               fields=fields, description="Printable PDF planner.",
+                               tags=["printable planner"]).to_dict())
+
+
+def _file_routes(fake, fail_listing=None):
+    """uploadListingFile for the listings the fake creates: {listing id: [(name, rank)]}."""
+    received: dict[int, list[tuple[str, str, str]]] = {}
+
+    def upload(listing_id):
+        def respond(request: httpx.Request):
+            if listing_id == fail_listing:
+                return httpx.Response(400, json={"error": "The file could not be processed"})
+            body = request.content
+            name = body.split(b'name="name"\r\n\r\n', 1)[1].split(b"\r\n", 1)[0].decode()
+            rank = body.split(b'name="rank"\r\n\r\n', 1)[1].split(b"\r\n", 1)[0].decode()
+            filename = body.split(b'name="file"; filename="', 1)[1].split(b'"', 1)[0].decode()
+            received.setdefault(listing_id, []).append((filename, name, rank))
+            return httpx.Response(201, json={"listing_file_id": 9000 + len(received),
+                                             "listing_id": listing_id, "rank": int(rank),
+                                             "filename": name})
+        return respond
+
+    for listing_id in range(2000001, 2000020):
+        fake.add("POST", f"/shops/{ETSY_SHOP_ID}/listings/{listing_id}/files", upload(listing_id))
+    return received
+
+
+def _run_to_the_end(web):
+    job = web.client.post("/api/designs/start", json={})
+    assert job.status_code == 200, job.text
+    final = wait_for_job(web, job.json()["id"], timeout=30)
+    assert final["status"] == "done", final
+    return final
+
+
+def test_the_pending_view_of_a_digital_template(web, fast_images):
+    _fake, ws = _setup_shop(web)
+    _digital_template(ws)
+    _put(web, "retro-mountain-sunset.png", _png())
+    _put(web, "boho planner/01-front.jpg", _jpg(), batch="b1")
+    assert _put(web, "boho planner/dosyalar/planner.pdf", b"%PDF-1.4 planner",
+                batch="b1").status_code == 200
+    _put(web, "sunset poster set/01-front.jpg", _jpg((9, 9, 9)), batch="b2")
+    data = web.client.get("/api/designs/pending").json()
+
+    assert data["listing_type"] == "download"
+    template = data["template"]
+    assert template["listing_type"] == "download" and template["digital"] is True
+    assert template["needs_shipping"] is False and template["shipping_profile"] is False
+    assert "no_shipping_profile" not in data["warnings"], "a download needs no profile"
+    by_name = {item["name"]: item for item in data["items"]}
+    assert by_name["retro-mountain-sunset.png"]["deliverables"] == [{
+        "name": "retro-mountain-sunset.png", "path": "2-PRODUCTS/retro-mountain-sunset.png",
+        "size": len(_png())}]
+    assert [d["path"] for d in by_name["boho planner"]["deliverables"]] == [
+        "2-PRODUCTS/boho planner/dosyalar/planner.pdf"]
+    assert by_name["boho planner"]["deliverable_problem"] is None
+    missing = by_name["sunset poster set"]
+    assert missing["deliverables"] == []
+    assert missing["deliverable_problem"] == {
+        "code": "no_deliverable", "params": {"name": "sunset poster set", "folder": "dosyalar"}}
+    assert data["runnable"] == 2 and "deliverables" in data["warnings"]
+    assert data["files_total"] == 2
+    # 2 products, 2 concepts: 4 research pages, 2 creates, 3 + 1 images, 2 download files,
+    # 2 inventory updates (variations unknown) and the template's inventory.
+    assert data["estimate_requests"] == 4 + 2 + 4 + 2 + 2 + 1
+
+
+def test_a_physical_template_attaches_nothing_and_still_wants_a_profile(web):
+    _fake, ws = _setup_shop(web)
+    data = json.loads(ws.template_path.read_text(encoding="utf-8"))
+    del data["fields"]["shipping_profile_id"]
+    ws.write_template(data)
+    _put(web, "retro-mountain-sunset.png", _png())
+    pending = web.client.get("/api/designs/pending").json()
+    assert pending["template"]["listing_type"] == "physical"
+    assert pending["template"]["digital"] is False
+    assert "no_shipping_profile" in pending["warnings"]
+    assert pending["items"][0]["deliverables"] == [] and pending["files_total"] == 0
+
+
+def test_download_files_of_a_dropped_folder_land_in_its_dosyalar(web):
+    ws = web.ctx.workspace()
+    photo = _put(web, "boho planner/01-front.jpg", _jpg(), batch="b1").json()
+    first = _put(web, "boho planner/Dosyalar/planner.pdf", b"%PDF-1", batch="b1").json()
+    assert first == {"name": "boho planner", "file": "planner.pdf", "folder": "boho planner",
+                     "path": "2-PRODUCTS/boho planner/Dosyalar/planner.pdf",
+                     "duplicate": False, "known": False, "ignored": None, "size": 6,
+                     "deliverable": True}
+    assert photo["name"] == first["name"]
+    same = _put(web, "boho planner/dosyalar/planner.pdf", b"%PDF-1", batch="b1").json()
+    assert same["duplicate"] is True, "the existing Dosyalar folder is used, any case"
+    assert sorted(p.name for p in (ws.products / "boho planner").iterdir()) == [
+        "01-front.jpg", "Dosyalar"]
+    # The same folder dropped again later is the same product, whichever file comes first.
+    again = _put(web, "boho planner/dosyalar/planner.pdf", b"%PDF-1", batch="b2").json()
+    assert again["name"] == "boho planner" and again["duplicate"] is True
+
+
+@pytest.mark.parametrize("path, code", [
+    ("boho planner/dosyalar/setup.exe", "not_deliverable"),
+    ("boho planner/dosyalar/README", "not_deliverable"),
+    ("boho planner/extras/planner.pdf", "invalid"),
+    ("a/b/c/planner.pdf", "invalid"),
+    ("planner.pdf", "not_image"),
+])
+def test_a_download_file_is_only_taken_where_it_belongs(web, path, code):
+    resp = _put(web, path, b"%PDF-1", batch="b1")
+    assert resp.status_code == 422 and resp.json()["error"]["code"] == code
+
+
+def test_a_digital_run_attaches_each_products_download_after_its_images(web, fast_images):
+    fake, ws = _setup_shop(web)
+    _digital_template(ws)
+    received = _file_routes(fake)
+    _put(web, "retro-mountain-sunset.png", _png())
+    _put(web, "boho planner/01-front.jpg", _jpg(), batch="b1")
+    _put(web, "boho planner/dosyalar/2-planner.pdf", b"%PDF-1.4 planner", batch="b1")
+    _put(web, "boho planner/dosyalar/10-extras.zip", b"PK\x03\x04", batch="b1")
+    _put(web, "sunset poster set/01-front.jpg", _jpg((9, 9, 9)), batch="b2")
+    final = _run_to_the_end(web)
+
+    result = final["result"]
+    assert result["listing_type"] == "download" and result["files_uploaded"] == 3
+    assert result["created"] == 2 and result["errors"] == 1
+    by_name = {item["name"]: item for item in final["state"]["items"]}
+    loose = by_name["retro-mountain-sunset.png"]
+    assert loose["status"] == "ok" and loose["deliverables"] == [
+        "2-PRODUCTS/retro-mountain-sunset.png"]
+    assert loose["files_uploaded"] == 1 and loose["files_total"] == 1
+    folder = by_name["boho planner"]
+    assert folder["files_uploaded"] == 2 and folder["files_total"] == 2
+    missing = by_name["sunset poster set"]
+    assert missing["status"] == "error" and missing["error"]["code"] == "no_deliverable"
+    assert missing["steps"]["check"] == "error" and missing["listing_id"] is None
+
+    assert [form["type"] for form in fake.created] == ["download", "download"]
+    assert all("shipping_profile_id" not in form for form in fake.created)
+    ids = {item["name"]: item["listing_id"] for item in final["state"]["items"]}
+    assert received[ids["retro-mountain-sunset.png"]] == [
+        ("retro-mountain-sunset.png", "retro-mountain-sunset.png", "1")]
+    assert received[ids["boho planner"]] == [("2-planner.pdf", "2-planner.pdf", "1"),
+                                             ("10-extras.zip", "10-extras.zip", "2")]
+    # Photos first, then the downloads, for each draft.
+    posts = [path for method, path in fake.calls if method == "POST"]
+    for listing_id in ids.values():
+        if listing_id is None:
+            continue
+        mine = [p.rsplit("/", 1)[1] for p in posts if f"/listings/{listing_id}/" in p]
+        assert mine == sorted(mine, key=lambda kind: kind == "files") and "files" in mine
+    history = json.loads((ws.root / "upload-history.json").read_text(encoding="utf-8"))
+    assert history[SHOP]["boho planner"]["files_uploaded"] == 2
+    last = web.client.get("/api/designs/last").json()["run"]
+    assert last["summary"]["files_uploaded"] == 3
+    assert last["template"]["listing_type"] == "download"
+
+
+def test_a_download_etsy_refuses_leaves_a_partial_draft(web, fast_images):
+    fake, ws = _setup_shop(web)
+    _digital_template(ws)
+    _file_routes(fake, fail_listing=2000001)
+    _put(web, "retro-mountain-sunset.png", _png())
+    final = _run_to_the_end(web)
+    item = final["state"]["items"][0]
+    assert item["status"] == "partial" and item["steps"]["draft"] == "warn"
+    assert item["files_uploaded"] == 0 and item["listing_id"] == 2000001
+    warning = next(w for w in item["warnings"] if w["code"] == "partial_files")
+    assert warning["params"]["name"] == "retro-mountain-sunset.png"
+    history = json.loads((ws.root / "upload-history.json").read_text(encoding="utf-8"))
+    entry = history[SHOP]["retro-mountain-sunset.png"]
+    assert entry["status"] == "partial" and entry["files_uploaded"] == 0
+    review = web.client.get("/api/designs/pending").json()["review"]
+    assert review[0]["problem"] == "partial" and review[0]["listing_id"] == 2000001
+
+
+def test_a_both_template_ships_and_attaches(web, fast_images):
+    fake, ws = _setup_shop(web)
+    _digital_template(ws, "both")
+    received = _file_routes(fake)
+    _put(web, "retro-mountain-sunset.png", _png())
+    pending = web.client.get("/api/designs/pending").json()
+    assert pending["template"]["needs_shipping"] is True
+    final = _run_to_the_end(web)
+    assert final["state"]["items"][0]["status"] == "ok"
+    assert fake.created[0]["type"] == "both" and fake.created[0]["shipping_profile_id"] == "5551"
+    assert received[2000001][0][0] == "retro-mountain-sunset.png"
+
+
+def test_a_digital_run_with_no_usable_download_is_blocked_with_its_own_reason(web):
+    _fake, ws = _setup_shop(web)
+    _digital_template(ws)
+    _put(web, "sunset poster set/01-front.jpg", _jpg(), batch="b1")
+    pending = web.client.get("/api/designs/pending").json()
+    assert pending["runnable"] == 0 and pending["blockers"] == ["deliverables_only"]
+    start = web.client.post("/api/designs/start", json={})
+    assert start.status_code == 409
+    assert start.json()["error"]["params"]["blockers"] == ["deliverables_only"]
+    # A readable design next to it is its own download: the run can start.
+    _put(web, "retro-mountain-sunset.png", _png())
+    assert web.client.get("/api/designs/pending").json()["blockers"] == []
+

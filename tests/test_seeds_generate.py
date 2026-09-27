@@ -1,8 +1,9 @@
 """Seeds and generated copy: junk file names refused, titles that read like Etsy titles.
 
 Every market here is invented: listings are built from phrase pools and run through the
-real `seo.research`, so the phrases and tags have exactly the shape (and the quirks —
-single words first, n-grams across commas, "t shirt" split in two) of a live sample.
+real `seo.research`, so the phrases and tags have exactly the shape of a live sample:
+phrases of one to four words taken within the comma-separated parts of each title, the
+most used first.
 """
 
 from __future__ import annotations
@@ -96,6 +97,70 @@ def test_a_mac_decomposed_turkish_name_is_still_recognised():
 )
 def test_copy_marks_dates_and_sizes_come_off_a_good_name(filename, expected):
     assert seeds.derive(Path(filename), folder_fallback=False).text == expected
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected"),
+    [
+        # "print", "son", "design" and "fix" are part of the design when the word before
+        # makes a phrase with them: a paw print is not a print file.
+        ("dog-dad-paw-print.png", "dog dad paw print"),
+        ("Dog Dad Paw Print Final.png", "dog dad paw print"),
+        ("dog_dad_paw_print_v2.png", "dog dad paw print"),
+        ("dog-dad-paw-print-print-ready.png", "dog dad paw print"),
+        ("dog-dad-paw-print-ready.png", "dog dad paw print"),
+        ("Paw Print (2).png", "paw print"),
+        ("leopard-print-mama-copy.png", "leopard print mama"),
+        ("Cheetah Print Lightning Bolt - Copy.png", "cheetah print lightning bolt"),
+        ("cow-print.png", "cow print"),
+        ("baby-hand-print-final-final.png", "baby hand print"),
+        ("like-father-like-son.png", "like father like son"),
+        ("Mother and Son Final.png", "mother and son"),
+        ("interior-design-edit.png", "interior design"),
+        ("caffeine-fix.png", "caffeine fix"),
+        # ...while real revision markers still come off, alone or stacked.
+        ("retro-sunset-print.png", "retro sunset"),
+        ("boeing-747-print.png", "boeing 747"),
+        ("retro-sunset-print-ready.png", "retro sunset"),
+        ("retro sunset ready to print.png", "retro sunset"),
+        ("retro_sunset_printready.png", "retro sunset"),
+        ("retro-sunset-rev2.png", "retro sunset"),
+        ("Retro Sunset Final v3 high-res.png", "retro sunset"),
+        ("retro-sunset-fix.png", "retro sunset"),
+        ("retro-sunset-son.png", "retro sunset"),
+        ("retro-sunset-backup.png", "retro sunset"),
+        # Turkish: "son" and "son hali" mean final, "baskıya hazır" print-ready.
+        ("Kedi Pati İzi Son.png", "kedi pati izi"),
+        ("Kedi Pati İzi son hali.png", "kedi pati izi"),
+        ("Retro Güneş Baskıya Hazır.png", "retro güneş"),
+        ("Retro Güneş baskı için.png", "retro güneş"),
+        ("Retro Güneş - Kopya revize.png", "retro güneş"),
+        ("Leopar Desenli Kupa Final.png", "leopar desenli kupa"),
+        ("Anne Oğul Son.png", "anne oğul"),
+        ("Yeni Yıl Hediyesi yedek.png", "yeni yıl hediyesi"),
+    ],
+)
+def test_only_revision_markers_come_off_the_end_of_a_name(filename, expected):
+    assert seeds.derive(Path(filename), folder_fallback=False).text == expected
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["print ready.png", "ready-to-print.png", "Baskıya Hazır.png", "Tasarım yedek.png",
+     "Adsız tasarım son hali.png", "Design Final rev3.png"],
+)
+def test_a_name_of_markers_only_is_junk(filename):
+    seed = seeds.derive(Path(filename), folder_fallback=False)
+    assert not seed, f"{filename!r} became the concept {seed.text!r}"
+
+
+def test_a_paw_print_and_its_revisions_share_one_concept():
+    names = ("Dog Dad Paw Print.png", "dog-dad-paw-print-final.png",
+             "dog_dad_paw_print_print_ready (2).png")
+    assert list(seeds.group([seeds.derive(Path(n)) for n in names])) == ["dog dad paw print"]
+    seed = seeds.derive(Path("dog-dad-paw-print.png"))
+    assert generate.build_title(seed, None, product_hint="Retro Sunset Shirt") == (
+        "Dog Dad Paw Print Shirt")
 
 
 def test_a_name_keeps_only_characters_a_title_and_a_tag_accept():
@@ -274,7 +339,8 @@ def test_titles_are_deterministic(mountain):
 
 
 def test_the_order_of_equally_common_phrases_does_not_matter(mountain):
-    # seo.research breaks count ties in set order, which changes from run to run.
+    # seo.research orders ties alphabetically now, but a report from elsewhere (an old
+    # cache entry, a hand-made one) may not: the copy must not depend on row order.
     shuffled = MarketReport(**{**mountain.__dict__, "tags": mountain.tags[::-1],
                                "phrases": mountain.phrases[::-1]})
     seed = seeds.derive(Path("retro-mountain-sunset.png"))

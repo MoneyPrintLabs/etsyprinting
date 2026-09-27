@@ -650,12 +650,7 @@ class AppContext:
             facts["mockups_calibrated"] = sum(1 for name in positions if name in names)
             if ws.template_path.is_file():
                 facts["template"] = True
-                try:
-                    data = json.loads(ws.template_path.read_text(encoding="utf-8"))
-                    title = data.get("source_title") if isinstance(data, dict) else None
-                    facts["template_title"] = str(title) if title else None
-                except (OSError, ValueError):
-                    facts["template_title"] = None
+                facts["template_title"] = _template_title(ws)
             facts["designs_pending"] = _pending_designs(ws, etsy_shop_id)
         except OSError:
             log.warning("could not read the workspace for the status")
@@ -810,15 +805,30 @@ def _without_time(status: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in status.items() if k != "checked_at"}
 
 
+def _template_title(ws: Any) -> str | None:
+    """The template listing's title as plain text (an old product.json may hold &amp;)."""
+    from ..drop.template import Template
+
+    try:
+        data = json.loads(ws.template_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or not data.get("source_title"):
+            return None
+        title = Template.from_dict(data).source_title
+    except (OSError, ValueError, StallKitError):
+        return None
+    return title or None
+
+
 def _pending_designs(ws: Any, etsy_shop_id: int | None) -> int:
     """Products in 2-PRODUCTS that upload-history.json has not seen for this shop."""
+    from ..drop import automation
+
     if not ws.products.is_dir():
         return 0
     groups = ws.product_groups()
-    try:
-        state = json.loads((ws.root / "upload-history.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        state = {}
+    # The history's own reader: it shares the writer's lock, so a status check never
+    # holds the file open while a run replaces it (and {} when it cannot be read).
+    state = automation.read_history(ws.root)
     seen: set[str] = set()
     if isinstance(state, dict):
         sections = (

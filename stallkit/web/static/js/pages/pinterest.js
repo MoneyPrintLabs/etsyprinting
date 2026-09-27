@@ -45,6 +45,9 @@ const POST_TITLE = "pinterest:job.post";
 export default {
   async mount(el, ctx) {
     const t = ctx.t;
+    // A count in the reader's number format ("2.575" / "2,575"); t() picks "_one" only
+    // for the number 1 itself, so the singular key is chosen here before formatting.
+    const tn = (key, n, params) => t(n === 1 && t.has(`${key}_one`) ? `${key}_one` : key, { ...params, n: number(n) });
     const errText = (err) => ctx.api.errorText(err, t);
     const S = {
       status: null,
@@ -733,7 +736,7 @@ export default {
       const p = parts.builder;
       if (!p) return;
       const items = (S.listings && S.listings.items) || [];
-      mount(p.totalBadge, S.listings ? badge({ text: t("pick.total", { n: S.listings.total }), tone: "neutral", size: "sm" }) : null);
+      mount(p.totalBadge, S.listings ? badge({ text: tn("pick.total", S.listings.total ?? items.length), tone: "neutral", size: "sm" }) : null);
       p.filter.update(
         [
           { id: "all", label: t("pick.filter_all"), count: S.listings ? items.length : undefined },
@@ -769,7 +772,8 @@ export default {
       p.allBox.input.checked = allOn;
       p.allBox.input.indeterminate = someOn && !allOn;
       p.allBox.input.disabled = !vis.length;
-      if (S.listings.truncated) p.list.append(h("p", { class: "pin-pick-more muted" }, t("pick.truncated", { n: S.listings.total })));
+      // The list holds the newest `shown` listings; `total` (the badge) is the shop's count.
+      if (S.listings.truncated) p.list.append(h("p", { class: "pin-pick-more muted" }, tn("pick.truncated", S.listings.shown ?? items.length)));
       updatePickCount();
     }
 
@@ -787,8 +791,8 @@ export default {
           h("span", { class: "pin-pick-title" }, it.title),
           h("span", { class: "pin-pick-meta" }, h("span", { class: "mono" }, `#${it.listing_id}`), " · ", t("pick.images", { n: it.images })),
         ),
-        it.queued ? badge({ text: t("pick.queued", { n: it.queued }), tone: "accent", size: "sm" }) : null,
-        it.posted ? badge({ text: t("pick.posted", { n: it.posted }), tone: "success", size: "sm", icon: "check" }) : null,
+        it.queued ? badge({ text: tn("pick.queued", it.queued), tone: "accent", size: "sm" }) : null,
+        it.posted ? badge({ text: tn("pick.posted", it.posted), tone: "success", size: "sm", icon: "check" }) : null,
       );
       return row;
     }

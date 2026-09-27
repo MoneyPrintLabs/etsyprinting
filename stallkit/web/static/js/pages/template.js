@@ -24,6 +24,8 @@ function fieldIcon(key) {
   return icon(FIELD_ICON[key], { size: 15 });
 }
 const STATE_TONE = { active: "success", draft: "muted", inactive: "muted", sold_out: "warning", expired: "warning" };
+// Etsy's listing types, and what the drafts made from such a template are.
+const TYPE_ICON = { physical: "box", download: "download", both: "package" };
 // A pasted Etsy listing link, or a bare listing number (the old window's "listing number" field).
 const LISTING_URL = /etsy\.com\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?listing\/(\d{5,13})/i;
 const LISTING_NUMBER = /^#?(\d{5,13})$/;
@@ -179,6 +181,24 @@ export default {
       );
     }
 
+    function listingType(value) {
+      return value === "download" || value === "both" ? value : "physical";
+    }
+
+    /**
+     * "Fiziksel" / "Dijital" / "Fiziksel + dijital" at the head of the source line: the
+     * drafts keep the template's type. (The card's title row has no room left for it.)
+     */
+    function typeTag(value) {
+      const kind = listingType(value);
+      return h(
+        "span",
+        { class: cx("tpl-type", `is-${kind}`), title: t(`type.${kind}_hint`) },
+        icon(TYPE_ICON[kind], { size: 12 }),
+        h("span", null, t(`type.${kind}`)),
+      );
+    }
+
     function dotSep() {
       return h("span", { class: "tpl-sep", "aria-hidden": "true" }, "·");
     }
@@ -222,6 +242,7 @@ export default {
         state: s.state,
         num_favorers: null,
         product_type: null,
+        listing_type: s.listing_type,
       };
     }
 
@@ -244,6 +265,8 @@ export default {
         onChange: () => select(id),
       });
       const sub = [];
+      const kind = listingType(row.listing_type);
+      if (kind !== "physical") sub.push(h("span", { class: "tpl-row-type" }, icon(TYPE_ICON[kind], { size: 12 }), t(`type.${kind}_short`)));
       if (row.product_type) sub.push(h("span", null, row.product_type));
       if (row.num_favorers !== null && row.num_favorers !== undefined) {
         sub.push(h("span", null, t("favorites", { n: row.num_favorers, count: number(row.num_favorers) })));
@@ -441,6 +464,7 @@ export default {
     }
 
     function processingText(v) {
+      if (v.digital && v.readiness_state_id === null && v.min === null && v.max === null) return t("processing.digital");
       if (v.min !== null || v.max !== null) {
         const lo = v.min ?? v.max;
         const hi = v.max ?? v.min;
@@ -498,8 +522,10 @@ export default {
       const current = p && isCurrent(p.listing_id);
       const known = p || (id !== null ? findItem(id) || st.extras.get(id) : null);
 
+      const shownType = p ? p.listing_type : known && known.listing_type;
       mount(
         sourceEl,
+        shownType ? typeTag(shownType) : null,
         h("span", { class: "tpl-source-label" }, t("source")),
         " ",
         known && known.title
@@ -546,6 +572,10 @@ export default {
       }
       if (p && p.has_variations) {
         hints.push(h("span", { class: "tpl-hint-line is-strong" }, icon("layers", { size: 13 }), t("variations")));
+      }
+      const kind = p ? listingType(p.listing_type) : "physical";
+      if (kind !== "physical") {
+        hints.push(h("span", { class: "tpl-hint-line is-strong" }, icon("download", { size: 13 }), t(`type.${kind}_note`)));
       }
       if (current && st.current.saved_at) {
         hints.push(h("span", { class: "tpl-hint-line" }, t("saved_ago", { when: relative(st.current.saved_at) })));
@@ -689,7 +719,7 @@ export default {
         ctx.toast({
           tone: "success",
           title: t("saved.title"),
-          message: t("saved.message"),
+          message: listingType(r.template && r.template.listing_type) === "download" ? t("saved.message_digital") : t("saved.message"),
           action: button({ label: t("saved.next"), size: "sm", iconRight: "arrow-right", onClick: () => ctx.navigate("/tasarim-yukle") }),
         });
       } catch (err) {

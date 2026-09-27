@@ -65,7 +65,7 @@ _DEVICE_PREFIX = re.compile(
 _ALWAYS_NOISE = {
     "finalv", "copy", "kopya", "kopyasi", "ogesinin", "duzenlenmis", "untitled", "adsiz",
     "isimsiz", "temp", "tmp", "printfile", "unnamed", "recovered", "kurtarildi",
-    "removebg", "nobg", "canva",
+    "removebg", "nobg", "canva", "printready", "readytoprint", "forprint", "baskiyahazir",
     # Camera and screenshot prefixes, for when they survive as a bare token.
     "img", "dsc", "dscn", "dscf", "pxl", "gopr", "mvimg", "screenshot", "scan",
 }
@@ -80,9 +80,40 @@ _TRAILING_NOISE = {
     "son", "orig", "original", "orijinal", "export", "output", "cikti", "asset", "file",
     "dosya", "version", "surum", "revised", "fix", "print", "baski", "design", "tasarim",
     "tasarimi", "artwork", "preview", "onizleme", "png", "jpg", "jpeg", "transparent",
-    "seffaf", "hd", "hq", "hires", "upscaled", "mockup",
+    "seffaf", "hd", "hq", "hires", "upscaled", "mockup", "rev", "revision", "revize",
+    "revizyon", "duzeltme", "duzeltilmis", "guncel", "yedek", "backup",
     # What a trailing date leaves behind: "… 2026-09-01 at 10.10.10".
     "at", "saat",
+}
+
+# Markers of more than one word, stripped together from the end: "…-print-ready",
+# "… ready to print", "… baskıya hazır", "… son hali" (Turkish "final version").
+_TRAILING_PHRASES = sorted(
+    {
+        ("print", "ready"), ("ready", "to", "print"), ("ready", "for", "print"),
+        ("baskiya", "hazir"), ("baskiya", "uygun"), ("baski", "icin"),
+        ("son", "hali"), ("son", "versiyon"), ("son", "surum"), ("yeni", "hali"),
+        ("high", "res"), ("high", "resolution"), ("hi", "res"),
+    },
+    key=lambda words: (-len(words), words),
+)
+
+# A marker word is still the product when the word before it makes a phrase with it: a
+# paw print, a leopard print, "like father like son", interior design, a coffee fix.
+# "dog-dad-paw-print.png" is a paw print; "boeing-747-print.png" is a print of a 747.
+_KEPT_AFTER = {
+    "print": {
+        "paw", "hand", "foot", "feet", "finger", "thumb", "lip", "kiss", "boot", "leopard",
+        "cheetah", "zebra", "tiger", "snake", "snakeskin", "cow", "giraffe", "dalmatian",
+        "animal", "block", "lino", "linocut", "woodblock",
+    },
+    "son": {
+        "father", "dad", "daddy", "papa", "mother", "mom", "mommy", "mama", "mum", "and",
+        "like", "of", "my", "our", "proud", "best", "only", "favorite", "favourite", "baby",
+        "first", "oldest", "youngest", "middle", "eldest",
+    },
+    "design": {"interior", "graphic", "web", "fashion", "game"},
+    "fix": {"coffee", "caffeine", "daily", "quick", "sugar", "chocolate", "tea", "book"},
 }
 
 # A name made only of these words is a default name, not a product: "Untitled design",
@@ -100,7 +131,8 @@ _DEFAULT_WORDS = {
     "png", "jpg", "jpeg", "transparent", "seffaf", "print", "baski", "logo", "export",
     "output", "cikti", "edit", "edited", "duzenlenmis", "version", "surum", "original",
     "orijinal", "preview", "onizleme", "temp", "tmp", "misc", "diger", "other", "my",
-    "benim", "the", "a", "of", "at", "and", "ve", "saat", "vid", "video", "mov",
+    "benim", "the", "a", "of", "at", "and", "ve", "saat", "vid", "video", "mov", "rev",
+    "revision", "revize", "revizyon", "yedek", "backup",
 }
 
 # Default names that are only junk when a counter follows: Figma's "Frame 12" and
@@ -110,7 +142,7 @@ _COUNTED_DEFAULTS = {
     "sekil", "vector", "vektor", "element", "graphic", "grafik",
 }
 
-_STOP_TAIL = {"and", "ve", "of", "the", "a", "an", "for", "with", "ile", "in", "on"}
+_STOP_TAIL = {"and", "ve", "of", "the", "a", "an", "for", "with", "ile", "in", "on", "to"}
 
 # `Copy of X` (Google Drive, old Windows), `Copy (2) of X`.
 _COPY_OF = re.compile(r"^\s*(copy|kopya)\s*(\(\s*\d+\s*\))?\s+of\s+", re.IGNORECASE)
@@ -280,8 +312,7 @@ def _from_text(raw: str, *, source: str) -> Seed:
 
     # Markers trail the name rather than interrupting it, and they stack:
     # `mountain-sunset-final-edit`. A name cannot end on "and" or "of" either.
-    while kept and (fold(kept[-1]) in _TRAILING_NOISE or kept[-1] in _STOP_TAIL):
-        kept.pop()
+    _strip_markers(kept)
 
     if not kept:
         return Seed("", source, True, f"{raw!r} carries no describable words")
@@ -292,6 +323,37 @@ def _from_text(raw: str, *, source: str) -> Seed:
         return Seed("", source, True, f"{raw!r} is too short to describe a product")
 
     return Seed(concept, source)
+
+
+def _kept_by_neighbour(words: list[str], index: int) -> bool:
+    """Whether the marker at `index` is part of the product with the word before it."""
+    if index <= 0:
+        return False
+    return fold(words[index - 1]) in _KEPT_AFTER.get(fold(words[index]), ())
+
+
+def _strip_markers(kept: list[str]) -> None:
+    """Take revision markers off the end of a name, in place, however many are stacked.
+
+    `paw-print-final` keeps its paw print, and so do `paw-print-print-ready` and
+    `paw-print-ready`: there the paw print's own "print" doubles as "print-ready".
+    """
+    while kept:
+        folded = [fold(word) for word in kept]
+        for marker in _TRAILING_PHRASES:
+            size = len(marker)
+            if len(kept) >= size and tuple(folded[-size:]) == marker:
+                start = len(kept) - size
+                del kept[start + 1 if _kept_by_neighbour(kept, start) else start:]
+                break
+        else:
+            last = len(kept) - 1
+            if (folded[last] in _TRAILING_NOISE and not _kept_by_neighbour(kept, last)) or (
+                kept[last] in _STOP_TAIL
+            ):
+                kept.pop()
+                continue
+            return
 
 
 def group(seeds: list[Seed]) -> dict[str, list[Seed]]:

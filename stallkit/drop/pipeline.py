@@ -20,10 +20,18 @@ from typing import Any, Callable
 from PIL import Image
 
 from .. import csvio
-from ..client import MAX_IMAGE_BYTES, EtsyClient
+from ..client import MAX_IMAGE_BYTES, MAX_LISTING_FILES, EtsyClient, file_issue
 from ..config import MAX_LISTING_IMAGES, MAX_TITLE_LEN
 from ..errors import ValidationError
-from ..listings import LISTING_COLUMNS
+from ..listings import (
+    DIGITAL_TYPES,
+    FILES_COLUMN,
+    LISTING_COLUMNS,
+    TITLE_ONCE,
+    TITLE_SYMBOLS,  # noqa: F401 - re-exported: pipeline.TITLE_SYMBOLS
+    title_char_ok,
+    title_problems,  # noqa: F401 - re-exported: pipeline.title_problems
+)
 from ..seo import MarketReport, research
 from . import cache, catalog, generate, mockup, seeds
 from .template import Template
@@ -34,15 +42,24 @@ REVIEW_FILE = "review.csv"
 # Columns the review file carries beyond what `listings push` reads. push() ignores
 # extras, so the same file serves both the seller's eye and the writer.
 REVIEW_EXTRA_COLUMNS = ["source_file", "concept", "evidence", "warnings"]
+# review.csv: every push column, the digital downloads (push reads them when a row has
+# them; empty for a physical template), then the extras.
+REVIEW_COLUMNS = [*LISTING_COLUMNS, FILES_COLUMN, *REVIEW_EXTRA_COLUMNS]
 
-# Etsy's title rule (createDraftListing in the Open API spec): "valid title strings
-# contain only letters, numbers, punctuation marks, mathematical symbols, whitespace
-# characters, ™, ©, and ®" — regex /[^\p{L}\p{Nd}\p{P}\p{Sm}\p{Zs}™©®]/u — and "you can
-# only use the %, :, & and + characters once each". A title built from a file name can
-# break either rule ("salt & pepper & co.png", an emoji, a "$"), and Etsy would then
-# refuse the draft at step 6, counting toward the stop after repeated failures.
-TITLE_SYMBOLS = "™©®"
-TITLE_ONCE = {"&": "and", "+": "plus", "%": "percent", ":": "-"}
+# A folder product of a digital template keeps the files a buyer downloads in a
+# subfolder of this name (either spelling, any case); its photos stay in the folder
+# itself. A loose design is its own download: the original file, not a render.
+FILES_DIRS = ("dosyalar", "files")
+# Written by Windows and macOS into folders a person opens; never a deliverable.
+_SYSTEM_FILES = {"thumbs.db", "desktop.ini", "icon\r"}
+
+# Etsy's title rule (createDraftListing in the Open API spec: letters, numbers,
+# punctuation, math symbols, spaces, ™ © ®; %, :, & and + once each) lives in `listings`,
+# where a plain CSV push is checked with it too; TITLE_SYMBOLS, TITLE_ONCE and
+# title_problems are re-exported from here. A title built from a file name can break it
+# ("salt & pepper & co.png", an emoji, a "$"), and Etsy would then refuse the draft at
+# step 6, counting toward the stop after repeated failures; clean_title() mends it first.
+_title_char_ok = title_char_ok
 
 
 @dataclass
@@ -56,6 +73,7 @@ class DropRow:
     evidence: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     skipped: bool = False
+    files: list[Path] = field(default_factory=list)  # a digital product's downloads
 
     @property
     def ok(self) -> bool:
@@ -93,44 +111,112 @@ def estimate_requests(
     images: int | None = None,
     has_variations: bool = False,
     template_inventory: bool = False,
+    files: int = 0,
 ) -> int:
     """What a run will cost against the daily allowance, before it starts.
 
     A Personal Access app gets 5,000 requests a day. Research pages at 100 listings
     each, then every product costs one create plus one upload per image — `images` in
     all when the caller knows each product's real count, else `images_per_product`
-    each. A template with variations adds one inventory update per draft, and reading
-    the template's inventory costs one request per run.
+    each — plus one upload per download file of a digital product (`files` in all).
+    A template with variations adds one inventory update per draft, and reading the
+    template's inventory costs one request per run.
     """
     research_calls = concepts * 2  # a 200-listing sample is two pages of 100
     image_calls = images if images is not None else products * images_per_product
-    write_calls = products + image_calls + (products if has_variations else 0)
+    write_calls = products + image_calls + files + (products if has_variations else 0)
     return research_calls + write_calls + (1 if template_inventory and products else 0)
 
 
-# --- what Etsy accepts ---------------------------------------------------------------
+# --- a digital product's downloads -----------------------------------------------------
 
 
-def _title_char_ok(ch: str) -> bool:
-    if ch in TITLE_SYMBOLS:
-        return True
-    category = unicodedata.category(ch)
-    return category[0] in "LP" or category in ("Nd", "Sm", "Zs")
+def files_folder(product: Path) -> Path | None:
+    """The `dosyalar` / `files` subfolder of a folder product, ignoring case; else None."""
+    if not product.is_dir():
+        return None
+    try:
+        entries = sorted(product.iterdir(), key=lambda p: p.name.casefold())
+    except OSError:
+        return None
+    for wanted in FILES_DIRS:
+        for entry in entries:
+            if entry.name.casefold() == wanted and entry.is_dir() and not entry.is_symlink():
+                return entry
+    return None
 
 
-def title_problems(title: str) -> list[str]:
-    """Why Etsy would refuse this title's characters (the length is checked elsewhere)."""
-    problems: list[str] = []
-    bad = sorted({ch for ch in title if not _title_char_ok(ch)})
-    if bad:
-        problems.append(
-            "title contains characters Etsy does not accept: " + " ".join(repr(c) for c in bad)
+def _natural(path: Path) -> list:
+    return [int(part) if part.isdigit() else part
+            for part in re.split(r"(\d+)", path.name.casefold())]
+
+
+def deliverable_files(source: Path) -> list[Path]:
+    """What a buyer downloads for this product, in upload order.
+
+    A loose design: the design file itself, byte for byte (never the flat render or a
+    mockup). A folder product: every file in its `dosyalar` / `files` subfolder, in
+    natural name order (01, 02, ... 10), without hidden and system files.
+    """
+    if source.is_file():
+        return [source]
+    folder = files_folder(source)
+    if folder is None:
+        return []
+    try:
+        entries = list(folder.iterdir())
+    except OSError:
+        return []
+    files = [
+        p for p in entries
+        if p.is_file() and not p.name.startswith((".", "~$"))
+        and p.name.casefold() not in _SYSTEM_FILES
+    ]
+    return sorted(files, key=_natural)
+
+
+def deliverable_issue(
+    source: Path, files: Sequence[Path]
+) -> tuple[str, str, dict[str, Any]] | None:
+    """Why this product's downloads cannot go up: (code, message, params), or None.
+
+    Codes: no_deliverable (no files subfolder, or an empty one), too_many_files (Etsy
+    takes client.MAX_LISTING_FILES), and each file's own client.file_issue code
+    (file_type, file_too_large, file_empty, file_missing, file_unreadable).
+    """
+    if not files:
+        folder = files_folder(source)
+        where = (
+            f"its {folder.name!r} folder is empty" if folder is not None
+            else f"it has no {FILES_DIRS[0]!r} (or {FILES_DIRS[1]!r}) subfolder"
         )
-    for ch in TITLE_ONCE:
-        count = title.count(ch)
-        if count > 1:
-            problems.append(f"title uses {ch!r} {count} times; Etsy allows it once")
-    return problems
+        return (
+            "no_deliverable",
+            f"the template is a digital product, but {where}; put the files buyers "
+            f"download in {source.name}/{FILES_DIRS[0]}/",
+            {"name": source.name, "folder": FILES_DIRS[0]},
+        )
+    if len(files) > MAX_LISTING_FILES:
+        return (
+            "too_many_files",
+            f"{source.name} has {len(files)} files to download and Etsy takes "
+            f"{MAX_LISTING_FILES} per listing; nothing was dropped, zip them together",
+            {"name": source.name, "n": len(files), "max": MAX_LISTING_FILES},
+        )
+    for path in files:
+        issue = file_issue(path)
+        if issue is not None:
+            return issue
+    return None
+
+
+def deliverables(source: Path) -> tuple[list[Path], tuple[str, str, dict[str, Any]] | None]:
+    """(the product's downloads, why they cannot go up or None)."""
+    files = deliverable_files(source)
+    return files, deliverable_issue(source, files)
+
+
+# --- what Etsy accepts ---------------------------------------------------------------
 
 
 def clean_title(title: str) -> str:
@@ -289,6 +375,8 @@ def run(
     order. Without it the first `mockups_per_product` files of 1-MOCKUPS are used.
     """
     workspace.require()
+    # download / both: every row also carries the files a buyer downloads.
+    digital = (template.fields.get("type") or "physical") in DIGITAL_TYPES
 
     def say(message: str) -> None:
         if on_progress:
@@ -409,12 +497,23 @@ def run(
             )
             say(f"skipped {row.source.name}")
             continue
+        if digital:
+            # What the buyer downloads: the original design, or the folder's `dosyalar`.
+            # A product without a download it can send is skipped here, before any work.
+            files, issue = deliverables(row.source)
+            if issue is not None:
+                row.skipped = True
+                row.warnings.append(issue[1])
+                say(f"skipped {row.source.name}")
+                continue
+            row.files = files
 
         copy = generate.generate(
             row.seed,
             reports.get(row.seed.text),
             template_description=template.description,
             fallback_tags=template.tags,
+            template_title=template.source_title,
         )
         row.title, row.tags = clean_title(copy.title), copy.tags
         row.description = copy.description
@@ -514,7 +613,7 @@ def run(
         csvio.write_rows(
             report.csv_path,
             [_to_csv_row(r, template, report.csv_path.parent) for r in report.ready],
-            columns=LISTING_COLUMNS + REVIEW_EXTRA_COLUMNS,
+            columns=REVIEW_COLUMNS,
         )
     return report
 
@@ -536,6 +635,7 @@ def _to_csv_row(row: DropRow, template: Template, base: Path) -> dict[str, Any]:
             "materials": template.materials,
             "state": "",
             "images": [_relative(p, base) for p in row.images],
+            FILES_COLUMN: [_relative(p, base) for p in row.files],
             "source_file": row.source.name,
             "concept": row.seed.text,
             "evidence": "; ".join(row.evidence),

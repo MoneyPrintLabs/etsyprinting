@@ -187,6 +187,17 @@
   font-size: 12.5px;
   color: var(--muted);
 }
+/* A digital (or physical + digital) listing: its drafts get download files. */
+.tpl-row-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent-2);
+  font-weight: 500;
+}
+.tpl-row-type .icon {
+  flex: none;
+}
 .tpl-sep {
   color: var(--muted-2);
 }
@@ -306,6 +317,27 @@
 .tpl-source-label {
   color: var(--muted);
 }
+/* The template's type, first on the source line: Fiziksel / Dijital / Fiziksel + dijital. */
+.tpl-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 8px;
+  padding-right: 8px;
+  border-right: 1px solid var(--border-2);
+  color: var(--text-2);
+  font-weight: 600;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.tpl-type.is-download,
+.tpl-type.is-both {
+  color: var(--accent-2);
+}
+.tpl-type .icon,
+.tpl-type svg {
+  flex: none;
+}
 .tpl-source-title {
   color: var(--text-2);
 }
@@ -320,6 +352,7 @@
 .tpl-badges .badge {
   height: 24px;
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .tpl-fields-list {

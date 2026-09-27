@@ -17,7 +17,7 @@ from stallkit.config import MAX_TAG_LEN, MAX_TAGS, MAX_TITLE_LEN
 from stallkit.drop import generate, mockup, pipeline, seeds, workspace
 from stallkit.drop.template import Template, capture
 from stallkit.errors import ValidationError
-from stallkit.listings import build_payload, validate_tags
+from stallkit.listings import build_payload, prepare, validate_tags
 from stallkit.seo import MarketReport
 
 # --- seeds: knowing when the filename told us nothing ---------------------------
@@ -1031,3 +1031,139 @@ def test_a_varied_template_listings_total_stock_is_capped_for_the_draft():
     # Etsy then refuses as the quantity of a new listing.
     template = capture(dict(LISTING, quantity=12000))
     assert template.fields["quantity"] == 999
+
+
+# --- digital templates -------------------------------------------------------------------
+
+
+DIGITAL_LISTING = {
+    **LISTING,
+    "title": "Boho Planner Printable",
+    "listing_type": "download",
+    "shipping_profile_id": None,
+    "readiness_state_id": None,
+    "processing_min": 1,  # legacy day counts Etsy may still report for a download
+    "processing_max": 2,
+    "item_weight": 0.1,
+}
+
+
+def test_capture_keeps_a_digital_type_and_copies_no_shipping():
+    tmpl = capture(DIGITAL_LISTING)
+    assert tmpl.fields["type"] == "download" and tmpl.listing_type == "download"
+    assert tmpl.digital is True
+    for name in ("shipping_profile_id", "readiness_state_id", "processing_min",
+                 "processing_max", "item_weight"):
+        assert name not in tmpl.fields
+    assert tmpl.missing_for_a_physical_draft() == []
+    assert ("Type", "Digital download (the design file is attached for buyers)") in tmpl.describe()
+    both = capture({**LISTING, "listing_type": "both"})
+    assert both.listing_type == "both" and both.digital
+    assert both.fields["shipping_profile_id"] == 999, "both is shipped"
+    assert capture(LISTING).digital is False
+    assert Template.from_dict(tmpl.to_dict()).listing_type == "download"
+
+
+def _write(path: Path, data: bytes = b"%PDF-1.4") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return path
+
+
+def test_a_loose_design_is_its_own_download(tmp_path):
+    design = _write(tmp_path / "2-PRODUCTS" / "retro-sunset.png", b"PNG")
+    assert pipeline.deliverables(design) == ([design], None)
+
+
+def test_a_folder_products_downloads_are_its_dosyalar_files(tmp_path):
+    folder = tmp_path / "boho planner"
+    _write(folder / "01-front.jpg", b"jpg")
+    for name in ("10-notes.pdf", "2-planner.pdf", "Thumbs.db", ".DS_Store", "~$draft.docx"):
+        _write(folder / "Dosyalar" / name)
+    (folder / "Dosyalar" / "nested").mkdir()
+    files, issue = pipeline.deliverables(folder)
+    assert issue is None
+    assert [p.name for p in files] == ["2-planner.pdf", "10-notes.pdf"]
+    assert pipeline.files_folder(folder).name == "Dosyalar"
+
+
+def test_the_english_files_folder_works_too(tmp_path):
+    folder = tmp_path / "kids pages"
+    _write(folder / "files" / "pages.zip", b"PK")
+    assert [p.name for p in pipeline.deliverable_files(folder)] == ["pages.zip"]
+
+
+def test_what_stops_a_folders_downloads(tmp_path, monkeypatch):
+    from stallkit import client as client_mod
+
+    folder = tmp_path / "boho planner"
+    folder.mkdir()
+    code, message, params = pipeline.deliverables(folder)[1]
+    assert code == "no_deliverable" and "no 'dosyalar'" in message
+    assert params == {"name": "boho planner", "folder": "dosyalar"}
+    (folder / "dosyalar").mkdir()
+    assert "'dosyalar' folder is empty" in pipeline.deliverables(folder)[1][1]
+    for n in range(6):
+        _write(folder / "dosyalar" / f"page-{n}.pdf")
+    assert pipeline.deliverables(folder)[1][:1] == ("too_many_files",)
+    for n in range(1, 6):
+        (folder / "dosyalar" / f"page-{n}.pdf").unlink()
+    assert pipeline.deliverables(folder)[1] is None
+    monkeypatch.setattr(client_mod, "MAX_FILE_BYTES", 3)
+    assert pipeline.deliverables(folder)[1][0] == "file_too_large"
+
+
+def test_a_digital_pipeline_writes_the_downloads_into_review_csv(tmp_path, monkeypatch):
+    monkeypatch.setenv("STALLKIT_HOME", str(tmp_path / "home"))
+    ws = _workspace_with(tmp_path, ["ceramic-coffee-mug.png"])
+    folder = ws.products / "boho planner"
+    folder.mkdir()
+    _make_design(folder / "01-front.png")
+    _write(folder / "dosyalar" / "planner.pdf")
+    empty = ws.products / "sunset poster set"
+    empty.mkdir()
+    _make_design(empty / "01-front.png")
+
+    report = pipeline.run(ws, capture(DIGITAL_LISTING), client=_FakeClient(),
+                          mockups_per_product=1)
+    by_name = {row.source.name: row for row in report.rows}
+    assert [p.name for p in by_name["ceramic-coffee-mug.png"].files] == ["ceramic-coffee-mug.png"]
+    assert [p.name for p in by_name["boho planner"].files] == ["planner.pdf"]
+    assert by_name["sunset poster set"].skipped
+    assert "no 'dosyalar'" in by_name["sunset poster set"].warnings[0]
+
+    from stallkit.csvio import read_rows
+
+    rows = {row["source_file"]: row for row in read_rows(report.csv_path)}
+    assert rows["boho planner"]["files"] == "../../2-PRODUCTS/boho planner/dosyalar/planner.pdf"
+    assert rows["boho planner"]["type"] == "download"
+    assert rows["boho planner"]["shipping_profile_id"] == ""
+    item = prepare([rows["boho planner"]], base_dir=report.csv_path.parent)[0]
+    assert not item.result.failed and [p.name for p in item.file_paths] == ["planner.pdf"]
+
+
+def test_a_physical_pipeline_leaves_the_files_column_empty(tmp_path, monkeypatch):
+    monkeypatch.setenv("STALLKIT_HOME", str(tmp_path / "home"))
+    ws = _workspace_with(tmp_path, ["ceramic-coffee-mug.png"])
+    report = pipeline.run(ws, capture(LISTING), client=_FakeClient(), mockups_per_product=1)
+
+    from stallkit.csvio import read_rows
+
+    (row,) = read_rows(report.csv_path)
+    assert row["files"] == "" and report.ready[0].files == []
+
+
+def test_the_pipeline_tells_the_copy_what_the_product_is(tmp_path, monkeypatch):
+    monkeypatch.setenv("STALLKIT_HOME", str(tmp_path / "home"))
+    ws = _workspace_with(tmp_path, ["black-cat-magic.png"])
+    seen = {}
+    real = generate.generate
+
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(generate, "generate", spy)
+    pipeline.run(ws, capture(LISTING), client=_FakeClient(), mockups_per_product=1)
+    assert seen["template_title"] == "Handmade Ceramic Mug"
+    assert pipeline.title_problems("Salt & Pepper & Co") and pipeline.TITLE_ONCE["&"] == "and"

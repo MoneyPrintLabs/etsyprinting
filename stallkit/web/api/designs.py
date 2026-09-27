@@ -1,6 +1,8 @@
 """Tasarım Yükle: design uploads, the pending list, and the draft run.
 
     PUT    /api/designs/files?path=<name | folder/name>[&batch=<id>]   raw image body
+    PUT    /api/designs/files?path=<folder>/dosyalar/<name>[&batch=<id>]
+           a digital product's download file (any type but programs), raw body
     DELETE /api/designs/files?path=<name | folder | folder/name>       -> moved to archive/
     GET    /api/designs/pending        what the next run would do, and what blocks it
     POST   /api/designs/start          {"dry_run"?: bool} -> job "designs" (drop.stream)
@@ -10,6 +12,11 @@
 
 A run creates DRAFTS only; nothing is published. The confirm modal in the page
 ("Başlat") is the consent for creating them.
+
+A digital template (type download or both) makes digital drafts: each product's
+download files go up after its images — a loose design's original file, a folder
+product's `dosyalar` / `files` subfolder (drop.pipeline.deliverables). The pending view
+says per product what would be attached and what is wrong with it.
 """
 
 from __future__ import annotations
@@ -109,10 +116,19 @@ def _safe_segment(text: str, default: str) -> str:
     return text
 
 
+def _is_files_dir(name: str) -> bool:
+    from ...drop.pipeline import FILES_DIRS
+
+    return name.casefold() in FILES_DIRS
+
+
 def _split_path(raw: str) -> list[str]:
+    """[name], [folder, name] or [folder, "dosyalar" | "files", name] (a download file)."""
     parts = [p for p in re.split(r"[\\/]+", raw or "") if p not in ("", ".")]
-    if not parts or len(parts) > 2 or any(p == ".." for p in parts):
-        raise ApiError(422, "invalid", "path must be <name> or <folder>/<name>", field="path")
+    three = len(parts) == 3 and _is_files_dir(parts[1])
+    if not parts or (len(parts) > 2 and not three) or any(p == ".." for p in parts):
+        raise ApiError(422, "invalid", "path must be <name>, <folder>/<name> or "
+                       "<folder>/dosyalar/<name>", field="path")
     if any(p.startswith(".") for p in parts):
         raise ApiError(422, "invalid", "hidden files are not designs", field="path")
     return parts
@@ -148,7 +164,8 @@ def _same_file(folder: Path, name: str, data: bytes) -> str | None:
     return None
 
 
-def _claim_folder(products: Path, folder: str, batch: str, name: str, data: bytes) -> str:
+def _claim_folder(products: Path, folder: str, batch: str, name: str, data: bytes,
+                  sub: str | None = None) -> str:
     """The product folder an upload batch writes `folder` into.
 
     Within one batch every file of a dropped folder lands in the same place. When a
@@ -158,13 +175,16 @@ def _claim_folder(products: Path, folder: str, batch: str, name: str, data: byte
       `-2` copy that would become a second, identical draft;
     - otherwise it is a new product with the same folder name, and it gets a new name
       (`-2`), so it is never merged into an old one the history would skip.
+    A download file (`sub` is its `dosyalar` folder) is compared with that subfolder.
     """
     key = (str(products), batch, folder.casefold())
     with _claims_lock:
         if batch and key in _claims:
             return _claims[key]
         existing = _entry_ci(products, folder) if batch else None
-        if existing is not None and existing.is_dir() and _same_file(existing, name, data):
+        inside = existing if existing is None or sub is None else _entry_ci(existing, sub)
+        if (existing is not None and existing.is_dir() and inside is not None
+                and inside.is_dir() and _same_file(inside, name, data)):
             claimed = existing.name
         else:
             claimed, number = folder, 1
@@ -248,6 +268,44 @@ def _history(ctx: AppContext, ws: Any) -> tuple[dict, str | None]:
 # --- upload / remove -------------------------------------------------------------------------
 
 
+def _save_deliverable(ctx: AppContext, parts: list[str], data: bytes,
+                      batch: str) -> dict[str, Any]:
+    """PUT <folder>/dosyalar/<name>: one download file of a digital folder product.
+
+    Any type a buyer can open is kept (PDF, ZIP, SVG, ...); programs and scripts are
+    refused (client.BLOCKED_FILE_SUFFIXES). A file over Etsy's 20 MB limit is kept and
+    named by the pending view and the run's check step, so the seller sees which one.
+    It lands in the same product folder as the photos of its upload batch.
+    """
+    from ...client import BLOCKED_FILE_SUFFIXES
+
+    name = _safe_segment(parts[-1], "file")
+    suffix = Path(name).suffix.lower()
+    if not suffix or suffix in BLOCKED_FILE_SUFFIXES:
+        raise ApiError(422, "not_deliverable", f"{name} cannot be sold as a download.",
+                       name=name)
+    ws = ctx.workspace()
+    history, _problem = _history(ctx, ws)
+    known_names = {n.casefold() for n in history}
+    batch = re.sub(r"[^A-Za-z0-9_-]", "", batch)[:64]
+    folder = _claim_folder(ws.products, _safe_segment(parts[0], "product"), batch, name, data,
+                           sub=parts[1])
+    product = ws.products / folder
+    existing_sub = _entry_ci(product, parts[1])
+    target = existing_sub if existing_sub is not None and existing_sub.is_dir() else (
+        product / _safe_segment(parts[1], "dosyalar"))
+    if folder.casefold() in known_names:
+        # The product already became a draft: the history skips it for good.
+        same = _same_file(target, name, data) if target.is_dir() else None
+        return {"name": folder, "file": same or name, "folder": folder,
+                "path": _rel(ws, target / same) if same else "", "duplicate": same is not None,
+                "known": True, "ignored": None, "size": len(data), "deliverable": True}
+    saved, duplicate = _save_unique(target, name, data)
+    return {"name": folder, "file": saved, "folder": folder, "path": _rel(ws, target / saved),
+            "duplicate": duplicate, "known": False, "ignored": None, "size": len(data),
+            "deliverable": True}
+
+
 def upload_file(req: Request) -> dict[str, Any]:
     from PIL import Image
 
@@ -263,6 +321,8 @@ def upload_file(req: Request) -> dict[str, Any]:
     if len(data) > MAX_UPLOAD:
         raise ApiError(413, "too_large", "A design can be at most 50 MB.",
                        limit=MAX_UPLOAD, max_mb=MAX_UPLOAD // (1024 * 1024))
+    if len(parts) == 3:
+        return _save_deliverable(ctx, parts, data, req.query.get("batch", ""))
     name = _safe_segment(parts[-1], "design")
     suffix = Path(name).suffix.lower()
     if suffix not in IMAGE_SUFFIXES:
@@ -343,6 +403,8 @@ def delete_file(req: Request) -> dict[str, Any]:
     if _active_job(ctx) is not None:
         raise ApiError(409, "busy", "Wait for the running batch to finish first.")
     parts = _split_path(req.query.get("path", ""))
+    if len(parts) > 2:
+        raise ApiError(404, "not_found", "Only designs and product folders can be removed here.")
     ws = ctx.workspace()
     target = files.resolve_inside(ws.products, "/".join(parts))
     if target is None or not target.exists():
@@ -387,6 +449,11 @@ def _template_info(ctx: AppContext, ws: Any) -> tuple[dict[str, Any] | None, str
         "price": fields.get("price"),
         "currency": (ctx.status.get("shop") or {}).get("currency"),
         "description": bool(template.description.strip()),
+        # physical | download | both; digital drafts get each product's download files.
+        "listing_type": template.listing_type,
+        "digital": template.digital,
+        # A download is not shipped: no profile is needed (both still ships).
+        "needs_shipping": template.listing_type != "download",
         "shipping_profile": bool(fields.get("shipping_profile_id")),
         "tags": len(template.tags),
         # Saved by Şablon İlan; None for a template captured before it was (unknown).
@@ -431,6 +498,8 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
     groups = ws.product_groups()
     items: list[dict[str, Any]] = []
     concepts: set[str] = set()
+    template, template_problem = _template_info(ctx, ws)
+    digital = bool(template and template.get("digital"))
     for path, photos in groups:
         if path.name.casefold() in known:
             continue
@@ -446,6 +515,15 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
             mtime, size = int(stat.st_mtime), stat.st_size
         except OSError:
             mtime, size = 0, 0
+        # What a digital draft of this product would attach, and what stops it: the
+        # run's check step fails the product for the same reason (pipeline.deliverables).
+        downloads: list[dict[str, Any]] = []
+        deliverable_problem = None
+        if digital:
+            found, issue = pipeline.deliverables(path)
+            downloads = [{"name": f.name, "path": _rel(ws, f), "size": _size(f)} for f in found]
+            if issue is not None:
+                deliverable_problem = {"code": issue[0], "params": issue[2]}
         items.append({
             "name": path.name,
             "kind": "folder" if photos else "design",
@@ -456,6 +534,8 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
             "concept": seed.text if seed else "",
             "junk_reason": None if seed else (seed.reason or "junk"),
             "too_many": len(photos) > MAX_LISTING_IMAGES,
+            "deliverables": downloads,
+            "deliverable_problem": deliverable_problem,
         })
     names = {path.name.casefold() for path, _ in groups}
     already_done, _ = automation.known_products(history, names)
@@ -472,7 +552,6 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
     use = catalog.usage(ws, infos)
     enabled = use["used"]
     types = collections.Counter(infos[name].type for name in enabled if name in infos)
-    template, template_problem = _template_info(ctx, ws)
 
     blockers: list[str] = []
     state = status.get("state")
@@ -487,37 +566,47 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
         blockers.append("running")
     elif lock is not None:
         blockers.append("locked")
-    runnable = sum(1 for item in items if not item["junk_reason"] and not item["too_many"])
+    runnable = sum(1 for item in items if _runnable(item))
     if not items:
         blockers.append("empty")
     elif not runnable:
-        blockers.append("junk_only")
+        # Nothing could become a draft: the names say nothing, or (a digital template)
+        # no product has a download it can send.
+        files_only = any(item["deliverable_problem"] and not item["junk_reason"]
+                         and not item["too_many"] for item in items)
+        blockers.append("deliverables_only" if files_only else "junk_only")
 
     warnings: list[str] = []
     junk = sum(1 for item in items if item["junk_reason"] or item["too_many"])
     if junk:
         warnings.append("junk")
+    if any(item["deliverable_problem"] and not item["junk_reason"] and not item["too_many"]
+           for item in items):
+        warnings.append("deliverables")
     if not enabled and any(item["kind"] == "design" for item in items):
         warnings.append("no_mockups")
-    if template and not template.get("shipping_profile"):
+    if template and template.get("needs_shipping") and not template.get("shipping_profile"):
         warnings.append("no_shipping_profile")
     images_each = len(enabled) + 1
     # Only what will run, with each product's own image count: a folder's photos, one
     # upload for a JPEG (a finished photo, never composited), mockups + the flat design
     # for anything that may be transparent artwork (an upper bound; opaque ones take 1).
-    run_items = [item for item in items if not item["junk_reason"] and not item["too_many"]]
+    run_items = [item for item in items if _runnable(item)]
     images_total = sum(
         item["files"] if item["kind"] == "folder"
         else 1 if Path(item["name"]).suffix.lower() in (".jpg", ".jpeg")
         else images_each
         for item in run_items
     )
+    # A digital draft uploads its download files too, one request each.
+    files_total = sum(len(item["deliverables"]) for item in run_items)
     estimate = pipeline.estimate_requests(
         len(run_items),
         len({item["concept"] for item in run_items}),
         images=images_total,
         has_variations=bool(template and template.get("has_variations") is not False),
         template_inventory=bool(template and template.get("source_listing_id")),
+        files=files_total,
     )
     quota = status.get("quota_remaining")
     if isinstance(quota, int) and estimate > quota:
@@ -550,6 +639,8 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
         "blockers": blockers,
         "warnings": warnings,
         "estimate_requests": estimate,
+        "files_total": files_total,
+        "listing_type": template.get("listing_type") if template else None,
         "quota_remaining": quota,
         "concepts": len(concepts),
         "images_each": images_each,
@@ -558,6 +649,18 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
                                            "stale": lock["stale"]},
         "concurrency": CONCURRENCY,
     }
+
+
+def _runnable(item: dict[str, Any]) -> bool:
+    """A product the run would try: a readable name, not too many photos, its downloads."""
+    return not item["junk_reason"] and not item["too_many"] and not item["deliverable_problem"]
+
+
+def _size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
 
 
 def pending(req: Request) -> dict[str, Any]:
@@ -596,6 +699,9 @@ def _new_item(data: dict[str, Any]) -> dict[str, Any]:
         "listing_id": None,
         "images_uploaded": 0,
         "images_total": 0,
+        "deliverables": [],
+        "files_uploaded": 0,
+        "files_total": data.get("files_total", 0),
         "sampled": None,
         "warnings": [],
         "error": None,
@@ -608,6 +714,7 @@ def _copy_item(item: dict[str, Any]) -> dict[str, Any]:
     out["steps"] = dict(item["steps"])
     out["tags"] = list(item["tags"])
     out["images"] = list(item["images"])
+    out["deliverables"] = list(item.get("deliverables") or [])
     out["warnings"] = list(item["warnings"])
     return out
 
@@ -627,7 +734,7 @@ class _Tracker:
             "items": [], "current": None, "dry_run": dry_run, "batch": None,
             "out_dir": None, "template": template, "mockups": mockups,
             "concurrency": CONCURRENCY, "already_done": 0, "needs_review": [],
-            "result": None,
+            "result": None, "listing_type": (template or {}).get("listing_type") or "physical",
         }
         self._last_state = 0.0
         self.publish_state(force=True)
@@ -669,6 +776,7 @@ class _Tracker:
                     total=len(self.items), batch=data.get("batch"), out_dir=data.get("out_dir"),
                     already_done=len(data.get("already_done") or []),
                     needs_review=list(data.get("needs_review") or []),
+                    listing_type=data.get("listing_type") or self.state["listing_type"],
                 )
                 self.job.progress(0, len(self.items))
                 self.publish_state(force=True)
@@ -681,7 +789,8 @@ class _Tracker:
                 return
             item = self.items[index]
             for key in ("images", "flat", "mode", "title", "tags", "listing_id",
-                        "images_uploaded", "images_total", "sampled"):
+                        "images_uploaded", "images_total", "sampled", "deliverables",
+                        "files_uploaded", "files_total"):
                 if key in data and data[key] is not None:
                     item[key] = list(data[key]) if isinstance(data[key], list) else data[key]
             if step in STEPS:
@@ -762,6 +871,8 @@ class _Tracker:
                 "needs_review": list(report.needs_review),
                 "researched": report.researched,
                 "cached": report.cached,
+                "listing_type": self.state.get("listing_type") or "physical",
+                "files_uploaded": sum(item.files_uploaded for item in report.items),
             }
             self.state.update(finished_at=finished, result=summary)
             self.publish_state(force=True)

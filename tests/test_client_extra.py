@@ -18,7 +18,7 @@ from stallkit import auth
 from stallkit import client as client_mod
 from stallkit.client import EtsyClient, taxonomy_path, walk_taxonomy
 from stallkit.config import Config
-from stallkit.errors import EtsyApiError
+from stallkit.errors import EtsyApiError, ValidationError
 
 SHOP = 12345678
 PREFIX = "/v3/application"
@@ -433,3 +433,105 @@ def test_a_second_401_is_reconnect_not_offline(monkeypatch):
     with client.attempts(1), pytest.raises(EtsyApiError) as error:
         client.shipping_profiles()
     assert error.value.status == 401 and len(sent) == 2
+
+
+# --- uploadListingFile ------------------------------------------------------------------
+
+
+def _parts(request: httpx.Request) -> dict[str, tuple[str | None, bytes, str | None]]:
+    """The multipart form of a request: {field: (filename, body, content type)}."""
+    import email.parser
+    import email.policy
+
+    head = f"Content-Type: {request.headers['content-type']}\r\n\r\n".encode()
+    message = email.parser.BytesParser(policy=email.policy.HTTP).parsebytes(
+        head + request.content)
+    out = {}
+    for part in message.iter_parts():
+        out[part.get_param("name", header="content-disposition")] = (
+            part.get_filename(), part.get_payload(decode=True), part.get("content-type"))
+    return out
+
+
+def test_upload_listing_file_posts_the_file_its_name_and_rank(tmp_path):
+    handler, seen = recorder({f"/shops/{SHOP}/listings/1000001/files": {
+        "listing_file_id": 9001, "listing_id": 1000001, "rank": 2, "filename": "planner.pdf",
+        "filesize": "14 B", "size_bytes": 14, "filetype": "application/pdf"}})
+    client = make_client(handler)
+    path = tmp_path / "planner.pdf"
+    path.write_bytes(b"%PDF-1.4 hello")
+    answer = client.upload_listing_file(1000001, path, rank=2)
+    assert answer["listing_file_id"] == 9001
+    (request,) = seen
+    assert request.method == "POST"
+    assert request.url.path == f"{PREFIX}/shops/{SHOP}/listings/1000001/files"
+    assert request.headers["authorization"] == "Bearer 1.access"
+    assert request.headers["content-type"].startswith("multipart/form-data; boundary=")
+    parts = _parts(request)
+    assert set(parts) == {"file", "name", "rank"}
+    assert parts["file"] == ("planner.pdf", b"%PDF-1.4 hello", "application/pdf")
+    assert parts["name"][1] == b"planner.pdf" and parts["rank"][1] == b"2"
+
+
+def test_upload_listing_file_sends_any_sellable_type_as_octet_stream(tmp_path):
+    handler, seen = recorder({f"/shops/{SHOP}/listings/1000001/files": {"listing_file_id": 1}})
+    client = make_client(handler)
+    path = tmp_path / "Cut File.dxf"
+    path.write_bytes(b"0\nSECTION")
+    client.upload_listing_file(1000001, path, name="cut-file.dxf")
+    parts = _parts(seen[0])
+    assert parts["file"][0] == "cut-file.dxf" and parts["name"][1] == b"cut-file.dxf"
+    assert parts["file"][2] == "image/vnd.dxf" and parts["rank"][1] == b"1"
+    other = tmp_path / "brushes.abr"
+    other.write_bytes(b"8BIM")
+    client.upload_listing_file(1000001, other)
+    assert _parts(seen[1])["file"][2] == "application/octet-stream"
+
+
+@pytest.mark.parametrize("name, data, code", [
+    ("installer.exe", b"MZ", "file_type"),
+    ("run.bat", b"echo", "file_type"),
+    ("README", b"no extension", "file_type"),
+    ("empty.pdf", b"", "file_empty"),
+])
+def test_a_file_etsy_would_refuse_is_never_read_or_sent(tmp_path, name, data, code):
+    handler, seen = recorder({})
+    client = make_client(handler)
+    path = tmp_path / name
+    path.write_bytes(data)
+    assert client_mod.file_issue(path)[0] == code
+    with pytest.raises(ValidationError):
+        client.upload_listing_file(1000001, path)
+    assert seen == []
+
+
+def test_the_digital_file_limits(tmp_path, monkeypatch):
+    # Not in the OAS (it gives uploadListingFile no limits); Etsy's seller help: five
+    # files per listing, 20 MB each.
+    assert client_mod.MAX_LISTING_FILES == 5
+    assert client_mod.MAX_FILE_BYTES == 20 * 1024 * 1024
+    monkeypatch.setattr(client_mod, "MAX_FILE_BYTES", 10)
+    big = tmp_path / "big.zip"
+    big.write_bytes(b"PK" + b"0" * 20)
+    code, message, params = client_mod.file_issue(big)
+    assert code == "file_too_large" and params["name"] == "big.zip" and params["max_mb"] == 0
+    assert client_mod.file_issue(tmp_path / "gone.pdf")[0] == "file_missing"
+    ok = tmp_path / "ok.pdf"
+    ok.write_bytes(b"%PDF")
+    assert client_mod.file_issue(ok) is None and client_mod.file_problem(ok) is None
+
+
+def test_a_file_upload_is_a_write_and_is_not_repeated_after_a_5xx(tmp_path, monkeypatch):
+    monkeypatch.setattr(client_mod.time, "sleep", lambda _s: None)
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(500, json={"error": "boom"})
+
+    client = make_client(handler)
+    path = tmp_path / "planner.pdf"
+    path.write_bytes(b"%PDF")
+    with pytest.raises(EtsyApiError):
+        client.upload_listing_file(1000001, path)
+    assert len(calls) == 1

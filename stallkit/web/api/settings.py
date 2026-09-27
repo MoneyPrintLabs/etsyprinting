@@ -4,12 +4,19 @@
     POST /api/settings/workspace   {"path": "<absolute folder>" | ""} ("" = the default)
     POST /api/settings/doctor      run the setup checklist (`stallkit doctor`) now
 
+A folder of a workspace (1-MOCKUPS, 2-PRODUCTS, 3-DRAFTS, anything inside them) chosen
+as the workspace means that workspace: its root is saved, never a second workspace
+nested inside the first (`drop.workspace.root_for`). The answer then carries
+`adjusted: {"chosen", "root"}` so the page can say so. A folder saved that way by an
+older version is reported as `workspace.nested_in` (the root it belongs to).
+
 Language, hiding shop names, the shop list and quitting use the core endpoints
 (/api/prefs, /api/shops/*, /api/quit); the Etsy connection uses /api/connect/*.
 """
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -42,6 +49,11 @@ def _ctx(req: Request) -> AppContext:
     return req.ctx
 
 
+def _same_path(a: Path, b: Path) -> bool:
+    """The same folder as far as the path says (case and separators as the OS sees them)."""
+    return os.path.normcase(os.path.normpath(str(a))) == os.path.normcase(os.path.normpath(str(b)))
+
+
 def _folders(ctx: AppContext) -> dict[str, Any]:
     from ...drop import workspace as workspace_mod
 
@@ -49,10 +61,13 @@ def _folders(ctx: AppContext) -> dict[str, Any]:
     ws = workspace_mod.Workspace(root)
     paths = {"workspace": ws.root, "mockups": ws.mockups, "products": ws.products,
              "drafts": ws.drafts}
+    belongs_to = workspace_mod.root_for(root) if root.is_absolute() else root
     return {
         "root": str(root),
         "default": str(workspace_mod.default_root()),
         "custom": bool(str(ctx.shop_prefs().get("workspace") or "").strip()),
+        # Saved before the guard: a folder of another workspace (see the module doc).
+        "nested_in": None if _same_path(belongs_to, root) else str(belongs_to),
         "folders": [
             {"which": which, "name": path.name, "path": str(path), "exists": path.is_dir()}
             for which, path in paths.items()
@@ -72,8 +87,12 @@ def overview(req: Request) -> dict[str, Any]:
 
 
 def set_workspace(req: Request) -> dict[str, Any]:
-    """Use another products folder for the open shop (created, with its subfolders)."""
-    from ...drop.workspace import Workspace
+    """Use another products folder for the open shop (created, with its subfolders).
+
+    A folder of a workspace means that workspace (module doc); the default folder,
+    however it is reached, is saved as "the default" rather than as a custom path.
+    """
+    from ...drop import workspace as workspace_mod
 
     ctx = _ctx(req)
     body = req.json_object()
@@ -83,23 +102,28 @@ def set_workspace(req: Request) -> dict[str, Any]:
     raw = raw.strip().strip('"').strip("'").strip()
     if ctx.jobs.busy():
         raise ApiError(409, "busy", "Wait for the running task to finish first.")
+    adjusted: dict[str, str] | None = None
     if not raw:
         ctx.update_shop_prefs(workspace=None)
     else:
-        path = Path(raw).expanduser()
-        if not path.is_absolute():
+        chosen = Path(raw).expanduser()
+        if not chosen.is_absolute():
             raise ApiError(422, "workspace_not_absolute", "Give the full path of a folder.",
                            field="path")
-        if path.exists() and not path.is_dir():
+        if chosen.exists() and not chosen.is_dir():
             raise ApiError(422, "workspace_not_folder", "That is a file, not a folder.",
                            field="path")
+        path = workspace_mod.root_for(chosen)
+        if not _same_path(path, chosen):
+            adjusted = {"chosen": str(chosen), "root": str(path)}
         try:
-            Workspace(path).create()
+            workspace_mod.Workspace(path).create()
         except OSError as exc:
             raise ApiError(422, "workspace_unwritable",
                            f"Cannot create the folders there: {exc.strerror or exc}",
                            field="path") from exc
-        ctx.update_shop_prefs(workspace=str(path))
+        default = _same_path(path, workspace_mod.default_root())
+        ctx.update_shop_prefs(workspace=None if default else str(path))
     try:
         ctx.workspace()
     except OSError as exc:
@@ -107,7 +131,7 @@ def set_workspace(req: Request) -> dict[str, Any]:
                        f"Cannot create the folders there: {exc.strerror or exc}",
                        field="path") from exc
     ctx.set_status_soon(0.0)
-    return {"workspace": _folders(ctx)}
+    return {"workspace": _folders(ctx), "adjusted": adjusted}
 
 
 def _check_api(ctx: AppContext) -> Any:

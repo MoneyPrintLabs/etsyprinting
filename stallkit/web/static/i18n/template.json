@@ -101,7 +101,19 @@
     "country.IT": "İtalya",
     "country.ES": "İspanya",
     "errors.not_your_listing": "Bu ilan başka bir mağazaya ait. Şablon kendi mağazanızdaki bir ilandan kopyalanmalı.",
-    "preview_not_found": "Etsy'de #{id} numaralı bir ilan bulunamadı. Numarayı kontrol edin."
+    "preview_not_found": "Etsy'de #{id} numaralı bir ilan bulunamadı. Numarayı kontrol edin.",
+    "type.physical": "Fiziksel",
+    "type.download": "Dijital",
+    "type.both": "Fiziksel + dijital",
+    "type.physical_hint": "Fiziksel ürün: taslaklar bu ilanın kargo profiliyle oluşur.",
+    "type.download_hint": "Dijital ürün: her taslağa tasarım dosyası indirilebilir dosya olarak eklenir, kargo profili gerekmez.",
+    "type.both_hint": "Hem fiziksel hem dijital: taslaklar kargo profiliyle oluşur, tasarım dosyası da indirilebilir dosya olarak eklenir.",
+    "type.download_short": "Dijital",
+    "type.both_short": "Fiziksel + dijital",
+    "type.download_note": "Dijital ürün: her taslağa tasarım dosyası indirilebilir dosya olarak eklenir",
+    "type.both_note": "Fiziksel + dijital: taslaklar kargolanır, tasarım dosyası da indirilebilir eklenir",
+    "saved.message_digital": "Yeni taslaklar bu ilanın fiyatını ve kategorisini kopyalayacak; her birine tasarım dosyası indirilebilir dosya olarak eklenecek.",
+    "processing.digital": "Dijital · anında indirilir"
   },
   "en": {
     "title": "Template listing",
@@ -205,6 +217,18 @@
     "country.IT": "Italy",
     "country.ES": "Spain",
     "errors.not_your_listing": "This listing belongs to another shop. The template must come from a listing in your own shop.",
-    "preview_not_found": "Etsy has no listing #{id}. Check the number."
+    "preview_not_found": "Etsy has no listing #{id}. Check the number.",
+    "type.physical": "Physical",
+    "type.download": "Digital",
+    "type.both": "Physical + digital",
+    "type.physical_hint": "Physical product: drafts get this listing's shipping profile.",
+    "type.download_hint": "Digital product: each draft gets its design file as the download and needs no shipping profile.",
+    "type.both_hint": "Physical and digital: drafts get the shipping profile, and the design file is attached as a download too.",
+    "type.download_short": "Digital",
+    "type.both_short": "Physical + digital",
+    "type.download_note": "Digital product: each draft gets its design file as the download",
+    "type.both_note": "Physical + digital: drafts ship, and get the design file as a download too",
+    "saved.message_digital": "New drafts will copy this listing's price and category, and each gets its design file as the download.",
+    "processing.digital": "Digital · instant download"
   }
 }

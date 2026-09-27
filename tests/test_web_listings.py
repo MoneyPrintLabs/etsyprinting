@@ -318,6 +318,28 @@ def test_source_folder_and_missing_file(web):
     assert (gone["exists"], gone["rel"]) == (False, None)
 
 
+def test_source_names_read_the_history_through_its_shared_reader(web, monkeypatch):
+    # automation.read_history holds the lock a Tasarım Yükle run writes under.
+    from stallkit.drop import automation
+
+    shop_with(web, drafts=2, active=0, inactive=0)
+    root = history(web, {"camp-set": {"status": "ok", "listing_id": 1000001}})
+    calls = []
+    real = automation.read_history
+
+    def spy(path):
+        calls.append(path)
+        return real(path)
+
+    monkeypatch.setattr(automation, "read_history", spy)
+    items = web.client.get("/api/listings", params={"tab": "draft"}).json()["items"]
+    assert {r["id"]: r["source"] for r in items}[1000001] == "camp-set"
+    assert root in calls
+    (root / "upload-history.json").write_text("{not json", encoding="utf-8")
+    items = web.client.get("/api/listings", params={"tab": "draft", "refresh": 1}).json()["items"]
+    assert all(r["source"] is None for r in items)
+
+
 def test_edit_a_draft(web):
     shop = shop_with(web, drafts=2, active=0, inactive=0)
     web.client.get("/api/listings")

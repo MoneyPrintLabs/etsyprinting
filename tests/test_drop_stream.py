@@ -10,6 +10,7 @@ import httpx
 import pytest
 from PIL import Image
 
+from stallkit import csvio
 from stallkit.drop import automation, catalog, mockup, stream
 from stallkit.drop.template import Template
 from stallkit.drop.workspace import Workspace
@@ -74,6 +75,9 @@ class Client:
         self.max_active_searches = 0
         self.fail_create: dict[str, BaseException] = {}  # title substring -> error
         self.fail_search: BaseException | None = None
+        self.files: list[tuple[int, str, int]] = []
+        self.fail_file: dict[str, BaseException] = {}  # file name substring -> error
+        self.calls: list[tuple[str, int, str]] = []  # images and files, in upload order
         self.next_id = 1000001
 
     def shop_id(self):
@@ -121,7 +125,18 @@ class Client:
     def upload_listing_image(self, listing_id, image, *, rank):
         with self.lock:
             self.images.append((listing_id, image.name, rank))
+            self.calls.append(("image", listing_id, image.name))
         return {}
+
+    def upload_listing_file(self, listing_id, path, *, rank):
+        for needle, error in self.fail_file.items():
+            if needle in path.name:
+                raise error
+        with self.lock:
+            self.files.append((listing_id, path.name, rank))
+            self.calls.append(("file", listing_id, path.name))
+        return {"listing_file_id": 7000 + len(self.files), "listing_id": listing_id,
+                "rank": rank, "filename": path.name}
 
 
 class Events:
@@ -571,7 +586,7 @@ def test_a_title_etsy_would_refuse_is_cleaned_and_said_so(studio, monkeypatch):
     ws, template = studio
     _artwork(ws.products / "retro-mountain-sunset.png")
     monkeypatch.setattr(generate, "build_title",
-                        lambda seed, market: "Salt & Pepper & Co, $5 Mug \U0001f338")
+                        lambda seed, market, **_kw: "Salt & Pepper & Co, $5 Mug \U0001f338")
     client = Client(ws)
     report = _run(ws, template, client)
     item = report.items[0]
@@ -585,7 +600,8 @@ def test_a_title_with_nothing_etsy_accepts_fails_that_product(studio, monkeypatc
 
     ws, template = studio
     _artwork(ws.products / "retro-mountain-sunset.png")
-    monkeypatch.setattr(generate, "build_title", lambda seed, market: "\U0001f338\U0001f338")
+    monkeypatch.setattr(generate, "build_title",
+                        lambda seed, market, **_kw: "\U0001f338\U0001f338")
     client = Client(ws)
     report = _run(ws, template, client)
     item = report.items[0]
@@ -617,3 +633,240 @@ def test_a_canva_or_camera_default_name_never_becomes_a_draft(studio, junk):
     assert by_name[junk].status == stream.FAILED and by_name[junk].error.code == "junk_name"
     assert by_name["retro-mountain-sunset.png"].status == stream.OK
     assert len(client.creates) == 1 and junk not in _history(ws)[SHOP]
+
+
+# --- digital templates (type download / both) --------------------------------------------
+
+
+def _digital(ws, template, listing_type="download"):
+    """The studio's template turned into a digital one, as Şablon İlan would save it."""
+    fields = dict(template.fields, type=listing_type)
+    if listing_type == "download":
+        fields.pop("shipping_profile_id", None)
+    digital = Template(template.source_listing_id, source_title="Printable Wall Art",
+                       fields=fields, description=template.description, tags=template.tags)
+    ws.write_template(digital.to_dict())
+    return digital
+
+
+def _folder(ws, name, photos=("01-front.jpg", "02-detail.jpg"), files=None, sub="dosyalar"):
+    folder = ws.products / name
+    folder.mkdir()
+    for photo in photos:
+        _photo(folder / photo)
+    if files is not None:
+        (folder / sub).mkdir()
+        for file_name, data in files.items():
+            (folder / sub / file_name).write_bytes(data)
+    return folder
+
+
+def test_a_digital_loose_design_gets_its_original_file_after_its_images(studio):
+    ws, template = studio
+    template = _digital(ws, template)
+    design = _artwork(ws.products / "retro-mountain-sunset.png")
+    original = design.read_bytes()
+    client = Client(ws)
+    events = Events()
+    report = _run(ws, template, client, on_event=events)
+
+    item = report.items[0]
+    assert item.status == stream.OK and item.steps["check"] == "done"
+    assert [p.name for p in item.deliverables] == ["retro-mountain-sunset.png"]
+    assert client.creates[0]["type"] == "download"
+    assert "shipping_profile_id" not in client.creates[0], "a download is not shipped"
+    # The ORIGINAL design goes up as the download, never the flat render or a mockup,
+    # and only after every image of the draft.
+    assert client.files == [(1000001, "retro-mountain-sunset.png", 1)]
+    kinds = [kind for kind, _id, _name in client.calls]
+    assert kinds == ["image"] * len(item.images) + ["file"]
+    assert item.files_uploaded == 1 and design.read_bytes() == original
+    entry = _history(ws)[SHOP]["retro-mountain-sunset.png"]
+    assert entry["status"] == "ok" and entry["files_uploaded"] == 1
+    outcome = events.outcome("retro-mountain-sunset.png")
+    assert outcome["deliverables"] == ["2-PRODUCTS/retro-mountain-sunset.png"]
+    assert outcome["files_uploaded"] == 1 and outcome["files_total"] == 1
+    batch = next(data for _n, step, _s, data in events.items if step == "batch")
+    assert batch["listing_type"] == "download" and batch["items"][0]["files_total"] == 1
+    drafts = [data for _n, step, status, data in events.items
+              if step == "draft" and status == "done"]
+    assert drafts[0]["files_uploaded"] == 1 and drafts[0]["files_total"] == 1
+    row = csvio.read_rows(report.csv_path)[0]
+    assert row["files"] == "../../2-PRODUCTS/retro-mountain-sunset.png"
+    assert stream.item_summary(item, ws.root)["deliverables"] == [
+        "2-PRODUCTS/retro-mountain-sunset.png"]
+
+
+def test_a_digital_folder_sends_its_photos_then_its_dosyalar_files(studio):
+    ws, template = studio
+    template = _digital(ws, template)
+    _folder(ws, "boho planner", files={
+        "10-notes.pdf": b"%PDF-1.4 notes", "2-planner.pdf": b"%PDF-1.4 planner",
+        "extras.zip": b"PK\x03\x04", "Thumbs.db": b"x", ".DS_Store": b"x"})
+    client = Client(ws)
+    report = _run(ws, template, client)
+
+    item = report.items[0]
+    assert item.status == stream.OK and item.mode == "photos"
+    assert [p.name for p in item.images] == ["01-front.jpg", "02-detail.jpg"], "photos stay"
+    assert client.files == [(1000001, "2-planner.pdf", 1), (1000001, "10-notes.pdf", 2),
+                            (1000001, "extras.zip", 3)]
+    assert [kind for kind, *_ in client.calls] == ["image", "image", "file", "file", "file"]
+    assert _history(ws)[SHOP]["boho planner"]["files_uploaded"] == 3
+
+
+def test_the_files_folder_may_be_called_files_in_any_case(studio):
+    ws, template = studio
+    template = _digital(ws, template)
+    _folder(ws, "kids coloring pages", files={"pages.pdf": b"%PDF-1.4"}, sub="Files")
+    client = Client(ws)
+    assert _run(ws, template, client).items[0].status == stream.OK
+    assert client.files == [(1000001, "pages.pdf", 1)]
+
+
+@pytest.mark.parametrize("files, code", [
+    (None, "no_deliverable"),
+    ({}, "no_deliverable"),
+    ({f"page-{n}.pdf": b"%PDF" for n in range(6)}, "too_many_files"),
+    ({"setup.exe": b"MZ"}, "file_type"),
+    ({"empty.pdf": b""}, "file_empty"),
+])
+def test_a_missing_or_unusable_download_fails_that_product_at_check(studio, files, code):
+    ws, template = studio
+    template = _digital(ws, template)
+    _folder(ws, "boho planner", files=files)
+    _artwork(ws.products / "retro-mountain-sunset.png")
+    client = Client(ws)
+    report = _run(ws, template, client)
+
+    by_name = {item.name: item for item in report.items}
+    bad = by_name["boho planner"]
+    assert bad.status == stream.FAILED and bad.error.code == code
+    assert bad.error.step == "check" and bad.steps["check"] == "error"
+    assert bad.steps["draft"] == "todo"
+    assert "boho planner" not in _history(ws)[SHOP], "nothing was sent for it"
+    assert by_name["retro-mountain-sunset.png"].status == stream.OK, "the others still go"
+    assert len(client.creates) == 1
+
+
+def test_an_oversize_download_is_refused_before_the_draft(studio, monkeypatch):
+    from stallkit import client as client_mod
+
+    ws, template = studio
+    template = _digital(ws, template)
+    monkeypatch.setattr(client_mod, "MAX_FILE_BYTES", 1000)
+    _folder(ws, "boho planner", files={"planner.pdf": b"%PDF" + b"0" * 2000})
+    client = Client(ws)
+    item = _run(ws, template, client).items[0]
+    assert item.status == stream.FAILED and item.error.code == "file_too_large"
+    assert item.error.params["name"] == "planner.pdf" and client.creates == []
+
+
+def test_a_download_that_fails_after_the_create_leaves_the_draft_partial(studio):
+    ws, template = studio
+    template = _digital(ws, template)
+    _folder(ws, "boho planner", files={"1-planner.pdf": b"%PDF-1", "2-extras.pdf": b"%PDF-2"})
+    client = Client(ws)
+    client.fail_file["2-extras"] = EtsyApiError(400, "file refused", method="POST",
+                                                 path="/files")
+    report = _run(ws, template, client)
+
+    item = report.items[0]
+    assert item.status == stream.PARTIAL and item.listing_id == 1000001
+    assert item.steps["draft"] == "warn" and item.files_uploaded == 1
+    warning = next(w for w in item.warnings if w.code == "partial_files")
+    assert warning.params == {"listing_id": 1000001, "n": 1, "total": 2, "name": "2-extras.pdf"}
+    assert "file 2 of 2 (2-extras.pdf) failed" in warning.message
+    entry = _history(ws)[SHOP]["boho planner"]
+    assert entry["status"] == "partial" and entry["listing_id"] == 1000001
+    assert entry["files_uploaded"] == 1 and entry["images_uploaded"] == 2
+    again = _run(ws, template, Client(ws))
+    assert again.items == [] and any("boho planner" in n for n in again.needs_review)
+
+
+def test_a_both_template_ships_and_downloads(studio):
+    ws, template = studio
+    template = _digital(ws, template, "both")
+    _artwork(ws.products / "retro-mountain-sunset.png")
+    client = Client(ws)
+    item = _run(ws, template, client).items[0]
+    assert item.status == stream.OK
+    assert client.creates[0]["type"] == "both"
+    assert client.creates[0]["shipping_profile_id"] == 55, "both still ships"
+    assert client.files == [(1000001, "retro-mountain-sunset.png", 1)]
+
+
+def test_a_physical_template_never_uploads_a_file(studio):
+    ws, template = studio
+    _artwork(ws.products / "retro-mountain-sunset.png")
+    _folder(ws, "boho planner", files={"planner.pdf": b"%PDF-1"})
+    client = Client(ws)
+    report = _run(ws, template, client)
+    assert [item.status for item in report.items] == [stream.OK, stream.OK]
+    assert client.files == [] and all(not item.deliverables for item in report.items)
+
+
+def test_a_digital_dry_run_checks_the_downloads_and_sends_nothing(studio):
+    ws, template = studio
+    template = _digital(ws, template)
+    _folder(ws, "boho planner", files={"planner.pdf": b"%PDF-1"})
+    _folder(ws, "sunset poster set")
+    report = _run(ws, template, None, dry_run=True, use_cache=False)
+    by_name = {item.name: item for item in report.items}
+    assert by_name["boho planner"].status == stream.CHECKED
+    assert [p.name for p in by_name["boho planner"].deliverables] == ["planner.pdf"]
+    assert by_name["sunset poster set"].error.code == "no_deliverable"
+    assert not (ws.root / "upload-history.json").exists()
+
+
+def test_an_unknown_template_type_stops_before_any_work(studio):
+    ws, template = studio
+    template.fields["type"] = "subscription"
+    with pytest.raises(ValidationError, match="not one Etsy knows"):
+        _run(ws, template, Client(ws))
+
+
+def test_the_template_tells_the_title_and_tags_what_the_product_is(studio, monkeypatch):
+    from stallkit.drop import generate
+
+    ws, template = studio
+    template.source_title = "Ceramic Coffee Mug 11oz"
+    _artwork(ws.products / "black-cat-magic.png")
+    seen: dict[str, object] = {}
+    real_title, real_tags = generate.build_title, generate.build_tags
+
+    def title(seed, market=None, *, product_hint=None):
+        seen["title"] = product_hint
+        return real_title(seed, market, product_hint=product_hint)
+
+    def tags(seed, market=None, *, product_hint=None):
+        seen["tags"] = product_hint
+        return real_tags(seed, market, product_hint=product_hint)
+
+    monkeypatch.setattr(generate, "build_title", title)
+    monkeypatch.setattr(generate, "build_tags", tags)
+    _run(ws, template, Client(ws))
+    expected = generate.hint_from(template.source_title, template.tags, template.description)
+    assert seen == {"title": expected, "tags": expected}
+    assert expected[0] == "Ceramic Coffee Mug 11oz"
+
+
+def test_a_sign_in_lost_between_two_files_keeps_what_went_up_on_record(studio):
+    ws, template = studio
+    template = _digital(ws, template)
+    _folder(ws, "boho planner", files={"1-planner.pdf": b"%PDF-1", "2-extras.pdf": b"%PDF-2"})
+    _artwork(ws.products / "retro-mountain-sunset.png")
+    client = Client(ws)
+    client.fail_file["2-extras"] = AuthError("The sign-in expired and could not be renewed.")
+    report = _run(ws, template, client)
+
+    by_name = {item.name: item for item in report.items}
+    item = by_name["retro-mountain-sunset.png"]
+    assert item.status == stream.OK, "the loose design went first"
+    folder = by_name["boho planner"]
+    assert folder.status == stream.PARTIAL and folder.files_uploaded == 1
+    assert folder.images_uploaded == 2
+    entry = _history(ws)[SHOP]["boho planner"]
+    assert entry["status"] == "partial" and entry["files_uploaded"] == 1
+    assert report.stopped is not None and report.stopped.code == "reconnect"
+

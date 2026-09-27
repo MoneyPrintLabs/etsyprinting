@@ -231,3 +231,44 @@ def test_requested_scopes_are_used_when_etsy_returns_none():
     )
     assert token.scopes == ("shops_r", "listings_r")
     assert token.missing_scopes(("shops_r",)) == ()
+
+
+# --- digital downloads: uploadListingFile ------------------------------------------------
+# OAS: POST /v3/application/shops/{shop_id}/listings/{listing_id}/files (listings_w),
+# multipart/form-data {listing_file_id?, file (binary), name, rank (>=1, default 1)};
+# 201 -> ShopListingFile. Sending the file under any other field name (an "image"
+# copied from uploadListingImage, say) gets a 400 after the draft already exists.
+
+
+def test_upload_listing_file_uses_the_oas_multipart_fields(tmp_path):
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(201, json={"listing_file_id": 1, "listing_id": 1000001,
+                                         "rank": 1, "filename": "planner.pdf"})
+
+    token = Token("1.a", "r", 4102444800, ("listings_w",))
+    client = EtsyClient(Config(keystring="KEY123", shared_secret="S", shop_id=12345678),
+                        token=token, transport=httpx.MockTransport(handler))
+    path = tmp_path / "planner.pdf"
+    path.write_bytes(b"%PDF-1.4")
+    assert client.upload_listing_file(1000001, path)["listing_file_id"] == 1
+    request = seen[0]
+    assert (request.method, request.url.path) == (
+        "POST", "/v3/application/shops/12345678/listings/1000001/files")
+    body = request.content
+    for field in (b'name="file"; filename="planner.pdf"', b'name="name"', b'name="rank"'):
+        assert field in body
+    assert b'name="image"' not in body and b'name="listing_file_id"' not in body
+
+
+def test_a_download_draft_is_created_as_a_download_without_a_shipping_profile():
+    # createDraftListing: shipping_profile_id is "Required when listing type is
+    # physical"; type enum physical | download | both.
+    payload = build_payload({
+        "title": "Boho Planner Printable", "description": "PDF planner.", "price": "4.5",
+        "quantity": "999", "who_made": "i_did", "when_made": "2020_2026",
+        "taxonomy_id": "2078", "type": "download", "shipping_profile_id": "501",
+    }, is_update=False)
+    assert payload["type"] == "download" and "shipping_profile_id" not in payload

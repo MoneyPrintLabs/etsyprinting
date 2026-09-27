@@ -5,7 +5,7 @@
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-green)](LICENSE)
 [![Etsy Open API v3](https://img.shields.io/badge/Etsy-Open%20API%20v3-orange)](https://developers.etsy.com/documentation/)
 
-**Türkçe için [aşağı kaydırın](#türkçe).**
+**Türkçe:** [Kurmadan önce okuyun](#kurmadan-önce-okuyun) · [Türkçe bölümün tamamı](#türkçe)
 
 stallkit takes the repetitive part of running an Etsy shop off your hands, on your own
 computer. Double-click it and it opens in your browser at `http://localhost:3000`. Drop
@@ -25,8 +25,80 @@ connection and your files stay on your computer.
 
 ---
 
+## Kurmadan önce okuyun
+
+stallkit mağazanıza **kendi Etsy uygulamanız** üzerinden bağlanır. Etsy bunu her satıcıdan
+ister ve bir kez yapılır. Bu adımları sırayla yapın; çoğu kurulum hatası bir adım
+atlandığı için çıkar.
+
+1. **Açık bir Etsy mağazanız olsun.** stallkit var olan bir mağazayı yönetir.
+2. **Etsy uygulaması oluşturun:** <https://www.etsy.com/developers/register-seller-app>
+   (*Create a seller app*). Adında "Etsy" kelimesi **geçmesin**, Etsy bunu reddeder.
+   Developer Mode'u açmayın. Etsy hesap başına bir uygulamaya izin verir; zaten bir
+   uygulamanız varsa onu kullanın.
+3. **Onayı bekleyin.** Genelde birkaç dakika sürer. Onaylanmadan anahtarlar çalışmaz.
+4. **Callback adresini ekleyin. Bu adım en çok atlanan adımdır.**
+   <https://www.etsy.com/developers/your-apps> → uygulamanızın yanındaki **⋮** →
+   **Edit callback URLs** → şu adresi **birebir** ekleyip kaydedin:
+
+   ```
+   http://localhost:3003/oauth/redirect
+   ```
+
+   `https` değil `http`; `127.0.0.1` değil `localhost`; sonunda `/` yok. Bu menü
+   uygulama onaylandıktan sonra görünür. stallkit'in **Mağaza Bağlantısı** ekranı adresi
+   bir kopyalama düğmesiyle gösterir.
+5. **Anahtarları kopyalayın:** aynı sayfadaki **Keystring** ve **Shared secret** (göz
+   ikonu). İkisi birden gerekir ve aynı uygulamadan olmalı.
+6. **stallkit'i indirip açın:** [en son sürüm](https://github.com/MoneyPrintLabs/etsyprinting/releases/latest).
+   Tarayıcınız **Mağaza Bağlantısı** ekranında açılır. Anahtarları yapıştırıp **Kaydet ve
+   kontrol et**'e basın, sonra **Bağlan**'a basın ve açılan Etsy sayfasında izin verin
+   (ilk seferde callback adresini ekleyip eklemediğiniz sorulur). Bağlantı kayıtlı kalır;
+   her açılışta tekrar gerekmez.
+
+### Kurulumda en sık görülen hatalar
+
+| Gördüğünüz | Sebep ve çözüm |
+|---|---|
+| Etsy: **"İstenen yönlendirme URL'sine izin verilmiyor"** (*The requested redirect URL is not permitted*) | 4. adım yapılmamış ya da adres farklı yazılmış. Adresi birebir ekleyin, sonra **Bağlan**'a tekrar basın. |
+| **"Edit callback URLs"** menüsü yok | Uygulama henüz onaylanmamış. Onayı bekleyin. |
+| **"Etsy bu anahtarları kabul etmedi"** | Keystring ve Shared secret aynı, onaylanmış uygulamadan kopyalanmalı. |
+| İzin verdikten sonra tarayıcı **"Bu siteye ulaşılamıyor"** (localhost:3003) diyor | İzin verirken stallkit açık olmalı (5 dakika bekler). stallkit'e dönüp **Bağlan**'a tekrar basın. 3003 portunu başka bir program kullanıyorsa kapatın. |
+| Windows **"kişisel bilgisayarınızı korudu"** diyor | Uygulama imzalı değil: **Ek bilgi → Yine de çalıştır**. |
+| macOS uygulamayı açmıyor | **Sistem Ayarları → Gizlilik ve Güvenlik → Yine de Aç**. |
+| Takip numarası yüklenmiyor (403) | Etsy, 2024'ten beri yeni API anahtarlarıyla takip numarası eklemeyi Türkiye dahil birçok ülkede kısıtlıyor. Takip numaralarını Etsy Mağaza Yöneticisi'nden girin. |
+
+Diğerleri: [Sık karşılaşılan hatalar](#sık-karşılaşılan-hatalar).
+
+## Read this before you install
+
+stallkit connects through **your own Etsy app** (Etsy requires one per seller; it is a
+one-time step). Most setup failures come from a skipped step:
+
+1. Have an open Etsy shop.
+2. Create an app at <https://www.etsy.com/developers/register-seller-app>. The name must
+   not contain "Etsy". Don't enable Developer Mode. One app per account: reuse it if you have one.
+3. Wait for approval (usually minutes).
+4. **Register the callback (the most skipped step):** <https://www.etsy.com/developers/your-apps>
+   → **⋮** next to your app → **Edit callback URLs** → add exactly
+   `http://localhost:3003/oauth/redirect` (http, localhost, no trailing slash). The menu
+   appears only after approval. stallkit's **Mağaza Bağlantısı** screen shows the address
+   with a copy button.
+5. Copy the **Keystring** and the **Shared secret** from the same app.
+6. [Download stallkit](https://github.com/MoneyPrintLabs/etsyprinting/releases/latest) and
+   open it. Your browser opens on **Mağaza Bağlantısı** (Shop connection): paste both keys,
+   press **Save and check** (*Kaydet ve kontrol et*), then **Connect** (*Bağlan*) and
+   approve on Etsy. The connection is remembered.
+
+Etsy says *"The requested redirect URL is not permitted"*? Step 4 is missing or the address
+differs. More fixes: [Troubleshooting](#troubleshooting).
+
+---
+
 ## Contents
 
+- [Kurmadan önce okuyun](#kurmadan-önce-okuyun)
+- [Read this before you install](#read-this-before-you-install)
 - [What it does](#what-it-does)
 - [Download and first run](#download-and-first-run)
 - [Connect your Etsy shop (once)](#connect-your-etsy-shop-once)
@@ -48,14 +120,14 @@ After that there is one thing to do each time: drop your designs.
 | Screen | What it is for |
 |---|---|
 | **Panel** (Dashboard) | Your shop today: active listings, drafts, orders to ship, average SEO score, this month's revenue, and Etsy requests left for today. |
-| **Tasarım Yükle** (Upload designs) | Drag in PNG or JPG designs, or folders of finished photos. Each design goes through six steps: mockups, Etsy search research, a title of up to 140 characters, 13 tags, a check against Etsy's rules, and a draft on Etsy. |
+| **Tasarım Yükle** (Upload designs) | Drag in PNG or JPG designs, or folders of finished photos. Each design goes through six steps: mockups, Etsy search research, a title of up to 140 characters, 13 tags, a check against Etsy's rules, and a draft on Etsy. Physical products and [digital downloads](#digital-products) both work. |
 | **İlanlar** (Listings) | Your drafts and live listings. Open a draft to check or edit its title, tags and description, then publish the ones you want. You can also download listings as a CSV or update them from one. |
 | **SEO** | Every listing scored out of 100, weakest first, with what to improve. Includes tag research for any keyword. **Fix** sends the suggested change. |
 | **Siparişler** (Orders) | Orders waiting to ship, shipped and delivered. Type tracking numbers or load them from a CSV, then send them to Etsy. |
 | **Kâr-Zarar** (Profit & loss) | Revenue, Etsy fees from your payment account, the product and shipping costs you enter, and net profit, month by month, in your shop's currency and in TRY. |
 | **Pinterest** | Optional. Queue Pins of your live listings and post a few a day on your own Pinterest account. |
 | **Mockuplar** (Mockups) | Add photos of the products you sell and set where the design sits on each one (the print area). One setting can cover every mockup of the same size. |
-| **Şablon İlan** (Template listing) | Pick a listing you built by hand. Every new draft copies its price, category, shipping and return settings, description and variations. |
+| **Şablon İlan** (Template listing) | Pick a listing you built by hand. Every new draft copies its price, category, shipping and return settings, description and variations, and whether it is a physical item or a digital download. |
 | **Mağaza Bağlantısı** (Shop connection) | Your Etsy app keys and the connection to your shop. |
 | **Ayarlar** (Settings) | Language (Turkish or English), several shops, the products folder, a setup checklist, hiding the shop name for screenshots, and quitting. |
 
@@ -66,6 +138,33 @@ permission.
 
 The app follows your computer's language (Turkish or English). You can change it in
 **Ayarlar**.
+
+### Digital products
+
+If your template listing is a digital product (Etsy's type *download*, or *both*), every
+draft is created as that type and gets the files the buyer downloads, after its images:
+
+- **A loose design** in `2-PRODUCTS` is delivered as the design file itself, the original,
+  not a mockup. Its mockups become the listing's photos, as for a physical product.
+- **A product folder** delivers the files in its `dosyalar` (or `files`) subfolder: PDF,
+  ZIP, PNG, JPG, SVG and so on. The photos in the folder itself become the listing's
+  images.
+
+```
+2-PRODUCTS/
+  sunset-poster.png        one listing; the buyer downloads this file
+  Planner 2027/            one listing
+    01.jpg  02.jpg         its photos, in this order
+    dosyalar/
+      planner-a4.pdf       what the buyer downloads
+      planner-letter.pdf
+```
+
+Etsy takes at most 5 files per listing, each up to 20 MB; programs and scripts (`.exe`,
+`.bat` and the like) cannot be sold as downloads. A download-only template needs no
+shipping profile. A product with nothing to deliver, too many files or a file that is too
+large stops with its own message before anything of it is sent to Etsy. **Tasarım Yükle**
+and **Şablon İlan** say which kind of product the template makes and what the buyer gets.
 
 ---
 
@@ -195,6 +294,11 @@ The terminal shows the address. Press **Ctrl+C** there to stop the app.
 | A second or third shop | `~/.stallkit/shops/<id>/` |
 | Products folder: `1-MOCKUPS`, `2-PRODUCTS` (your designs), `3-DRAFTS`, `product.json` (the template) | `Etsy Studio` on your Desktop (`Etsy Studio - <shop id>` for further shops). You can change it in **Ayarlar**. |
 
+If you choose `1-MOCKUPS`, `2-PRODUCTS` or `3-DRAFTS` (or a folder inside them) as the
+products folder, stallkit uses the products folder they belong to and says so, instead of
+making a second products folder inside the first. A folder an older version nested that
+way is pointed out in **Ayarlar**, with a button to use the main folder.
+
 The downloaded app, `stallkit desktop` and the command line all read the same files, so
 you can switch between them. Set `STALLKIT_HOME` to keep `~/.stallkit` somewhere else.
 The app's log is `~/.stallkit/logs/web-<date>.log`.
@@ -234,6 +338,17 @@ The downloaded app runs commands too when you give it arguments, for example
 `stallkit.exe pinterest post` from Windows Task Scheduler. Without a terminal, its output
 goes to `~/.stallkit/logs/`.
 
+New in 0.3.0:
+
+- `stallkit drop run` and `stallkit drop auto` use the mockups switched on in
+  **Mockuplar**, in that order (the first is the main image). `--mockups N` takes the first
+  N of that selection. Digital templates work here too.
+- `--path` of the `drop` commands may point at the products folder or at a folder inside
+  it, such as `2-PRODUCTS`: the products folder around it is used.
+- `stallkit listings pull` no longer writes an always-empty `views` column (Etsy's API has
+  no view count), and `stallkit seo suggest` shows titles and tags as plain text
+  (`Mom's Mug & Gift`, not `Mom&#39;s Mug &amp; Gift`).
+
 **[CLI.md](CLI.md)** documents every command, the CSV format, the workspace folders and
 how retries and rate limits behave. **[SETUP.md](SETUP.md)** is the full setup checklist
 (`stallkit setup` runs it on the command line; **Ayarlar → Check everything** runs it in
@@ -253,6 +368,8 @@ the app).
 | Sending a tracking number fails (403) | Etsy restricts adding tracking with newer API keys in many countries, Türkiye included. Enter it in Etsy's Shop Manager instead. |
 | *"This page only opens from the stallkit app"* | You opened the address by hand or from a bookmark. Double-click stallkit (or run `stallkit desktop`) again; it opens a signed-in tab. |
 | *"Cannot reach stallkit"* | The app has stopped, for example after its tab was closed. Double-click it again and reload the page. |
+| There is a `2-PRODUCTS` inside `2-PRODUCTS`, and your mockups or designs are not found | An older version made a second products folder when `2-PRODUCTS` was chosen as the products folder. **Ayarlar** points it out: press **Use the main folder**, then move the mockups and the designs not uploaded yet into the main folder's `1-MOCKUPS` and `2-PRODUCTS`. |
+| A digital product stops because it has nothing to deliver | A product folder needs a `dosyalar` (or `files`) subfolder with the buyer's files: at most 5, each up to 20 MB. A loose design is delivered as itself. |
 
 More detail is in [SETUP.md → Troubleshooting](SETUP.md#troubleshooting).
 
@@ -311,14 +428,14 @@ ilan seçersiniz. Sonrasında her seferinde tek bir iş kalır: tasarımlarını
 | Ekran | Ne işe yarar |
 |---|---|
 | **Panel** | Mağazanızın bugünü: aktif ilanlar, taslaklar, kargolanacak siparişler, ortalama SEO puanı, bu ayın geliri ve bugün kalan Etsy istek hakkı. |
-| **Tasarım Yükle** | PNG ya da JPG tasarımları veya hazır fotoğraf klasörlerini sürükleyip bırakın. Her tasarım altı adımdan geçer: mockup, Etsy aramasında araştırma, en fazla 140 karakterlik başlık, 13 etiket, Etsy kurallarına göre kontrol ve Etsy'de taslak. |
+| **Tasarım Yükle** | PNG ya da JPG tasarımları veya hazır fotoğraf klasörlerini sürükleyip bırakın. Her tasarım altı adımdan geçer: mockup, Etsy aramasında araştırma, en fazla 140 karakterlik başlık, 13 etiket, Etsy kurallarına göre kontrol ve Etsy'de taslak. Fiziksel ürünler de [dijital ürünler](#dijital-ürünler) de olur. |
 | **İlanlar** | Taslak ve yayındaki ilanlarınız. Bir taslağı açıp başlığını, etiketlerini ve açıklamasını kontrol edebilir, düzenleyebilir, sonra istediklerinizi yayınlayabilirsiniz. İlanları CSV olarak indirebilir ya da CSV'den güncelleyebilirsiniz. |
 | **SEO** | Her ilan 100 üzerinden puanlanır, en zayıf en üstte; neyin iyileşeceği yazar. Herhangi bir kelime için etiket araştırması da vardır. **Düzelt** önerilen değişikliği gönderir. |
 | **Siparişler** | Kargo bekleyen, kargoya verilen ve teslim edilen siparişler. Takip numaralarını yazın ya da CSV'den yükleyin, sonra Etsy'ye gönderin. |
 | **Kâr-Zarar** | Gelir, ödeme hesabınızdaki Etsy kesintileri, sizin girdiğiniz ürün ve kargo maliyetleri ve net kâr; ay ay, mağazanızın para biriminde ve TL olarak. |
 | **Pinterest** | İsteğe bağlı. Yayındaki ilanlarınızın pinlerini sıraya alın, kendi Pinterest hesabınızda günde birkaç tane paylaşılsın. |
 | **Mockuplar** | Sattığınız ürünlerin fotoğraflarını ekleyin, tasarımın her birinde nereye oturacağını (baskı alanı) ayarlayın. Tek ayar aynı ölçüdeki tüm mockup'lara uygulanabilir. |
-| **Şablon İlan** | Elle hazırladığınız bir ilanı seçin. Her yeni taslak onun fiyatını, kategorisini, kargo ve iade ayarlarını, açıklamasını ve varyasyonlarını kopyalar. |
+| **Şablon İlan** | Elle hazırladığınız bir ilanı seçin. Her yeni taslak onun fiyatını, kategorisini, kargo ve iade ayarlarını, açıklamasını ve varyasyonlarını, fiziksel mi dijital mi olduğunu da kopyalar. |
 | **Mağaza Bağlantısı** | Etsy uygulama anahtarlarınız ve mağazanızla bağlantı. |
 | **Ayarlar** | Dil (Türkçe ya da İngilizce), birden fazla mağaza, ürün klasörü, kurulum kontrol listesi, ekran görüntüsü için mağaza adını gizleme ve uygulamayı kapatma. |
 
@@ -328,6 +445,35 @@ e-posta atar) ve pin paylaşma. stallkit hiçbir ilanı silmez; Etsy'den bu izni
 
 Uygulama bilgisayarınızın dilini kullanır (Türkçe ya da İngilizce); **Ayarlar**'dan
 değiştirebilirsiniz.
+
+### Dijital ürünler
+
+Şablon ilanınız dijital bir ürünse (Etsy'deki türü *download* ya da *both*), her taslak
+aynı türde açılır ve görsellerinden sonra alıcının indireceği dosyalar eklenir:
+
+- **Tek başına bir tasarım** (`2-PRODUCTS` içindeki bir dosya) için alıcı tasarım
+  dosyasının kendisini indirir; mockup değil, orijinal dosya. Mockup'ları, fiziksel üründe
+  olduğu gibi ilanın fotoğrafları olur.
+- **Bir ürün klasörü** için alıcı klasörün içindeki `dosyalar` (ya da `files`) alt
+  klasöründeki dosyaları indirir: PDF, ZIP, PNG, JPG, SVG vb. Klasörün kendisindeki
+  fotoğraflar ilanın görselleri olur.
+
+```
+2-PRODUCTS/
+  gun-batimi-poster.png    bir ilan; alıcı bu dosyayı indirir
+  Planlayici 2027/         bir ilan
+    01.jpg  02.jpg         fotoğrafları, bu sırayla
+    dosyalar/
+      planlayici-a4.pdf    alıcının indirdikleri
+      planlayici-letter.pdf
+```
+
+Etsy bir ilana en fazla 5 dosya alır, her biri en fazla 20 MB; programlar ve betikler
+(`.exe`, `.bat` gibi) indirilebilir ürün olarak satılamaz. Yalnızca dijital olan bir
+şablon için kargo profili gerekmez. İndirilecek dosyası olmayan, fazla dosyası olan ya da
+dosyası çok büyük bir ürün, Etsy'ye ondan hiçbir şey gitmeden kendi mesajıyla durur.
+**Tasarım Yükle** ve **Şablon İlan**, şablonun hangi tür ürün açtığını ve alıcının ne
+alacağını gösterir.
 
 ## İndirme ve ilk açılış
 
@@ -453,6 +599,12 @@ Adres terminalde görünür; durdurmak için orada **Ctrl+C**'ye basın.
 | İkinci, üçüncü mağaza | `~/.stallkit/shops/<id>/` |
 | Ürün klasörü: `1-MOCKUPS`, `2-PRODUCTS` (tasarımlarınız), `3-DRAFTS`, `product.json` (şablon) | Masaüstünüzde `Etsy Studio` (diğer mağazalar için `Etsy Studio - <mağaza id>`). **Ayarlar**'dan değiştirebilirsiniz. |
 
+Ürün klasörü olarak `1-MOCKUPS`, `2-PRODUCTS` ya da `3-DRAFTS`'ı (veya bunların içindeki
+bir klasörü) seçerseniz stallkit, ilkinin içine ikinci bir ürün klasörü açmak yerine
+onların ait olduğu ana ürün klasörünü kullanır ve bunu söyler. Eski bir sürümün bu şekilde
+iç içe açtığı bir klasörü **Ayarlar** gösterir; **Ana klasörü kullan** düğmesiyle
+düzeltilir.
+
 İndirilen uygulama, `stallkit desktop` ve komut satırı aynı dosyaları okur; aralarında
 geçiş yapabilirsiniz. `~/.stallkit` başka yerde dursun isterseniz `STALLKIT_HOME`
 ortam değişkenini ayarlayın. Uygulamanın kaydı `~/.stallkit/logs/web-<tarih>.log`.
@@ -480,6 +632,17 @@ Zamanlayıcı'dan `stallkit.exe pinterest post`. Kurulum kontrol listesinin tama
 [SETUP.md](SETUP.md#kurulum-türkçe)'de; uygulamada **Ayarlar → Her şeyi kontrol et** aynı
 listeyi çalıştırır.
 
+0.3.0'da yeni:
+
+- `stallkit drop run` ve `stallkit drop auto`, **Mockuplar**'da açık olan mockup'ları o
+  sırayla kullanır (ilki ana görsel). `--mockups N` bu seçimin ilk N tanesini alır. Dijital
+  şablonlar burada da çalışır.
+- `drop` komutlarının `--path`'i ürün klasörünü ya da içindeki bir klasörü (örneğin
+  `2-PRODUCTS`) gösterebilir; çevresindeki ürün klasörü kullanılır.
+- `stallkit listings pull` artık hep boş kalan `views` sütununu yazmaz (Etsy API'sinde
+  görüntülenme sayısı yok); `stallkit seo suggest` başlık ve etiketleri düz metin olarak
+  gösterir (`Mom&#39;s Mug &amp; Gift` değil, `Mom's Mug & Gift`).
+
 ## Sık karşılaşılan hatalar
 
 | Ne görüyorsunuz | Ne yapmalı |
@@ -492,6 +655,8 @@ listeyi çalıştırır.
 | Takip numarası gönderilemiyor (403) | Etsy, yeni API anahtarlarıyla takip numarası eklemeyi Türkiye dahil birçok ülkede kısıtlıyor. Numarayı Etsy Mağaza Yöneticisi'nden girin. |
 | *"Bu sayfa yalnızca stallkit uygulamasından açılır"* | Adresi elle ya da bir yer işaretinden açtınız. stallkit'e yeniden çift tıklayın (ya da `stallkit desktop`); oturumlu bir sekme açar. |
 | *"stallkit'e ulaşılamıyor"* | Uygulama kapanmış, örneğin sekmesi kapatıldıktan sonra. Yeniden çift tıklayıp sayfayı yenileyin. |
+| `2-PRODUCTS`'ın içinde bir `2-PRODUCTS` daha var, mockup'larınız ya da tasarımlarınız bulunmuyor | Eski bir sürüm, ürün klasörü olarak `2-PRODUCTS` seçilince içine ikinci bir ürün klasörü açıyordu. **Ayarlar** bunu gösterir: **Ana klasörü kullan**'a basın, sonra mockup'ları ve henüz yüklenmemiş tasarımları ana klasördeki `1-MOCKUPS` ve `2-PRODUCTS`'a taşıyın. |
+| Dijital bir ürün, indirilecek dosyası olmadığı için duruyor | Ürün klasörünün içinde alıcının dosyalarını tutan bir `dosyalar` (ya da `files`) klasörü olmalı: en fazla 5 dosya, her biri en fazla 20 MB. Tek başına bir tasarım kendisi olarak teslim edilir. |
 
 Ayrıntılar: [SETUP.md → Sık karşılaşılan hatalar](SETUP.md#sık-karşılaşılan-hatalar).
 

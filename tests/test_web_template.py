@@ -177,6 +177,7 @@ def test_listings_are_mapped_for_the_page(web):
         "num_favorers": 48,
         "product_type": "T-shirts",  # the taxonomy leaf
         "has_variations": False,
+        "listing_type": "physical",
     }
     assert second["title"] == "But First Coffee Mug & Gift"  # entities decoded
     assert second["product_type"] == "Mugs" and second["price"] == 18.5
@@ -248,8 +249,9 @@ def test_preview_resolves_the_seven_fields(web):
     assert fields["when_made"]["value"] == {"code": "made_to_order"}
     assert fields["processing"]["value"] == {
         "readiness_state_id": 801, "readiness_state": "made_to_order", "min": 1, "max": 3,
-        "label": "1-3 days",
+        "label": "1-3 days", "digital": False,
     }
+    assert summary["listing_type"] == "physical"
     assert fields["returns"]["value"] == {
         "id": 701, "accepts_returns": True, "accepts_exchanges": True, "deadline": 30,
     }
@@ -291,9 +293,42 @@ def test_missing_fields_are_flagged(web):
 
 def test_a_digital_listing_needs_no_shipping(web):
     connected(web, [listing(1000004, "Printable", listing_type="download", shipping_profile_id=None)])
-    fields = fields_by_key(web.client.get("/api/template/preview/1000004").json())
+    summary = web.client.get("/api/template/preview/1000004").json()
+    fields = fields_by_key(summary)
+    assert summary["listing_type"] == "download"
     assert fields["shipping"]["ok"] is True and fields["shipping"]["required"] is False
     assert fields["shipping"]["value"]["digital"] is True
+    # Nothing is shipped, so there is no processing time to copy either.
+    assert fields["processing"]["ok"] is True and fields["processing"]["value"]["digital"] is True
+    assert summary["ok_count"] == summary["total"] == 7
+
+
+def test_a_digital_template_is_saved_as_digital_without_shipping(web):
+    record = listing(1000004, "Boho Planner Printable", listing_type="download",
+                     shipping_profile_id=None, readiness_state_id=None)
+    connected(web, [record])
+    listed = web.client.get("/api/template/listings").json()["items"][0]
+    assert listed["listing_type"] == "download"
+    saved = web.client.post("/api/template", json={"listing_id": 1000004}).json()["template"]
+    assert saved["listing_type"] == "download" and saved["ok_count"] == 7
+    data = json.loads(web.ctx.workspace().template_path.read_text(encoding="utf-8"))
+    assert data["fields"]["type"] == "download"
+    for name in ("shipping_profile_id", "readiness_state_id", "processing_min", "processing_max"):
+        assert name not in data["fields"]
+    current = web.client.get("/api/template").json()["template"]
+    assert current["listing_type"] == "download"
+    assert fields_by_key(current)["shipping"]["ok"] is True
+
+
+def test_a_physical_and_digital_listing_still_needs_its_shipping(web):
+    connected(web, [listing(1000006, "Mug plus printable", listing_type="both",
+                            shipping_profile_id=None)])
+    summary = web.client.get("/api/template/preview/1000006").json()
+    fields = fields_by_key(summary)
+    assert summary["listing_type"] == "both"
+    assert fields["shipping"]["ok"] is False and fields["shipping"]["required"] is True
+    assert fields["shipping"]["value"]["digital"] is False
+    assert fields["processing"]["value"]["digital"] is False
 
 
 def test_processing_falls_back_to_the_listing_days(web):

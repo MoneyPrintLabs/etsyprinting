@@ -31,7 +31,8 @@ export default {
       icon: "refresh",
       variant: "secondary",
       autoLoading: true,
-      onClick: () => Promise.all([loadOverview(), loadStats(true)]),
+      // The setup state too (keys, connection, folders): a problem fixed elsewhere clears here.
+      onClick: () => Promise.all([loadOverview(), loadStats(true), ctx.refreshStatus(true).catch(() => {})]),
     });
     ctx.setHeader({ actions: [refreshBtn] });
 

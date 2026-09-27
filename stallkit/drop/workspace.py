@@ -9,6 +9,7 @@ folder names itself in the order you use it.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,10 @@ MOCKUPS_DIR = "1-MOCKUPS"
 PRODUCTS_DIR = "2-PRODUCTS"
 DRAFTS_DIR = "3-DRAFTS"
 ARCHIVE_DIR = "archive"
+
+# The numbered folders a workspace makes inside itself. None of them is ever a workspace
+# of its own, and none of them is ever a product folder (see `root_for`).
+SUBFOLDER_NAMES = (MOCKUPS_DIR, PRODUCTS_DIR, DRAFTS_DIR)
 
 # Calibration previews go under 3-DRAFTS, never beside the templates: anything with an
 # image extension in 1-MOCKUPS *is* a mockup as far as mockup_files() is concerned, so a
@@ -180,6 +185,10 @@ class Workspace:
         """
         groups = [(path, []) for path in self.product_files()]
         for folder in sorted(self.products.iterdir(), key=lambda p: p.name.casefold()):
+            if _workspace_folder(folder):
+                # What a workspace chosen as 2-PRODUCTS left behind (2-PRODUCTS\1-MOCKUPS,
+                # 2-PRODUCTS\3-DRAFTS, ...): blank mockups and old renders, never a product.
+                continue
             if folder.is_dir() and not folder.is_symlink():
                 images = _images(folder)
                 if images:
@@ -216,6 +225,59 @@ def _images(folder: Path) -> list[Path]:
 
 def _natural_key(path: Path) -> list:
     return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", path.name.casefold())]
+
+
+def is_workspace(path: Path) -> bool:
+    """A folder that already holds a workspace: its 1-MOCKUPS and 2-PRODUCTS are there."""
+    try:
+        return (path / MOCKUPS_DIR).is_dir() and (path / PRODUCTS_DIR).is_dir()
+    except OSError:
+        return False
+
+
+def _named(path: Path, names: tuple[str, ...]) -> bool:
+    folded = path.name.casefold()
+    return any(folded == name.casefold() for name in names)
+
+
+def _workspace_folder(path: Path) -> bool:
+    """1-MOCKUPS / 2-PRODUCTS / 3-DRAFTS by name (any case), or a whole workspace."""
+    return _named(path, SUBFOLDER_NAMES) or is_workspace(path)
+
+
+def root_for(path: Path) -> Path:
+    """The workspace root to use when `path` is chosen as the workspace.
+
+    Choosing a folder of a workspace as the workspace itself would build a second one
+    inside the first: pick "Etsy Studio\\2-PRODUCTS" and its own 1-MOCKUPS, 2-PRODUCTS
+    and 3-DRAFTS appear in there, designs are looked for in "2-PRODUCTS\\2-PRODUCTS" and
+    the mockups already in "Etsy Studio\\1-MOCKUPS" are not found. So:
+
+    - a folder anywhere inside an existing workspace's own folders (2-PRODUCTS, a product
+      folder in it, 3-DRAFTS\\calibration, archive, ...) gives that workspace's root;
+      with workspaces nested by an older version, the outermost one;
+    - otherwise a folder named 1-MOCKUPS, 2-PRODUCTS or 3-DRAFTS (any case) gives its
+      parent, which becomes the workspace - unless the parent is a drive's root;
+    - anything else is used as it is. A workspace kept beside those folders ("Etsy
+      Studio\\Shop 2") or under a folder that happens to be one (a home folder someone
+      ran `drop init` in) is a workspace of its own.
+
+    `path` should be absolute. Only the folders on the way up are looked at; nothing is
+    created or moved.
+    """
+    path = Path(os.path.normpath(str(path)))
+    outer: Path | None = None
+    child = path
+    for parent in path.parents:
+        if _named(child, SUBFOLDER_NAMES + (ARCHIVE_DIR,)) and is_workspace(parent):
+            outer = parent  # keep going: the outermost one wins
+        child = parent
+    if outer is not None:
+        return outer
+    parent = path.parent
+    if _named(path, SUBFOLDER_NAMES) and parent != path and parent != Path(parent.anchor):
+        return parent
+    return path
 
 
 def desktop_dir() -> Path:

@@ -18,10 +18,14 @@ Endpoints:
          -> {"template": <summary>}  (writes product.json)
 
     <row> = {listing_id, title, price, currency, thumb_url, state, num_favorers,
-             product_type, has_variations}
+             product_type, has_variations, listing_type}
     <summary> = {listing_id, title, state, thumb_url, currency, has_variations,
-                 is_current, saved_at, ok_count, total, resolved,
+                 listing_type, is_current, saved_at, ok_count, total, resolved,
                  fields: [{key, ok, required, value}]}
+
+`listing_type` is Etsy's physical | download | both (ShopListing.listing_type), and the
+drafts keep it: a `download` template needs no shipping profile (its shipping row is
+ok with `digital: true`), `both` still ships and needs one.
 
 The seven `fields`, in display order, and their `value` shapes:
 
@@ -131,6 +135,11 @@ def _thumb_url(listing: dict[str, Any]) -> str | None:
         if url:
             return url
     return None
+
+
+def _listing_type(value: Any) -> str:
+    """physical | download | both; physical for anything else (Etsy's default)."""
+    return value if value in ("physical", "download", "both") else "physical"
 
 
 def _int(value: Any) -> int | None:
@@ -334,6 +343,8 @@ class TemplateApi:
     ) -> dict[str, Any]:
         """The seven rows for a set of template fields, names resolved where possible.
 
+        The listing's type (fields["type"]) comes along as `listing_type`.
+
         tolerant: never raise for an Etsy problem (the saved template must always
         show); names then stay unresolved.
         """
@@ -388,6 +399,7 @@ class TemplateApi:
             "thumb_url": thumb_url,
             "currency": currency,
             "has_variations": bool(has_variations),
+            "listing_type": _listing_type(fields.get("type")),
             "is_current": current == listing_id,
             "saved_at": None,
             "ok_count": ok_count,
@@ -480,6 +492,7 @@ class TemplateApi:
                 "num_favorers": _int(listing.get("num_favorers")) or 0,
                 "product_type": taxonomy[-1] if taxonomy else None,
                 "has_variations": bool(listing.get("has_variations")),
+                "listing_type": _listing_type(listing.get("listing_type")),
             })
         return {
             "items": items,
@@ -582,15 +595,17 @@ def _rows(
     high = _int(readiness.get("max_processing_days"))
     if low is None and high is None:
         low, high = _int(fields.get("processing_min")), _int(fields.get("processing_max"))
+    # A download is delivered by Etsy at once: there is no processing time to copy.
     rows.append(_row(
         "processing",
-        readiness_id is not None or low is not None or high is not None,
+        digital or readiness_id is not None or low is not None or high is not None,
         {
             "readiness_state_id": readiness_id,
             "readiness_state": readiness.get("readiness_state") or None,
             "min": low,
             "max": high,
             "label": readiness.get("processing_days_display_label") or None,
+            "digital": digital,
         },
         required=False,
     ))

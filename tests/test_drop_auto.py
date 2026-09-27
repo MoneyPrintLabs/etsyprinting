@@ -177,11 +177,165 @@ def test_invalid_template_aborts_whole_batch(studio):
     assert client.creates == 0
 
 
-def test_digital_template_is_not_uploaded_without_delivery_files(studio):
+class DigitalClient(Client):
+    """The auto Client, plus the download-file upload and a context manager (the CLI)."""
+
+    def __init__(self, ws, fail=None, product="mountain sunset shirt"):
+        super().__init__(ws, fail)
+        self.product = product
+        self.files = []
+        self.fields = []
+        self.order = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return None
+
+    def _entry(self):
+        return json.loads((self.ws.root / "upload-history.json").read_text())["123"][self.product]
+
+    def create_draft_listing(self, fields):
+        self.creates += 1
+        self.fields.append(dict(fields))
+        assert self._entry()["status"] == "pending"
+        return {"listing_id": 900}
+
+    def upload_listing_image(self, listing_id, image, *, rank):
+        assert self._entry()["listing_id"] == 900
+        self.order.append("image")
+        self.images.append((image.name, rank))
+        return {}
+
+    def upload_listing_file(self, listing_id, path, *, rank):
+        assert self._entry()["listing_id"] == 900
+        if self.fail == "file":
+            raise OSError("upload interrupted")
+        self.order.append("file")
+        self.files.append((path.name, rank))
+        return {"listing_file_id": 1, "listing_id": listing_id, "rank": rank}
+
+
+def _download_template(ws, template, listing_type="download"):
+    template.fields["type"] = listing_type
+    ws.write_template(template.to_dict())
+    return template
+
+
+def _downloads(ws, **files):
+    folder = ws.products / "mountain sunset shirt" / "dosyalar"
+    folder.mkdir()
+    for name, data in files.items():
+        (folder / name.replace("_", ".")).write_bytes(data)
+    return folder
+
+
+def test_a_digital_folder_without_dosyalar_stops_the_batch_before_any_upload(studio):
     ws, template = studio
-    template.fields["type"] = "download"
-    with pytest.raises(ValidationError, match="digital delivery"):
+    template = _download_template(ws, template)
+    client = DigitalClient(ws)
+    with pytest.raises(ValidationError, match="no 'dosyalar'"):
+        automation.run(ws, template, client=client)
+    assert client.creates == 0
+    with pytest.raises(ValidationError, match="Nothing uploaded"):
         automation.run(ws, template, dry_run=True)
+
+
+def test_drop_auto_attaches_a_digital_folders_files_after_its_photos(studio):
+    ws, template = studio
+    template = _download_template(ws, template)
+    _downloads(ws, planner_pdf=b"%PDF-1.4", extras_zip=b"PK")
+    client = DigitalClient(ws)
+    report = automation.run(ws, template, client=client)
+
+    result = report.uploaded.results[0]
+    assert result.status == "ok" and result.files_uploaded == 2
+    assert "2 download files attached" in result.message
+    assert client.fields[0]["type"] == "download"
+    assert client.images == [("1-front.png", 1), ("2-back.png", 2), ("10-detail.png", 3)]
+    assert client.files == [("extras.zip", 1), ("planner.pdf", 2)]
+    assert client.order == ["image"] * 3 + ["file"] * 2
+    entry = json.loads((ws.root / "upload-history.json").read_text())["123"][
+        "mountain sunset shirt"]
+    assert entry["status"] == "ok" and entry["files_uploaded"] == 2
+    assert report.prepared.ready[0].files[0].name == "extras.zip"
+
+
+def test_drop_auto_attaches_a_loose_designs_original_file(studio):
+    ws, template = studio
+    template = _download_template(ws, template)
+    shutil_rmtree(ws.products / "mountain sunset shirt")
+    Image.new("RGBA", (40, 40), (200, 60, 40, 255)).save(ws.products / "mountain sunset shirt.png")
+    client = DigitalClient(ws, product="mountain sunset shirt.png")
+    report = automation.run(ws, template, client=client)
+    assert report.uploaded.results[0].status == "ok"
+    assert client.files == [("mountain sunset shirt.png", 1)]
+    assert "shipping_profile_id" not in client.fields[0]
+
+
+def test_a_file_that_fails_after_the_create_is_partial_and_not_recreated(studio):
+    ws, template = studio
+    template = _download_template(ws, template)
+    _downloads(ws, planner_pdf=b"%PDF-1.4")
+    client = DigitalClient(ws, "file")
+    report = automation.run(ws, template, client=client)
+    result = report.uploaded.results[0]
+    assert result.status == "partial" and result.files_uploaded == 0
+    assert "file 1 of 1 (planner.pdf) failed" in result.message
+    entry = json.loads((ws.root / "upload-history.json").read_text())["123"][
+        "mountain sunset shirt"]
+    assert entry["status"] == "partial" and entry["files_uploaded"] == 0
+    assert entry["images_uploaded"] == 3
+    again = automation.run(ws, template, client=client)
+    assert client.creates == 1 and again.needs_review
+
+
+def test_a_both_template_keeps_its_shipping_and_attaches_files(studio):
+    ws, template = studio
+    template.fields["shipping_profile_id"] = 77
+    template = _download_template(ws, template, "both")
+    _downloads(ws, planner_pdf=b"%PDF-1.4")
+    client = DigitalClient(ws)
+    automation.run(ws, template, client=client)
+    assert client.fields[0]["type"] == "both" and client.fields[0]["shipping_profile_id"] == 77
+    assert client.files == [("planner.pdf", 1)]
+
+
+def test_cli_drop_auto_with_a_digital_template(studio, monkeypatch):
+    import stallkit.cli as cli
+
+    ws, template = studio
+    _download_template(ws, template)
+    _downloads(ws, planner_pdf=b"%PDF-1.4")
+    dry = CliRunner().invoke(app, ["drop", "auto", "--path", str(ws.root), "--dry-run"])
+    assert dry.exit_code == 0, dry.output
+    assert "1 file(s)" in dry.output and "1 validated" in dry.output
+
+    client = DigitalClient(ws)
+    monkeypatch.setattr(cli, "_client", lambda **_kw: client)
+    result = CliRunner().invoke(app, ["drop", "auto", "--path", str(ws.root)])
+    assert result.exit_code == 0, result.output
+    assert "Created 1 draft(s)" in result.output
+    assert client.files == [("planner.pdf", 1)] and client.fields[0]["type"] == "download"
+
+
+def test_cli_drop_auto_stops_a_digital_batch_with_a_missing_file(studio, monkeypatch):
+    import stallkit.cli as cli
+
+    ws, template = studio
+    _download_template(ws, template)
+    client = DigitalClient(ws)
+    monkeypatch.setattr(cli, "_client", lambda **_kw: client)
+    result = CliRunner().invoke(app, ["drop", "auto", "--path", str(ws.root)])
+    assert result.exit_code != 0 and isinstance(result.exception, ValidationError)
+    assert "no 'dosyalar'" in str(result.exception) and client.creates == 0
+
+
+def shutil_rmtree(path):
+    import shutil
+
+    shutil.rmtree(path)
 
 
 def _history(ws, entries):
@@ -645,3 +799,5 @@ def test_the_estimate_counts_variations_and_real_image_counts():
     assert pipeline.estimate_requests(8, 8, images=56, has_variations=True,
                                       template_inventory=True) == 89
     assert pipeline.estimate_requests(0, 0, images=0, template_inventory=True) == 0
+    # A digital run uploads every product's download files too, one request each.
+    assert pipeline.estimate_requests(8, 8, images=56, files=11) == 16 + 8 + 56 + 11

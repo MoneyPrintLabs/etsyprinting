@@ -18,16 +18,27 @@ The guarantees of `drop auto` hold here too, because they are the same code:
   draft is created;
 - nothing is ever published: rows never carry a listing_id or a state.
 
+The template's type decides what a draft is. `physical` as always; `download` and
+`both` drafts also get the product's download files, after its images: a loose design's
+ORIGINAL file, or every file in a folder product's `dosyalar` / `files` subfolder (the
+folder's own images stay its photos). Step 5 (check) finds and validates them before
+the product's draft is created; a missing, oversized or refused file, or more than Etsy
+takes, is that product's error (no_deliverable, too_many_files, file_type,
+file_too_large, file_empty, ...). A file that fails after the draft exists leaves the
+product `partial`, and the history records `files_uploaded` next to `images_uploaded`.
+
 `drop run` and `drop auto` are untouched; this module only reuses their pieces.
 
 Events: `on_event(name, step, status, data)`, always with `data["index"]`.
 - step in STEPS, status in running | done | warn | error; data may carry `images`
   (paths relative to the workspace root), `flat` (the one of them that is the plain
-  design, not a mockup), `mode`, `title`, `tags`, `sampled`,
-  `images_uploaded` / `images_total`, `listing_id`, `problem` ({code, message, ...}).
+  design, not a mockup), `mode`, `title`, `tags`, `sampled`, `deliverables` (the
+  download files, relative paths), `images_uploaded` / `images_total`,
+  `files_uploaded` / `files_total`, `listing_id`, `problem` ({code, message, ...}).
 - step "item": the product's outcome or waiting state; status in waiting | ok |
   partial | error | cancelled | checked (a dry run's good product).
-- step "batch" (name ""), status "running", once before any product: the plan.
+- step "batch" (name ""), status "running", once before any product: the plan, with
+  `listing_type` and each product's `files_total` (its download files, 0 if physical).
 """
 
 from __future__ import annotations
@@ -45,9 +56,9 @@ import httpx
 from PIL import Image
 
 from .. import csvio, listings
-from ..config import MAX_LISTING_IMAGES, MAX_TAGS
+from ..config import LISTING_TYPES, MAX_LISTING_IMAGES, MAX_TAGS
 from ..errors import AuthError, AuthUnreachable, EtsyApiError, ValidationError
-from ..listings import LISTING_COLUMNS
+from ..listings import DIGITAL_TYPES
 from ..seo import MarketReport
 from . import automation, catalog, generate, mockup, pipeline, seeds
 from .template import Template
@@ -65,7 +76,7 @@ QUEUED = "queued"
 ACTIVE = "running"
 WAITING = "waiting"  # steps 1-5 done, waiting for its turn to be created
 OK = "ok"
-PARTIAL = "partial"  # the draft exists, but an image or its variations did not make it
+PARTIAL = "partial"  # the draft exists, but an image, a file or its variations did not make it
 FAILED = "error"
 CANCELLED = "cancelled"
 CHECKED = "checked"  # a dry run's product that would be created
@@ -128,6 +139,8 @@ class StreamItem:
     error: Problem | None = None
     listing_id: int | None = None
     images_uploaded: int = 0
+    deliverables: list[Path] = field(default_factory=list)  # a digital product's downloads
+    files_uploaded: int = 0
     csv_data: dict[str, Any] | None = None  # the review.csv row
     row: dict[str, str] | None = None  # the same row as `listings push` reads it back
     csv_line: int | None = None
@@ -178,12 +191,15 @@ def check_template(template: Template) -> None:
     """Refuse a template that could not make a single draft, before any work starts.
 
     Every draft copies these fields, so a bad price or a missing category would fail
-    each product the same way, one after another. Raised as ValidationError.
+    each product the same way, one after another. Raised as ValidationError. Any of
+    Etsy's three types is fine: physical, download (no shipping profile needed) and
+    both; the download files come from each product (see the module doc).
     """
-    if template.fields.get("type", "physical") != "physical":
+    listing_type = template.fields.get("type") or "physical"
+    if listing_type not in LISTING_TYPES:
         raise ValidationError(
-            "Automatic upload currently supports physical products only; digital delivery "
-            "files are not supported."
+            f"The template listing's type {listing_type!r} is not one Etsy knows "
+            f"({', '.join(LISTING_TYPES)}). Pick the template listing again."
         )
     data: dict[str, Any] = dict(template.fields)
     data.update(listing_id="", title="Example", description="Example", tags=[], state="",
@@ -277,9 +293,10 @@ def _fatal(exc: BaseException | None) -> Problem | None:
 class _Recorder(automation.RecordedClient):
     """automation's history-writing client, plus what the stream needs to know."""
 
-    def __init__(self, client, path, state, entry, on_image) -> None:
+    def __init__(self, client, path, state, entry, on_image, on_file=None) -> None:
         super().__init__(client, path, state, entry)
         self.on_image = on_image
+        self.on_file = on_file
         self.created = False
         self.error: BaseException | None = None
 
@@ -308,6 +325,16 @@ class _Recorder(automation.RecordedClient):
         self.on_image(rank)
         return result
 
+    def upload_listing_file(self, listing_id, path, *, rank):
+        try:
+            result = super().upload_listing_file(listing_id, path, rank=rank)
+        except BaseException as exc:
+            self.error = exc
+            raise
+        if self.on_file is not None:
+            self.on_file(rank)
+        return result
+
 
 class _Run:
     def __init__(self, workspace: Workspace, template: Template, client: Any, *,
@@ -316,6 +343,12 @@ class _Run:
                  dry_run: bool) -> None:
         self.ws = workspace
         self.template = template
+        self.listing_type = template.fields.get("type") or "physical"
+        self.digital = self.listing_type in DIGITAL_TYPES
+        # The seller's own words about the product: what it is (a mug, a printable) and
+        # which claims are theirs to make (generate.hint_from).
+        self.hint = generate.hint_from(template.source_title, template.tags,
+                                       template.description)
         self.client = client
         self.mockups = mockups
         self.on_event = on_event
@@ -493,10 +526,13 @@ class _Run:
                 "batch": self.report.batch,
                 "out_dir": self._rel(self.out_dir) or self.out_dir.name,
                 "dry_run": self.dry_run,
+                "listing_type": self.listing_type,
                 "items": [
                     {"index": item.index, "name": item.name, "kind": item.kind,
                      "source": self._rel(item.photos[0] if item.photos else item.source),
-                     "files": len(item.photos) if item.photos else 1}
+                     "files": len(item.photos) if item.photos else 1,
+                     "files_total": (len(pipeline.deliverable_files(item.source))
+                                     if self.digital else 0)}
                     for item in self.report.items
                 ],
                 "already_done": list(self.report.already_done),
@@ -525,6 +561,9 @@ class _Run:
             "mode": item.mode,
             "listing_id": item.listing_id,
             "images_uploaded": item.images_uploaded,
+            "deliverables": [self._rel(p) for p in item.deliverables],
+            "files_uploaded": item.files_uploaded,
+            "files_total": len(item.deliverables),
             "warnings": [w.to_dict() for w in item.warnings],
             "problem": item.error.to_dict() if item.error else None,
         }
@@ -781,7 +820,7 @@ class _Run:
         """Steps 3 and 4: the title, then thirteen tags and the description."""
         assert item.seed is not None
         self._step(item, "title", RUNNING)
-        built = generate.build_title(item.seed, item.market)
+        built = generate.build_title(item.seed, item.market, product_hint=self.hint)
         # Etsy refuses a title with an emoji or a "$", or with a second "&" (see
         # pipeline.TITLE_ONCE); a file name can carry any of them into the concept.
         item.title = pipeline.clean_title(built)
@@ -800,7 +839,7 @@ class _Run:
 
         self._check_halt()
         self._step(item, "tags", RUNNING)
-        tags = generate.build_tags(item.seed, item.market)
+        tags = generate.build_tags(item.seed, item.market, product_hint=self.hint)
         if len(tags) < MAX_TAGS and self.template.tags:
             for raw in self.template.tags:
                 if len(tags) >= MAX_TAGS:
@@ -821,13 +860,26 @@ class _Run:
             self._step(item, "tags", DONE, tags=list(item.tags))
 
     def _check(self, item: StreamItem) -> None:
-        """Step 5: the row `listings push` will send, validated, and every image decoded."""
+        """Step 5: the row `listings push` will send, validated, and every image decoded.
+
+        A digital product's download files are found and checked here too, before its
+        draft is created: none, too many, a program, an empty or an oversized file is
+        this product's error, with the file's own code.
+        """
         assert item.seed is not None
         self._step(item, "check", RUNNING)
+        if self.digital:
+            files, issue = pipeline.deliverables(item.source)
+            if issue is not None:
+                code, message, params = issue
+                raise _ProductFailed(Problem(code, message, "check", dict(params)))
+            with self._lock:
+                item.deliverables = files
         drop_row = pipeline.DropRow(
             source=item.source, seed=item.seed, title=item.title, tags=list(item.tags),
             description=item.description, images=list(item.images),
             evidence=list(item.evidence), warnings=[w.message for w in item.warnings],
+            files=list(item.deliverables),
         )
         data = pipeline._to_csv_row(drop_row, self.template, self.out_dir)
         row = _as_strings(data)
@@ -839,7 +891,12 @@ class _Run:
             raise _ProductFailed(Problem("invalid_title", "; ".join(title_problems), "check"))
         warned = False
         for message in prepared.result.warnings:
-            code = "no_shipping_profile" if "shipping_profile_id" in message else "check_warning"
+            if message.startswith("no shipping_profile_id"):
+                code = "no_shipping_profile"
+            elif message.startswith("type is download, so nothing is shipped"):
+                code = "not_shipped"  # a digital template with parcel values left in it
+            else:
+                code = "check_warning"
             self._warn(item, code, message, "check")
             warned = True
         # Image.verify() is a no-op for JPEG; load() is a real decode. A file cut short by
@@ -856,7 +913,8 @@ class _Run:
         with self._lock:
             item.csv_data = data
             item.row = row
-        self._step(item, "check", WARN if warned else DONE)
+        self._step(item, "check", WARN if warned else DONE,
+                   deliverables=[self._rel(p) for p in item.deliverables])
 
     # --- step 6 (the calling thread) ------------------------------------------------------
 
@@ -871,7 +929,7 @@ class _Run:
             try:
                 csvio.write_rows(
                     self.csv_path, [item.csv_data for item in rows],  # type: ignore[misc]
-                    columns=LISTING_COLUMNS + pipeline.REVIEW_EXTRA_COLUMNS,
+                    columns=pipeline.REVIEW_COLUMNS,
                 )
                 self.report.csv_path = self.csv_path
             except OSError:
@@ -886,9 +944,11 @@ class _Run:
             return True
         self._write_review()
         total = len(item.images)
-        self._step(item, "draft", RUNNING, images_uploaded=0, images_total=total)
+        files_total = len(item.deliverables)
+        counts = {"images_total": total, "files_total": files_total}
+        self._step(item, "draft", RUNNING, images_uploaded=0, files_uploaded=0, **counts)
         entry = {"status": "pending", "listing_id": None, "images_uploaded": 0,
-                 "review_csv": str(self.csv_path)}
+                 "files_uploaded": 0, "review_csv": str(self.csv_path)}
         self.history[item.name] = entry
         # Persist intent BEFORE the request, including ambiguous network failures. A
         # history that cannot be saved stops the whole run (ValidationError).
@@ -896,9 +956,16 @@ class _Run:
 
         def on_image(rank: int) -> None:
             item.images_uploaded = rank
-            self._step(item, "draft", RUNNING, images_uploaded=rank, images_total=total)
+            self._step(item, "draft", RUNNING, images_uploaded=rank, files_uploaded=0,
+                       **counts)
 
-        recorder = _Recorder(self.client, self.history_file, self.state, entry, on_image)
+        def on_file(rank: int) -> None:
+            item.files_uploaded = rank
+            self._step(item, "draft", RUNNING, images_uploaded=item.images_uploaded,
+                       files_uploaded=rank, **counts)
+
+        recorder = _Recorder(self.client, self.history_file, self.state, entry, on_image,
+                             on_file)
         try:
             result = listings.push(recorder, [item.row], base_dir=self.out_dir,
                                    inventory=self.inventory).results[0]
@@ -906,9 +973,12 @@ class _Run:
             # push() lets a failed token refresh through (it is raised before a request
             # is sent). Before the create nothing exists; after it, the draft does.
             recorder.error = exc
+            # What went up before it is what the history recorded along the way.
             result = listings.RowResult(row=item.csv_line or 2, action="create",
                                         status="partial" if recorder.created else "error",
-                                        listing_id=entry.get("listing_id"), message=str(exc))
+                                        listing_id=entry.get("listing_id"), message=str(exc),
+                                        images_uploaded=entry.get("images_uploaded", 0),
+                                        files_uploaded=entry.get("files_uploaded", 0))
         except ValidationError:
             raise  # the history could not be saved: stop everything
         except Exception as exc:  # noqa: BLE001 — unknown state: keep the entry, stop the run
@@ -922,7 +992,9 @@ class _Run:
         result.row = item.csv_line or result.row
         item.listing_id = result.listing_id or entry.get("listing_id")
         item.images_uploaded = result.images_uploaded
-        entry.update(status=result.status, message=result.message)
+        item.files_uploaded = result.files_uploaded
+        entry.update(status=result.status, message=result.message,
+                     files_uploaded=result.files_uploaded)
         refused = (result.status == "error" and not recorder.created
                    and _never_arrived(recorder.error))
         if refused:
@@ -934,15 +1006,24 @@ class _Run:
         if fatal is not None and self.report.stopped is None:
             self.report.stopped = fatal
 
+        uploaded = {"images_uploaded": item.images_uploaded,
+                    "files_uploaded": item.files_uploaded, **counts}
         if result.status == "ok":
-            self._step(item, "draft", DONE, listing_id=item.listing_id,
-                       images_uploaded=item.images_uploaded, images_total=total)
+            self._step(item, "draft", DONE, listing_id=item.listing_id, **uploaded)
             self._finish(item, OK)
             return True
         if result.status == "partial":
-            self._warn(item, "partial", result.message, "draft", listing_id=item.listing_id)
-            self._step(item, "draft", WARN, listing_id=item.listing_id,
-                       images_uploaded=item.images_uploaded, images_total=total)
+            if files_total and item.images_uploaded >= total and item.files_uploaded < files_total:
+                # Every photo is on the draft; a download file is not. Said as such: the
+                # draft cannot be published until the seller adds the file in Etsy.
+                missing = item.deliverables[item.files_uploaded]
+                self._warn(item, "partial_files", result.message, "draft",
+                           listing_id=item.listing_id, n=item.files_uploaded,
+                           total=files_total, name=missing.name)
+            else:
+                self._warn(item, "partial", result.message, "draft",
+                           listing_id=item.listing_id)
+            self._step(item, "draft", WARN, listing_id=item.listing_id, **uploaded)
             self._finish(item, PARTIAL)
             return False
         code = "draft_refused" if refused else "draft_uncertain"
@@ -971,6 +1052,8 @@ def item_summary(item: StreamItem, root: Path) -> dict[str, Any]:
         "images": [rel(p) for p in item.images],
         "flat": rel(item.flat) if item.flat is not None else None,
         "listing_id": item.listing_id,
+        "deliverables": [rel(p) for p in item.deliverables],
+        "files_uploaded": item.files_uploaded,
         "warnings": [w.to_dict() for w in item.warnings],
         "error": item.error.to_dict() if item.error else None,
     }

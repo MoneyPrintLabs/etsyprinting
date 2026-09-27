@@ -5,6 +5,22 @@ Ayarlar. Connecting a shop now shows the callback address with a copy button and
 Etsy's error messages. The print-area editor and the choice of mockups for drafts are
 easy to find.
 
+**Digital products work.** If your template listing is a digital download, every draft is
+made as one and gets the buyer's files: a loose design is delivered as the design file
+itself, and a product folder delivers the files in its `dosyalar` (or `files`) subfolder
+(at most 5 files per listing, 20 MB each). A download-only template needs no shipping
+profile.
+
+**Choosing `2-PRODUCTS` as the products folder** (or `1-MOCKUPS`, `3-DRAFTS`, or a folder
+inside them) no longer makes a second products folder inside the first: the main one is
+used, and **Ayarlar** says so. If 0.2.0 already nested one, **Ayarlar** shows it with a
+**Use the main folder** button.
+
+**Command line:** `drop run` and `drop auto` use the mockups chosen on **Mockuplar**, in
+their order (`--mockups N` = the first N of them), and their `--path` may point inside the
+products folder. `listings pull` no longer writes the empty `views` column, and
+`seo suggest` shows plain text.
+
 ## Download
 
 | Your computer | File |
@@ -49,6 +65,11 @@ then `stallkit desktop`. See the
   many countries. Enter tracking in Shop Manager.
 - **"This page only opens from the stallkit app"** or **"Cannot reach stallkit"**:
   double-click stallkit again. It opens a new tab, in the running app or in a fresh one.
+- **A `2-PRODUCTS` inside `2-PRODUCTS`, mockups or designs not found**: press **Use the
+  main folder** in **Ayarlar → Klasörler**, then move the mockups and the designs not
+  uploaded yet into the main folder's `1-MOCKUPS` and `2-PRODUCTS`.
+- **A digital product stops before its draft**: put the buyer's files in a `dosyalar` (or
+  `files`) folder inside the product folder, at most 5 files of 20 MB each.
 
 ---
 
@@ -58,6 +79,22 @@ Pinterest, Mockuplar, Şablon İlan, Mağaza Bağlantısı ve Ayarlar. Mağaza b
 geri dönüş adresi kopyalama düğmesiyle gösteriliyor ve Etsy'nin hata mesajları
 açıklanıyor. Baskı alanı ayarı ve taslaklara girecek mockup seçimi artık kolayca
 bulunuyor.
+
+**Dijital ürünler destekleniyor.** Şablon ilanınız dijital bir ürünse her taslak dijital
+açılır ve alıcının dosyaları eklenir: tek başına bir tasarımda tasarım dosyasının kendisi,
+bir ürün klasöründe ise içindeki `dosyalar` (ya da `files`) alt klasöründeki dosyalar
+(ilan başına en fazla 5 dosya, her biri en fazla 20 MB). Yalnızca dijital bir şablon için
+kargo profili gerekmez.
+
+**Ürün klasörü olarak `2-PRODUCTS`'ı** (ya da `1-MOCKUPS`, `3-DRAFTS` veya içlerindeki bir
+klasörü) seçmek artık ilkinin içine ikinci bir ürün klasörü açmıyor: ana klasör kullanılıyor
+ve **Ayarlar** bunu söylüyor. 0.2.0 zaten iç içe bir klasör açtıysa **Ayarlar** onu
+**Ana klasörü kullan** düğmesiyle gösteriyor.
+
+**Komut satırı:** `drop run` ve `drop auto`, **Mockuplar**'da seçilen mockup'ları o
+sırayla kullanıyor (`--mockups N` = bunların ilk N tanesi); `--path` ürün klasörünün
+içini gösterebiliyor. `listings pull` artık boş `views` sütununu yazmıyor, `seo suggest`
+düz metin gösteriyor.
 
 ## İndir (Türkçe)
 
@@ -102,6 +139,10 @@ Geri dönüş adresi Etsy uygulamanızda kayıtlı değil. <https://www.etsy.com
 **Takip numarası yüklenmiyor (403)**: Etsy, 2024'ten beri yeni API anahtarlarıyla takip numarası eklemeyi Türkiye dahil birçok ülkede kısıtlıyor. Takip numaralarını Etsy Mağaza Yöneticisi'nden girin.
 
 **"Bu sayfa yalnızca stallkit uygulamasından açılır"** ya da **"stallkit'e ulaşılamıyor"**: stallkit'e yeniden çift tıklayın. Yeni bir sekme açar; uygulama çalışıyorsa onda, kapanmışsa yeniden başlatarak.
+
+**`2-PRODUCTS`'ın içinde bir `2-PRODUCTS` daha var, mockup'lar ya da tasarımlar bulunmuyor**: **Ayarlar → Klasörler**'de **Ana klasörü kullan**'a basın, sonra mockup'ları ve henüz yüklenmemiş tasarımları ana klasördeki `1-MOCKUPS` ve `2-PRODUCTS`'a taşıyın.
+
+**Dijital bir ürün taslağa geçmeden duruyor**: Alıcının dosyalarını ürün klasörünün içindeki bir `dosyalar` (ya da `files`) klasörüne koyun; en fazla 5 dosya, her biri en fazla 20 MB.
 
 ---
 

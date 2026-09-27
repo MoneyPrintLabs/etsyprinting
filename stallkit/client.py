@@ -573,6 +573,40 @@ class EtsyClient:
             files={**files, **{k: (None, v) for k, v in data.items()}},
         )
 
+    def upload_listing_file(
+        self, listing_id: int, path: Path, *, rank: int = 1, name: str | None = None
+    ) -> dict[str, Any]:
+        """uploadListingFile (listings_w): attach one file a buyer downloads.
+
+        OAS: POST /shops/{shop_id}/listings/{listing_id}/files, multipart/form-data with
+        `file` (binary), `name` (the file name string) and `rank` (positive, default 1);
+        the other form, `listing_file_id` of an existing file, is never used here. The
+        answer (201) is a ShopListingFile: listing_file_id, listing_id, rank, filename,
+        filesize, size_bytes, filetype, create_timestamp.
+
+        The OAS warns that attaching a file to a PHYSICAL listing converts it into a
+        digital one and removes its shipping costs and variations, so stallkit only
+        calls this on a draft it just created as `download` or `both`
+        (listings.prepare refuses files on any other row). Like an image, the file is
+        checked before it is read: a refusal after the draft exists can only leave the
+        product "partial".
+        """
+        issue = file_issue(path)
+        if issue is not None:
+            raise ValidationError(issue[1])
+        filename = (name or path.name).strip() or path.name
+        with path.open("rb") as handle:
+            data = handle.read()
+        return self.request(
+            "POST",
+            f"/shops/{self.shop_id()}/listings/{listing_id}/files",
+            files={
+                "file": (filename, data, _file_mime(path)),
+                "name": (None, filename),
+                "rank": (None, str(max(1, int(rank)))),
+            },
+        )
+
     def receipts(self, *, max_items: int | None = None, **filters: Any) -> Iterator[dict[str, Any]]:
         for receipt in self.paginate(
             f"/shops/{self.shop_id()}/receipts", params=filters, max_items=max_items
@@ -768,3 +802,108 @@ def _mime_for(path: Path) -> str:
     if problem:
         raise ValidationError(problem)
     return _MIME[path.suffix.lower()]
+
+
+# --- digital files (uploadListingFile) ---------------------------------------------------
+#
+# The OAS gives uploadListingFile no limits at all: no size, no count, no file types
+# (checked in the saved spec: only `file`, `name`, `rank` and `listing_file_id`). The two
+# numbers below are Etsy's seller help for digital items — at most five files per
+# listing, each at most 20 MB — and are enforced here, before the draft exists, because
+# a refusal after the create can only leave the product "partial". Not verifiable
+# against the spec; if Etsy's limits differ it will say so and the product is partial.
+MAX_LISTING_FILES = 5
+MAX_FILE_BYTES = 20 * 1024 * 1024
+
+# Types are not restricted by the spec either, so any file a buyer can open goes: PDF,
+# ZIP, PNG, JPG, SVG, EPS, DXF, fonts, presets... What is refused is what should never be
+# sold as a download because it runs when double-clicked (and marketplaces refuse it):
+# programs, installers and scripts. A file with no extension is refused too — neither
+# Etsy nor the buyer's computer could tell what it is.
+BLOCKED_FILE_SUFFIXES = frozenset({
+    ".exe", ".msi", ".bat", ".cmd", ".com", ".scr", ".pif", ".cpl", ".msc", ".hta",
+    ".ps1", ".vbs", ".vbe", ".jse", ".wsf", ".wsh", ".reg", ".lnk", ".url", ".dll",
+    ".sys", ".jar", ".apk", ".app", ".dmg", ".pkg", ".sh", ".command",
+})
+
+# Sent as the file part's Content-Type; anything else goes as application/octet-stream
+# (Etsy works the type out itself and reports it back as `filetype`).
+_FILE_MIME = {
+    ".pdf": "application/pdf",
+    ".zip": "application/zip",
+    ".rar": "application/vnd.rar",
+    ".7z": "application/x-7z-compressed",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+    ".svg": "image/svg+xml",
+    ".eps": "application/postscript",
+    ".ai": "application/postscript",
+    ".psd": "image/vnd.adobe.photoshop",
+    ".dxf": "image/vnd.dxf",
+    ".txt": "text/plain",
+    ".csv": "text/csv",
+    ".epub": "application/epub+zip",
+    ".doc": "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xls": "application/vnd.ms-excel",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".ppt": "application/vnd.ms-powerpoint",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
+    ".ttf": "font/ttf",
+    ".otf": "font/otf",
+}
+
+
+def file_issue(path: Path) -> tuple[str, str, dict[str, Any]] | None:
+    """Why this file cannot be a listing's download: (code, message, params), or None.
+
+    Codes: file_type (a program or no extension), file_missing, file_unreadable,
+    file_empty, file_too_large. Like image_problem(): the file name and size only.
+    """
+    name = path.name
+    suffix = path.suffix.lower()
+    if not suffix or suffix in BLOCKED_FILE_SUFFIXES:
+        return (
+            "file_type",
+            f"{name}: {'a file with no extension' if not suffix else suffix + ' files'} "
+            "cannot be sold as a download — use PDF, ZIP, PNG, JPG, SVG or another "
+            "document or image type",
+            {"name": name, "ext": suffix},
+        )
+    try:
+        if not path.is_file():
+            return ("file_missing", f"{name} was not found", {"name": name})
+        size = path.stat().st_size
+    except OSError as exc:
+        return ("file_unreadable", f"{name}: cannot be read ({exc})", {"name": name})
+    if size == 0:
+        return ("file_empty", f"{name} is empty", {"name": name})
+    if size > MAX_FILE_BYTES:
+        mb = round(size / 1024 / 1024, 1)
+        return (
+            "file_too_large",
+            f"{name} is {mb}MB and Etsy's limit for a digital file is "
+            f"{MAX_FILE_BYTES // 1024 // 1024}MB — make it smaller or split it",
+            {"name": name, "mb": mb, "max_mb": MAX_FILE_BYTES // 1024 // 1024},
+        )
+    return None
+
+
+def file_problem(path: Path) -> str | None:
+    """file_issue()'s message only: why Etsy would refuse this download, or None."""
+    issue = file_issue(path)
+    return issue[1] if issue is not None else None
+
+
+def _file_mime(path: Path) -> str:
+    return _FILE_MIME.get(path.suffix.lower(), "application/octet-stream")

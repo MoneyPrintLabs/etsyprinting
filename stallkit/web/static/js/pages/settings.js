@@ -227,6 +227,17 @@ export default {
         ),
       ];
       if (editingFolder) kids.push(folderForm(ws));
+      else if (ws.nested_in) {
+        // Saved by an older version: a folder of another products folder (2-PRODUCTS, ...).
+        kids.push(
+          infoNote({
+            tone: "warning",
+            icon: "alert",
+            text: t("folders.nested", { root: ws.nested_in }),
+            action: button({ label: t("folders.use_parent"), size: "sm", autoLoading: true, onClick: () => useFolder(ws.nested_in).catch(toastError) }),
+          }),
+        );
+      }
       kids.push(
         h(
           "ul",
@@ -259,11 +270,7 @@ export default {
         f.setError("");
         save.setLoading(true);
         try {
-          const res = await ctx.api.post("/api/settings/workspace", { path });
-          data.settings.workspace = res.workspace;
-          editingFolder = false;
-          ctx.toast({ tone: "success", title: t("folders.saved"), message: res.workspace.root });
-          renderFolders();
+          await useFolder(path);
         } catch (err) {
           f.setError(ctx.api.errorText(err, t));
         } finally {
@@ -298,6 +305,22 @@ export default {
           ws.custom ? button({ label: t("folders.reset"), icon: "undo", size: "sm", variant: "ghost", onClick: () => submit("") }) : null,
         ),
       );
+    }
+
+    /** Save the products folder ("" = the default); throws the API error for the caller to show. */
+    async function useFolder(path) {
+      const res = await ctx.api.post("/api/settings/workspace", { path });
+      data.settings.workspace = res.workspace;
+      editingFolder = false;
+      renderFolders();
+      const adj = res.adjusted;
+      if (adj) {
+        // A folder of a products folder was picked: the server kept the main one instead.
+        const name = adj.chosen.split(/[\\/]/).filter(Boolean).pop() || adj.chosen;
+        ctx.toast({ tone: "info", title: t("folders.adjusted_title"), message: t("folders.adjusted_msg", { name, root: adj.root }), timeout: 9000 });
+      } else {
+        ctx.toast({ tone: "success", title: t("folders.saved"), message: res.workspace.root });
+      }
     }
 
     async function openFolder(which) {

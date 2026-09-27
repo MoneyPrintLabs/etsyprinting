@@ -392,6 +392,12 @@ def still_waiting(receipt: Any) -> bool:
     )
 
 
+def _ship_queue(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """What a send holds, as its job state keeps it for a page that comes back."""
+    return [{"receipt_id": int(row["receipt_id"]), "carrier_name": row["carrier_name"],
+             "tracking_code": row["tracking_code"]} for row in rows]
+
+
 # --- the endpoints --------------------------------------------------------------------------
 
 
@@ -763,6 +769,9 @@ class OrdersApi:
 
         job = ctx.jobs.start("orders", "orders:job.ship", work, params={"n": len(rows)},
                              cancellable=True)
+        # Saved now, not only once the job runs: a send still queued behind another write
+        # job is found again, rows and all, by a page that comes back to it.
+        job.set_state(queue=_ship_queue(rows), total=len(rows), country=country)
         return job.summary()
 
     def _run_ship(self, job: Any, rows: list[dict[str, Any]], country: str) -> dict[str, Any]:
@@ -780,9 +789,7 @@ class OrdersApi:
         stopped: str | None = None
         used: dict[str, int] = {}
         # What is being sent, for a page that comes back while the job runs.
-        queue = [{"receipt_id": int(row["receipt_id"]), "carrier_name": row["carrier_name"],
-                  "tracking_code": row["tracking_code"]} for row in rows]
-        job.set_state(rows=[], total=total, country=country, queue=queue)
+        job.set_state(rows=[], total=total, country=country, queue=_ship_queue(rows))
         try:
             for n, row in enumerate(rows, 1):
                 job.check_cancel()

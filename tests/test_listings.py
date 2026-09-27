@@ -2,8 +2,8 @@ import pytest
 
 from stallkit.client import encode_form
 from stallkit.csvio import as_float, split_multi
-from stallkit.errors import ValidationError
-from stallkit.listings import bad_tag_chars, build_payload, prepare, validate_tags
+from stallkit.errors import EtsyApiError, ValidationError
+from stallkit.listings import bad_tag_chars, build_payload, prepare, push, validate_tags
 
 BASE_ROW = {
     "title": "Handmade Ceramic Mug",
@@ -281,3 +281,151 @@ def test_pull_has_no_views_column():
 
     row = pull(Source())[0]
     assert "views" not in row and row["num_favorers"] == 3
+
+
+# --- digital listings (type download / both) --------------------------------------------
+
+
+def test_a_download_create_needs_no_shipping_and_sends_none(tmp_path):
+    # createDraftListing (OAS): shipping_profile_id is required "when listing type is
+    # physical"; a processing profile only exists for physical listings.
+    row = dict(BASE_ROW, type="download", readiness_state_id="801", item_weight="2",
+               item_weight_unit="oz")
+    warnings: list[str] = []
+    payload = build_payload(row, is_update=False, warnings=warnings)
+    assert payload["type"] == "download"
+    for name in ("shipping_profile_id", "readiness_state_id", "item_weight", "item_weight_unit"):
+        assert name not in payload
+    assert warnings == [
+        "type is download, so nothing is shipped: shipping_profile_id, readiness_state_id, "
+        "item_weight, item_weight_unit not sent"
+    ]
+
+
+def test_both_keeps_the_physical_rules():
+    row = dict(BASE_ROW, type="both")
+    del row["shipping_profile_id"]
+    warnings: list[str] = []
+    payload = build_payload(row, is_update=False, warnings=warnings)
+    assert payload["type"] == "both"
+    assert any(w.startswith("no shipping_profile_id") for w in warnings)
+    kept = build_payload(dict(BASE_ROW, type="both"), is_update=False)
+    assert kept["shipping_profile_id"] == 12345
+
+
+@pytest.mark.parametrize("title, why", [
+    ("Salt & Pepper & Co Mug", "'&' 2 times"),
+    ("Sunset Mug \U0001f338", "characters Etsy does not accept"),
+    ("Mug for $5", "characters Etsy does not accept"),
+    ("50% off, 100% cotton", "'%' 2 times"),
+])
+def test_a_csv_title_is_held_to_etsys_character_rule(title, why):
+    with pytest.raises(ValidationError, match=why):
+        build_payload(dict(BASE_ROW, title=title), is_update=False)
+    with pytest.raises(ValidationError, match=why):
+        build_payload({"title": title}, is_update=True)
+
+
+def test_titles_etsy_accepts_still_pass():
+    for title in ("Mom's Mug | Tea & Coffee ™", "Çiçekli Kupa – Hediye: 11oz"):
+        assert build_payload(dict(BASE_ROW, title=title), is_update=False)["title"] == title
+
+
+def _files_row(tmp_path, *names, listing_type="download", **extra):
+    for name in names:
+        (tmp_path / name).write_bytes(b"%PDF-1.4 " + name.encode())
+    return dict(BASE_ROW, type=listing_type, files="|".join(names), **extra)
+
+
+def test_the_files_column_goes_with_a_digital_create(tmp_path):
+    row = _files_row(tmp_path, "planner.pdf", "extras.zip")
+    item = prepare([row], base_dir=tmp_path)[0]
+    assert not item.result.failed
+    assert [p.name for p in item.file_paths] == ["planner.pdf", "extras.zip"]
+    both = prepare([_files_row(tmp_path, "planner.pdf", listing_type="both")], base_dir=tmp_path)
+    assert [p.name for p in both[0].file_paths] == ["planner.pdf"]
+
+
+def test_files_on_a_physical_row_are_refused(tmp_path):
+    # Attaching a file to a physical listing turns it digital and drops its shipping and
+    # variations (OAS uploadListingFile), so it is never done by accident.
+    item = prepare([_files_row(tmp_path, "planner.pdf", listing_type="physical")],
+                   base_dir=tmp_path)[0]
+    assert item.result.failed and "type is physical" in item.result.message
+
+
+def test_files_on_an_update_row_are_left_out_with_a_warning(tmp_path):
+    row = _files_row(tmp_path, "planner.pdf", listing_id="1000001")
+    item = prepare([row], base_dir=tmp_path)[0]
+    assert not item.result.failed and item.file_paths == []
+    assert any("only attached to new drafts" in w for w in item.result.warnings)
+
+
+def test_a_download_without_files_is_created_with_a_warning(tmp_path):
+    item = prepare([dict(BASE_ROW, type="download")], base_dir=tmp_path)[0]
+    assert not item.result.failed and item.file_paths == []
+    assert any("no files are given" in w for w in item.result.warnings)
+
+
+def test_files_etsy_would_refuse_fail_the_row_before_anything_is_sent(tmp_path, monkeypatch):
+    from stallkit import client as client_mod
+
+    many = _files_row(tmp_path, *(f"page-{n}.pdf" for n in range(6)))
+    assert "Etsy allows 5" in prepare([many], base_dir=tmp_path)[0].result.message
+    missing = dict(BASE_ROW, type="download", files="gone.pdf")
+    assert "file not found" in prepare([missing], base_dir=tmp_path)[0].result.message
+    program = _files_row(tmp_path, "setup.exe")
+    assert "cannot be sold as a download" in prepare([program], base_dir=tmp_path)[0].result.message
+    monkeypatch.setattr(client_mod, "MAX_FILE_BYTES", 5)
+    big = _files_row(tmp_path, "planner.pdf")
+    assert "limit for a digital file" in prepare([big], base_dir=tmp_path)[0].result.message
+
+
+class FileClient:
+    def __init__(self, fail_file=None):
+        self.calls = []
+        self.fail_file = fail_file
+
+    def create_draft_listing(self, fields):
+        self.calls.append(("create", fields["type"]))
+        return {"listing_id": 1000001}
+
+    def upload_listing_image(self, listing_id, image, *, rank):
+        self.calls.append(("image", image.name, rank))
+
+    def upload_listing_file(self, listing_id, path, *, rank):
+        if path.name == self.fail_file:
+            raise EtsyApiError(400, "refused", method="POST", path="/files")
+        self.calls.append(("file", path.name, rank))
+
+
+def test_push_uploads_the_files_after_the_images_in_order(tmp_path):
+    (tmp_path / "front.jpg").write_bytes(b"x")
+    row = _files_row(tmp_path, "planner.pdf", "extras.zip", images="front.jpg")
+    client = FileClient()
+    report = push(client, [row], base_dir=tmp_path, upload_images=True)
+    result = report.results[0]
+    assert result.status == "ok" and result.files_uploaded == 2 and report.files == 2
+    assert result.message == "created as draft; 2 download files attached"
+    assert client.calls == [("create", "download"), ("image", "front.jpg", 1),
+                            ("file", "planner.pdf", 1), ("file", "extras.zip", 2)]
+
+
+def test_a_file_etsy_refuses_after_the_create_is_partial(tmp_path):
+    row = _files_row(tmp_path, "planner.pdf", "extras.zip")
+    client = FileClient(fail_file="extras.zip")
+    result = push(client, [row], base_dir=tmp_path).results[0]
+    assert result.status == "partial" and result.files_uploaded == 1
+    assert "file 2 of 2 (extras.zip) failed" in result.message
+    assert "add the download file in Etsy" in result.message
+
+
+def test_a_dry_run_counts_the_files(tmp_path):
+    report = push(None, [_files_row(tmp_path, "planner.pdf")], base_dir=tmp_path, dry_run=True)
+    assert report.results[0].message.endswith("0 image(s), 1 file(s)")
+
+
+def test_files_are_left_alone_when_file_uploads_are_off(tmp_path):
+    row = dict(BASE_ROW, type="download", files="not-there.pdf")
+    item = prepare([row], base_dir=tmp_path, upload_files=False)[0]
+    assert not item.result.failed and item.file_paths == []

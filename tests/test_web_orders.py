@@ -354,8 +354,8 @@ def test_ship_job_sends_and_reports_each_row(web):
 def test_a_ship_job_waiting_behind_another_write_job_can_be_found_again(web):
     # Write jobs run one at a time: a send waits behind a long Tasarım Yükle run. A page
     # that comes back meanwhile finds the job in /api/jobs with its count (params.n, the
-    # "Gönderiliyor 0/n" label); the rows come from what the page remembers until the job
-    # runs, then from state.queue (orders.js resumeJob / restoreQueue).
+    # "Gönderiliyor 0/n" label) and its rows in state.queue, saved when the job was made
+    # (orders.js resumeJob / restoreQueue), not only once it runs.
     receipts = [make_receipt(1), make_receipt(2)]
     fake, _store = setup_orders(web, receipts)
     for n in (1, 2):
@@ -372,6 +372,11 @@ def test_a_ship_job_waiting_behind_another_write_job_can_be_found_again(web):
         assert [j["id"] for j in listed] == [job["id"]]
         waiting = web.client.get(f"/api/jobs/{job['id']}").json()
         assert waiting["status"] == "queued" and waiting["params"] == {"n": 2}
+        assert waiting["state"]["total"] == 2 and waiting["state"]["country"] == "TR"
+        assert waiting["state"]["queue"] == [
+            {"receipt_id": 3000001, "carrier_name": "UPS", "tracking_code": "1ZEXAMPLE01"},
+            {"receipt_id": 3000002, "carrier_name": "USPS", "tracking_code": "9400EXAMPLE02"}]
+        assert "rows" not in waiting["state"]  # nothing sent yet
     finally:
         release.set()
     assert wait_for_job(web, blocker.id)["status"] == "done"

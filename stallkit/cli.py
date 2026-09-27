@@ -1203,7 +1203,19 @@ def seo_suggest(
 
 
 def _workspace(path: Optional[Path]) -> workspace_mod.Workspace:
-    return workspace_mod.Workspace(Path(path) if path else workspace_mod.default_root())
+    """The workspace for --path, or the default one.
+
+    A folder of a workspace (1-MOCKUPS, 2-PRODUCTS, 3-DRAFTS, anything inside them) means
+    that workspace, never a second one nested inside it (workspace_mod.root_for).
+    """
+    if not path:
+        return workspace_mod.Workspace(workspace_mod.default_root())
+    chosen = Path(path).expanduser()
+    root = workspace_mod.root_for(chosen.absolute())
+    if root != Path(os.path.normpath(str(chosen.absolute()))):
+        _warn(f"{chosen} is a folder of the workspace {root}; using {root}.")
+        return workspace_mod.Workspace(root)
+    return workspace_mod.Workspace(chosen)
 
 
 @drop_app.command("init")

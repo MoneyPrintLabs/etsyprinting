@@ -25,6 +25,7 @@ from PIL import Image
 
 from .. import csvio, listings
 from ..client import EtsyClient
+from ..config import LISTING_TYPES
 from ..errors import ValidationError
 from . import catalog, pipeline
 from .template import Template
@@ -396,6 +397,12 @@ class RecordedClient:
         self._progress_saved()
         return result
 
+    def upload_listing_file(self, listing_id, path, *, rank):
+        result = self.client.upload_listing_file(listing_id, path, rank=rank)
+        self.entry["files_uploaded"] = rank
+        self._progress_saved()
+        return result
+
 
 _RecordedClient = RecordedClient
 
@@ -406,6 +413,10 @@ def run(workspace: Workspace, template: Template, *, client: EtsyClient | None =
 
     The local history is scoped to a shop and product path. An interrupted POST
     cannot be retried safely, so pending/partial/error entries need manual review.
+    The template's type is kept: `physical`, or `download` / `both`, whose drafts also
+    get each product's download files after its images (a loose design's original file;
+    a folder's `dosyalar` / `files` subfolder). A product without a download it can send
+    is skipped by the pipeline, which stops the batch before anything is uploaded.
     `mockups` are the templates to composite onto, first (the main image) to last;
     by default the ones chosen on the Mockuplar page, in that order
     (`catalog.enabled_mockups`), exactly as the app's own runs use them.
@@ -415,8 +426,12 @@ def run(workspace: Workspace, template: Template, *, client: EtsyClient | None =
         mockups = catalog.enabled_mockups(workspace)
     if client is None and not dry_run:
         raise ValidationError("Connect your Etsy shop before uploading drafts.")
-    if template.fields.get("type", "physical") != "physical":
-        raise ValidationError("Automatic upload currently supports physical products only; digital delivery files are not supported.")
+    listing_type = template.fields.get("type") or "physical"
+    if listing_type not in LISTING_TYPES:
+        raise ValidationError(
+            f"The template listing's type {listing_type!r} is not one Etsy knows "
+            f"({', '.join(LISTING_TYPES)}). Pick the template listing again."
+        )
     with upload_lock(workspace.root):
         path = history_path(workspace.root)
         state = load_history(path)
@@ -467,7 +482,7 @@ def run(workspace: Workspace, template: Template, *, client: EtsyClient | None =
         # the number is set to the product's real line in review.csv instead.
         for line, (product, row) in enumerate(zip(prepared.ready, rows), start=2):
             entry = {"status": "pending", "listing_id": None, "images_uploaded": 0,
-                     "review_csv": str(prepared.csv_path)}
+                     "files_uploaded": 0, "review_csv": str(prepared.csv_path)}
             history[product.source.name] = entry
             # Persist intent BEFORE the request, including ambiguous network failures.
             save_history(path, state)

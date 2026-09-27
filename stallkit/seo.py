@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 import statistics
+import unicodedata
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
@@ -332,13 +333,38 @@ def overlapping_pairs(
 
 # --- market research ------------------------------------------------------------
 
+# How much of the market a report keeps. Titles and tags are built from phrases, so most
+# rows are phrases of two to four words. Single words are kept too, but fewer: they tell
+# which product and which audience the market is about, and are too broad to rank for.
+TAG_ROWS = 40
+PHRASE_ROWS = 70
+SINGLE_WORD_ROWS = 20
+MAX_PHRASE_WORDS = 4
+
+# A word of a title: letters and digits, joined inside by a hyphen or an apostrophe
+# (T-Shirt, Mother's, Mid-Century) and, between two digits, by a point, a comma or a
+# slash (8.5x11, 1,000, 3/4). "11oz" and "8x10" are one word too.
+_TITLE_WORD = re.compile(r"[^\W_]+(?:(?:['-]|(?<=\d)[.,/](?=\d))[^\W_]+)*")
+# A title is a chain of phrases: "Retro Sunset Shirt, Hiking Gift | Camping Tee - Unisex".
+# Inside one phrase, words are separated by spaces and at most a mark that does not end
+# it: an abbreviation's full stop (St. Patrick's Day), quotes, "#" (#1 Dad), ™ © ®.
+# Anything else ends the phrase: a comma, a pipe, a dash, a slash, a bracket, "&", "+",
+# a colon, an emoji.
+_SOFT_GAP = re.compile(r"[\s.'\"“”#*™©®]*")
+_APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "ʼ": "'", "`": "'",
+                              "´": "'"})
+
 
 @dataclass
 class MarketReport:
     keyword: str
     sampled: int
     tags: list[tuple[str, int]]
+    """The ranking listings' tags and how many listings use each, most used first."""
     phrases: list[tuple[str, int]]
+    """Their title phrases and how many listings use each, most used first: 1-4 words,
+    never across a comma, a pipe or a dash, mostly multi-word, and without the shorter
+    phrases that only ever appear inside a longer one."""
     price_min: float | None
     price_median: float | None
     price_max: float | None
@@ -376,6 +402,95 @@ def ngrams(tokens: Sequence[str], size: int) -> Iterable[str]:
         yield " ".join(window)
 
 
+def _lower(word: str) -> str:
+    # "İ".lower() is "i" plus a combining dot; a buyer types a plain "i".
+    return word.replace("İ", "i").lower()
+
+
+def title_segments(title: str) -> list[list[str]]:
+    """A listing title split into its phrases, each a list of lower-case words.
+
+    "Retro Sunset T-Shirt, Mother's Day Gift | 11oz Mug" gives
+    [["retro", "sunset", "t-shirt"], ["mother's", "day", "gift"], ["11oz", "mug"]].
+    """
+    text = unicodedata.normalize("NFC", str(title or "")).translate(_APOSTROPHES)
+    segments: list[list[str]] = []
+    current: list[str] = []
+    end = 0
+    for match in _TITLE_WORD.finditer(text):
+        if current and not _SOFT_GAP.fullmatch(text, end, match.start()):
+            segments.append(current)
+            current = []
+        current.append(_lower(match.group()))
+        end = match.end()
+    if current:
+        segments.append(current)
+    return segments
+
+
+def _useful_word(word: str) -> bool:
+    """A single word worth a row: no stopword, at least 3 characters, not only digits."""
+    return word not in STOPWORDS and len(word) >= 3 and any(ch.isalpha() for ch in word)
+
+
+def title_phrases(title: str, *, longest: int = MAX_PHRASE_WORDS) -> set[str]:
+    """Every phrase of 1 to `longest` words in a title, each once.
+
+    A phrase stays inside one of the title's own phrases: "Hiking Shirt, Gift for Him"
+    yields "hiking shirt", never "shirt gift". Like `ngrams`, it never spans a stopword.
+    Nor does it say a word twice: "mug ceramic mug" in "Ceramic Mug Ceramic Coffee Cup"
+    is where two phrases meet without a comma (a repeat such as "ho ho ho" is kept).
+    """
+    found: set[str] = set()
+    for segment in title_segments(title):
+        for size in range(1, longest + 1):
+            for gram in ngrams(segment, size):
+                if size == 1:
+                    if _useful_word(gram):
+                        found.add(gram)
+                    continue
+                distinct = len(set(gram.split(" ")))
+                if distinct == size or distinct == 1:
+                    found.add(gram)
+    return found
+
+
+def _by_count(row: tuple[str, int]) -> tuple[int, str]:
+    """Most used first, equally used ones alphabetically: a report never depends on the
+    order a set happened to be iterated in."""
+    return -row[1], row[0]
+
+
+def _fragments(counts: dict[str, int]) -> set[str]:
+    """Multi-word phrases that never appear without one particular longer phrase.
+
+    If every listing that says "graphic tee" says "vintage graphic tee", the shorter
+    one is a piece of the longer, not a phrase of its own. Single words stay: they show
+    which product and which audience the market is about.
+    """
+    pieces: set[str] = set()
+    for phrase, count in counts.items():
+        words = phrase.split(" ")
+        for size in range(2, len(words)):
+            for start in range(len(words) - size + 1):
+                piece = " ".join(words[start:start + size])
+                if counts.get(piece) == count:
+                    pieces.add(piece)
+    return pieces
+
+
+def _top_phrases(counter: Counter[str], sampled: int) -> list[tuple[str, int]]:
+    # A phrase that appears once is noise, not a pattern.
+    floor = max(2, sampled // 25)
+    counts = {phrase: n for phrase, n in counter.items() if n >= floor}
+    for piece in _fragments(counts):
+        del counts[piece]
+    ranked = sorted(counts.items(), key=_by_count)
+    singles = [row for row in ranked if " " not in row[0]][:SINGLE_WORD_ROWS]
+    longer = [row for row in ranked if " " in row[0]][:PHRASE_ROWS - len(singles)]
+    return sorted(singles + longer, key=_by_count)
+
+
 def research(
     client: EtsyClient,
     keyword: str,
@@ -384,7 +499,11 @@ def research(
     sort_on: str = "score",
     **filters: Any,
 ) -> MarketReport:
-    """Sample the listings Etsy actually returns for a keyword and describe them."""
+    """Sample the listings Etsy actually returns for a keyword and describe them.
+
+    Tags and phrases are counted per listing and ordered by count, then alphabetically,
+    so the same sample always gives the same report.
+    """
     listings = list(
         client.search_active_listings(
             keywords=keyword, max_items=sample, sort_on=sort_on, sort_order="desc", **filters
@@ -404,18 +523,10 @@ def research(
         seen_tags = {
             cleaned
             for tag in (listing.get("tags") or [])
-            if (cleaned := str(tag).strip().lower())
+            if (cleaned := _lower(" ".join(str(tag).split())))
         }
         tag_counter.update(seen_tags)
-
-        tokens = words(listing.get("title") or "")
-        seen_phrases: set[str] = set()
-        for size in (1, 2, 3):
-            for gram in ngrams(tokens, size):
-                if size == 1 and (gram in STOPWORDS or len(gram) < 3):
-                    continue
-                seen_phrases.add(gram)
-        phrase_counter.update(seen_phrases)
+        phrase_counter.update(title_phrases(listing.get("title") or ""))
 
         price, code = _price(listing)
         if price is not None:
@@ -432,9 +543,6 @@ def research(
     currency, prices = "", []
     if prices_by_currency:
         currency, prices = max(prices_by_currency.items(), key=lambda kv: len(kv[1]))
-
-    # A phrase that appears once is noise, not a pattern.
-    phrases = [(p, c) for p, c in phrase_counter.most_common(400) if c >= max(2, len(listings) // 25)]
 
     top = sorted(listings, key=lambda x: x.get("num_favorers") or 0, reverse=True)[:10]
     top_rows = []
@@ -455,8 +563,8 @@ def research(
     return MarketReport(
         keyword=keyword,
         sampled=len(listings),
-        tags=tag_counter.most_common(40),
-        phrases=phrases[:40],
+        tags=sorted(tag_counter.items(), key=_by_count)[:TAG_ROWS],
+        phrases=_top_phrases(phrase_counter, len(listings)),
         price_min=min(prices) if prices else None,
         price_median=statistics.median(prices) if prices else None,
         price_max=max(prices) if prices else None,

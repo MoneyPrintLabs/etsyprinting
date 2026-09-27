@@ -16,12 +16,19 @@ const STEPS = ["mockup", "research", "title", "tags", "check", "draft"];
 const STEP_ICONS = { mockup: "image", research: "search", title: "sparkles", tags: "tag", check: "shield-check", draft: "upload" };
 const FINAL = new Set(["ok", "partial", "error", "cancelled", "checked"]);
 // Problems whose translated line already says everything (the English detail is left out).
-const SELF_EXPLAINED = new Set(["junk_name", "too_many_pixels", "too_many_images", "no_images", "invalid_image", "stopped"]);
+const SELF_EXPLAINED = new Set([
+  "junk_name", "too_many_pixels", "too_many_images", "no_images", "invalid_image", "stopped",
+  "no_deliverable", "too_many_files", "file_type", "file_too_large", "file_empty", "file_missing", "file_unreadable",
+]);
+// A digital product folder keeps what the buyer downloads in one of these subfolders.
+const FILES_DIRS = new Set(["dosyalar", "files"]);
+const DIGITAL = new Set(["download", "both"]);
 const JOB_FINAL = new Set(["done", "error", "cancelled"]);
 const ACCEPT = ".png,.jpg,.jpeg,.webp,.gif,.bmp,.tif,.tiff";
 const MAX_FILES = 500;
 const MAX_BYTES = 50 * 1024 * 1024;
 const MAX_PHOTOS = 20;
+const MAX_DOWNLOADS = 5; // Etsy: download files per listing (client.MAX_LISTING_FILES)
 const UPLOAD_PARALLEL = 3;
 const VISIBLE_ROWS = 7;
 const PENDING_TILES = 18;
@@ -66,6 +73,17 @@ function shortTitle(title) {
   const text = String(title || "");
   const first = text.split(/\s*[,|]\s*|\s+[-–—]\s+/)[0];
   return first.length >= 8 ? first : text;
+}
+
+/** "Planner/dosyalar/planner.pdf": a download file of the product folder "Planner". */
+function isDeliverable(path) {
+  const parts = String(path || "").split("/").filter(Boolean);
+  return parts.length >= 3 && FILES_DIRS.has(parts[parts.length - 2].toLowerCase());
+}
+
+/** physical | download | both, from whatever the server sent (physical when unknown). */
+function listingType(value) {
+  return value === "download" || value === "both" ? value : "physical";
 }
 
 /** The plain design among a product's images (the rest are mockups). */
@@ -192,6 +210,12 @@ class DesignsPage {
     return problem.message || problem.code;
   }
 
+  /** A digital product's download problem in a few words (the pending tiles). */
+  fileProblemShort(problem) {
+    const key = `pending.file.${problem && problem.code}`;
+    return this.t.has(key) ? this.t(key, (problem && problem.params) || {}) : this.t("pending.file.other");
+  }
+
   /** Whether the library's own (English) words add anything to the translated line. */
   problemDetail(problem) {
     return !!(problem && problem.message && !SELF_EXPLAINED.has(problem.code) && this.t.has(`problem.${problem.code}`));
@@ -216,6 +240,8 @@ class DesignsPage {
     if (item.mode === "photos" || item.kind === "folder") return t("mode.photos", { n: item.files || item.images.length });
     if (item.mode === "as_is") return t("mode.as_is");
     if (!item.mode) return t("mode.design");
+    // A digital download is not the product its mockups show (a shirt, a mug).
+    if (this.run && this.run.listingType === "download") return t("mode.digital");
     const primary = this.run && this.run.mockups && this.run.mockups.primary;
     return primary && t.has(`type.${primary}`) ? t(`type.${primary}`) : t("mode.design");
   }
@@ -253,8 +279,7 @@ class DesignsPage {
       subtitle: t("drop.sub"),
       content: this.dropContent(),
       onFiles: (list) => this.handleFiles(list),
-      onReject: (list) =>
-        this.ctx.toast({ tone: "warning", title: t("upload.rejected", { n: list.length }), message: list.slice(0, 3).map((x) => baseName(x.path)).join(", ") }),
+      onReject: (list) => this.onRejected(list),
     });
     this.uploadHost = h("div", { class: "dz-upload-host" });
     this.chipsHost = h("div", { class: "dz-status" }, this.statusRow(null));
@@ -323,9 +348,20 @@ class DesignsPage {
     const shopOk = shop && shop.connected;
     const templateChip = chip("file", t("chip.template"), p ? template || t("chip.template_none") : null, null, p && !p.template ? "warn" : null, p && (!p.template || p.blockers.includes("template_invalid")) ? () => this.ctx.navigate("/kurulum/sablon") : null);
     if (fullTemplate) templateChip.title = fullTemplate;
+    templateChip.classList.add("dz-chip-template");
+    // A digital template's drafts are digital: say so next to the template (a physical
+    // one needs no word here, as before).
+    const kind = listingType(p && p.template && p.template.listing_type);
+    let typeChip = null;
+    if (DIGITAL.has(kind)) {
+      typeChip = chip("download", t("chip.type"), t(`chip.type_${kind}`), null, null, () => this.ctx.navigate("/kurulum/sablon"));
+      typeChip.title = t(`chip.type_${kind}_hint`);
+      typeChip.classList.add("dz-chip-type");
+    }
     const row = [
       mockupChip,
       templateChip,
+      typeChip,
       chip(
         "link",
         t("chip.shop"),
@@ -349,7 +385,7 @@ class DesignsPage {
         link ? h("a", { href: link, class: "dz-setup-link" }, t("setup.fix"), icon("arrow-right", { size: 12 })) : null,
       );
     }
-    return [h("div", { class: "dz-chips" }, row), h("div", { class: "spacer" }), right];
+    return [h("div", { class: cx("dz-chips", typeChip && "has-type") }, row), h("div", { class: "spacer" }), right];
   }
 
   stepsCard(p) {
@@ -361,7 +397,7 @@ class DesignsPage {
       title: t("step.title_sub"),
       tags: t("step.tags_sub"),
       check: t("step.check_sub"),
-      draft: t("step.draft_sub"),
+      draft: p && p.template && p.template.digital ? t("step.draft_sub_digital") : t("step.draft_sub"),
     };
     const items = [];
     STEPS.forEach((s, i) => {
@@ -482,18 +518,32 @@ class DesignsPage {
     const { t } = this;
     const items = p.items;
     const shown = this.pendingExpanded ? items : items.slice(0, PENDING_TILES);
+    const digital = !!(p.template && p.template.digital);
     const tiles = shown.map((it) => {
-      const bad = it.junk_reason || it.too_many;
+      const fileProblem = digital ? it.deliverable_problem : null;
+      const bad = it.junk_reason || it.too_many || fileProblem;
+      const downloads = it.deliverables || [];
+      let sub;
+      if (bad) {
+        const why = it.junk_reason ? t("pending.junk") : it.too_many ? t("pending.too_many") : this.fileProblemShort(fileProblem);
+        sub = h("span", { class: "dz-tile-bad" }, icon("alert", { size: 11 }), why);
+      } else if (digital && it.kind === "folder") {
+        sub = t("pending.folder_files", { n: it.files, m: downloads.length });
+      } else if (digital) {
+        sub = h("span", { class: "dz-tile-dl" }, icon("download", { size: 11 }), bytes(it.size));
+      } else {
+        sub = it.kind === "folder" ? t("pending.folder", { n: it.files }) : bytes(it.size);
+      }
+      // Hover: what a buyer would download, or why it cannot go.
+      const tip = [it.name];
+      if (fileProblem) tip.push(this.problemText({ code: fileProblem.code, params: fileProblem.params }));
+      else if (digital && downloads.length) tip.push(`${t("pending.downloads")}: ${downloads.map((d) => d.name).join(", ")}`);
       return h(
         "div",
-        { class: cx("dz-tile", bad && "is-bad"), title: it.name },
+        { class: cx("dz-tile", bad && "is-bad"), title: tip.join("\n") },
         thumb({ src: this.thumbUrl(it.thumb_path, 200, it.mtime), size: 64, radius: 10, fit: "contain" }),
         h("span", { class: "dz-tile-name ellipsis" }, it.name),
-        h(
-          "span",
-          { class: "dz-tile-sub" },
-          bad ? h("span", { class: "dz-tile-bad" }, icon("alert", { size: 11 }), it.too_many ? t("pending.too_many") : t("pending.junk")) : it.kind === "folder" ? t("pending.folder", { n: it.files }) : bytes(it.size),
-        ),
+        h("span", { class: "dz-tile-sub" }, sub),
         iconButton({
           icon: "x",
           title: t("pending.remove"),
@@ -567,10 +617,34 @@ class DesignsPage {
 
   // ------------------------------------------------------------------ dropping files
 
+  /**
+   * Files the drop zone turned away (it takes images only). A digital product's download
+   * files — a PDF or ZIP in a dropped folder's "dosyalar" / "files" subfolder — are kept
+   * and go up with the same drop (onFiles follows this call at once); the rest are said.
+   */
+  onRejected(list) {
+    const { t } = this;
+    const downloads = list.filter((x) => x && x.file && isDeliverable(x.path));
+    const other = list.filter((x) => !(x && x.file && isDeliverable(x.path)));
+    if (other.length) {
+      this.ctx.toast({ tone: "warning", title: t("upload.rejected", { n: other.length }), message: other.slice(0, 3).map((x) => baseName(x.path)).join(", ") });
+    }
+    if (!downloads.length) return;
+    this.stashed = downloads;
+    queueMicrotask(() => {
+      // Only download files were dropped (no image came with them): upload them alone.
+      if (this.stashed) this.handleFiles([]);
+    });
+  }
+
   async handleFiles(list) {
     const { t } = this;
-    if (this.uploading) return;
     let files = list.filter((x) => x && x.file);
+    if (this.stashed) {
+      files = files.concat(this.stashed);
+      this.stashed = null;
+    }
+    if (this.uploading) return;
     if (!files.length) return;
     if (files.length > MAX_FILES) {
       this.ctx.toast({ tone: "warning", title: t("upload.too_many", { n: MAX_FILES }) });
@@ -583,13 +657,26 @@ class DesignsPage {
       if (!mode) return;
     }
     const entries = this.planUploads(files, mode);
+    const skipped = mode === "products" ? 0 : files.filter((x) => isDeliverable(x.path)).length;
+    if (skipped) this.ctx.toast({ tone: "warning", title: t("upload.downloads_skipped", { n: skipped }) });
+    if (!entries.length) return;
     await this.upload(entries);
   }
 
-  /** Server paths: "name" for a design, "folder/name" for a photo of a product folder. */
+  /**
+   * Server paths: "name" for a design, "folder/name" for a photo of a product folder and
+   * "folder/dosyalar/name" for a download file of one (sent after all the photos, so a
+   * product folder is always claimed by its first photo). Download files only travel
+   * with "every folder is one product"; as loose designs they would mean nothing.
+   */
   planUploads(files, mode) {
     const byDir = new Map();
+    const downloads = [];
     for (const x of files) {
+      if (isDeliverable(x.path)) {
+        if (mode === "products") downloads.push(x);
+        continue;
+      }
       const parts = (x.path || x.file.name).split("/").filter(Boolean);
       const dir = parts.slice(0, -1).join("/");
       if (!byDir.has(dir)) byDir.set(dir, []);
@@ -604,13 +691,23 @@ class DesignsPage {
         out.push({ file: x.file, path: asProduct ? `${leaf}/${name}` : name, label: x.path || name });
       }
     }
+    for (const x of downloads) {
+      const parts = x.path.split("/").filter(Boolean);
+      const [product, sub, name] = parts.slice(-3);
+      out.push({ file: x.file, path: `${product}/${sub}/${name}`, label: x.path, deliverable: true });
+    }
     return out;
   }
 
   chooseFolderMode(files) {
     const { t } = this;
     const dirs = new Map();
+    let downloads = 0;
     for (const x of files) {
+      if (isDeliverable(x.path)) {
+        downloads += 1;
+        continue;
+      }
       const parts = (x.path || "").split("/").filter(Boolean);
       if (parts.length > 1) {
         const dir = parts.slice(0, -1).join("/");
@@ -619,7 +716,8 @@ class DesignsPage {
     }
     const big = [...dirs.values()].some((n) => n > MAX_PHOTOS);
     return new Promise((resolve) => {
-      let choice = "designs";
+      // Download files in a "dosyalar" folder only make sense for product folders.
+      let choice = downloads ? "products" : "designs";
       let result = null;
       const option = (id, title, sub, ic) =>
         h(
@@ -648,7 +746,11 @@ class DesignsPage {
         title: t("folders.title"),
         subtitle: t("folders.summary", { folders: dirs.size, files: files.length }),
         width: 500,
-        body: [box, big ? h("p", { class: "dz-modal-hint" }, t("folders.big", { n: MAX_PHOTOS })) : null],
+        body: [
+          box,
+          big ? h("p", { class: "dz-modal-hint" }, t("folders.big", { n: MAX_PHOTOS })) : null,
+          downloads ? h("p", { class: "dz-modal-hint" }, icon("download", { size: 13 }), " ", t("folders.downloads", { n: downloads })) : null,
+        ],
         actions: [
           { label: t("common.cancel"), variant: "secondary" },
           {
@@ -702,7 +804,7 @@ class DesignsPage {
       const el = h(
         "div",
         { class: "dz-up-row" },
-        icon("file", { size: 14 }),
+        icon(r.deliverable ? "download" : "file", { size: 14 }),
         h("span", { class: "dz-up-name ellipsis", title: r.label }, r.label),
         h("span", { class: "dz-up-size num" }, bytes(r.file.size)),
         h("span", { class: "dz-up-bar" }, fill),
@@ -847,8 +949,30 @@ class DesignsPage {
       return;
     }
     const notes = [];
+    const kind = listingType(p.template && p.template.listing_type);
+    const digital = DIGITAL.has(kind);
+    // What the drafts will be: a digital template's are digital, with a download file
+    // each (the design itself; a folder's "dosyalar"). Physical runs read as before.
+    if (digital) {
+      const folders = p.items.some((x) => x.kind === "folder" && !x.junk_reason && !x.too_many);
+      notes.push(
+        h(
+          "div",
+          { class: "dz-modal-type" },
+          h("span", { class: "dz-modal-type-icon" }, icon("download", { size: 15 })),
+          h(
+            "div",
+            { class: "dz-modal-type-text" },
+            h("span", { class: "dz-modal-type-main" }, h("strong", null, t(`ready.type_${kind}`)), " · ", t(`ready.type_${kind}_sub`)),
+            folders ? h("span", { class: "dz-modal-type-more" }, t("ready.type_folders", { max: MAX_DOWNLOADS })) : null,
+          ),
+        ),
+      );
+    }
     const junk = p.items.filter((x) => x.junk_reason || x.too_many).length;
     if (junk) notes.push(infoNote({ tone: "warning", icon: "alert", text: t("ready.junk", { n: junk }) }));
+    const noFiles = digital ? p.items.filter((x) => !x.junk_reason && !x.too_many && x.deliverable_problem).length : 0;
+    if (noFiles) notes.push(infoNote({ tone: "warning", icon: "download", text: t("ready.deliverables", { n: noFiles }) }));
     if (p.warnings.includes("no_mockups")) notes.push(infoNote({ tone: "warning", icon: "image", text: t("ready.no_mockups") }));
     if (p.warnings.includes("no_shipping_profile")) notes.push(infoNote({ tone: "warning", icon: "truck", text: t("ready.no_shipping") }));
     if (p.warnings.includes("quota")) notes.push(infoNote({ tone: "warning", icon: "clock", text: t("ready.quota") }));
@@ -1121,6 +1245,7 @@ class DesignsPage {
       result: s,
       template: saved.template || null,
       mockups: saved.mockups || {},
+      listingType: listingType(s.listing_type || (saved.template && saved.template.listing_type)),
       concurrency: 3,
       error: null,
     };
@@ -1157,6 +1282,7 @@ class DesignsPage {
       result: st.result || job.result || null,
       template: st.template || null,
       mockups: st.mockups || {},
+      listingType: listingType(st.listing_type || (st.template && st.template.listing_type)),
       concurrency: st.concurrency || 3,
       error: job.error,
     };
@@ -1342,8 +1468,9 @@ class DesignsPage {
     let done = 0;
     for (const it of r.items) {
       if (!it) continue;
+      const parts = (it.images_total || 0) + (it.files_total || 0);
       if (FINAL.has(it.status)) done += 1;
-      else if (it.step === "draft" && it.images_total) done += 0.9 * Math.min(1, (it.images_uploaded || 0) / it.images_total);
+      else if (it.step === "draft" && parts) done += 0.9 * Math.min(1, ((it.images_uploaded || 0) + (it.files_uploaded || 0)) / parts);
     }
     return Math.min(1, done / total);
   }
@@ -1608,6 +1735,7 @@ class DesignsPage {
       case "queued":
         return { text: t("row.queued"), tone: "muted" };
       case "running":
+        if (it.step === "draft" && it.files_total && (it.images_uploaded || 0) >= (it.images_total || 0)) return { text: t("row.draft_files", { n: it.files_uploaded || 0, total: it.files_total }), tone: "accent" };
         if (it.step === "draft" && it.images_total) return { text: t("row.draft_images", { n: it.images_uploaded || 0, total: it.images_total }), tone: "accent" };
         return { text: t(`row.${it.step || "mockup"}`), tone: "accent" };
       case "waiting":
@@ -1830,6 +1958,44 @@ class DesignsPage {
       ? h("span", { class: cx("dr-count num", tags.length === 13 ? "is-ok" : "is-warn") }, icon(tags.length === 13 ? "check" : "alert", { size: 12, strokeWidth: 2.4 }), `${tags.length}/13`)
       : null;
 
+    // Download files (digital templates): found at Kontrol, sent in the Taslak step after
+    // the images. Before Kontrol only their number is known.
+    let filesSection = null;
+    if (DIGITAL.has(this.run.listingType) || it.files_total || (it.deliverables || []).length) {
+      const paths = it.deliverables || [];
+      const total = paths.length || it.files_total || 0;
+      const sent = it.files_uploaded || 0;
+      const draftDone = it.steps.draft === "done" || it.steps.draft === "warn";
+      const sending = it.status === "running" && it.step === "draft";
+      let filesCount = null;
+      if (total && (draftDone || sending)) {
+        const whole = sent >= total;
+        filesCount = h("span", { class: cx("dr-count num", draftDone && (whole ? "is-ok" : "is-warn")) }, draftDone ? icon(whole ? "check" : "alert", { size: 12, strokeWidth: 2.6 }) : null, `${sent}/${total}`);
+      } else if (total) {
+        filesCount = h("span", { class: "dr-count num" }, t("side.files_n", { n: total }));
+      }
+      const list = paths.length
+        ? h(
+            "ul",
+            { class: "dr-files" },
+            paths.map((path, i) =>
+              h(
+                "li",
+                { class: cx("dr-file-item", i < sent && "is-sent") },
+                icon(i < sent ? "check" : "file", { size: 12, strokeWidth: i < sent ? 2.6 : 2 }),
+                h("span", { class: "ellipsis", title: path }, baseName(path)),
+              ),
+            ),
+          )
+        : h("p", { class: "muted dr-none" }, final ? "–" : t("side.files_pending"));
+      // One line when the files fit beside the heading (they usually do: one design file).
+      filesSection = h(
+        "div",
+        { class: "dr-section dr-files-section" },
+        h("div", { class: "dr-section-head" }, icon("download", { size: 14 }), h("span", { class: "dr-files-label" }, t("side.files")), list, h("span", { class: "spacer" }), filesCount),
+      );
+    }
+
     // Problems of this product
     const notes = [];
     if (it.error) notes.push(infoNote({ tone: it.status === "cancelled" ? "neutral" : "danger", icon: "alert", text: [h("b", null, this.problemText(it.error)), this.problemDetail(it.error) ? h("span", { class: "dr-detail" }, ` ${it.error.message}`) : null] }));
@@ -1849,7 +2015,8 @@ class DesignsPage {
     const fromTpl = [];
     if (tpl.price !== undefined && tpl.price !== null) fromTpl.push(h("span", { class: "dr-tpl-chip num" }, t("side.price", { price: money(tpl.price, tpl.currency || "USD") })));
     if (tpl.description) fromTpl.push(h("span", { class: "dr-tpl-chip" }, t("side.description")));
-    fromTpl.push(tpl.shipping_profile ? h("span", { class: "dr-tpl-chip" }, t("side.shipping")) : h("span", { class: "dr-tpl-chip is-warn" }, t("side.no_shipping")));
+    if (this.run.listingType === "download") fromTpl.push(h("span", { class: "dr-tpl-chip" }, t("side.digital")));
+    else fromTpl.push(tpl.shipping_profile ? h("span", { class: "dr-tpl-chip" }, t("side.shipping")) : h("span", { class: "dr-tpl-chip is-warn" }, t("side.no_shipping")));
 
     const openDraft =
       it.listing_id && (it.status === "ok" || it.status === "partial")
@@ -1891,6 +2058,7 @@ class DesignsPage {
           h("div", { class: "dr-section-head" }, icon("tag", { size: 14 }), h("span", null, t("side.tags")), h("span", { class: "spacer" }), tagsCount),
           tagsEl,
         ),
+        filesSection,
         notes.length ? h("div", { class: "dr-section dr-notes" }, notes) : null,
         h(
           "footer",

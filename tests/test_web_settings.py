@@ -116,3 +116,58 @@ def test_the_checklist_offline(web):
     fake.offline = True
     steps = _by_number(web.client.post("/api/settings/doctor", json={}).json()["items"])
     assert steps[8]["state"] == "warn"
+
+
+# --- a folder of a workspace means that workspace (drop.workspace.root_for) ---------------
+
+
+def test_choosing_2_products_keeps_the_products_folder_it_belongs_to(web):
+    # The tester's case: "Etsy Studio\2-PRODUCTS" chosen, "...\2-PRODUCTS\2-PRODUCTS" made.
+    ws = web.ctx.workspace()
+    resp = web.client.post("/api/settings/workspace", json={"path": str(ws.products)})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["adjusted"] == {"chosen": str(ws.products), "root": str(ws.root)}
+    # The default folder, however it was reached, stays "the default".
+    assert data["workspace"]["root"] == str(ws.root) and data["workspace"]["custom"] is False
+    assert "workspace" not in web.ctx.shop_prefs()
+    assert not (ws.products / workspace_mod.MOCKUPS_DIR).exists()
+    assert not (ws.products / workspace_mod.PRODUCTS_DIR).exists()
+    assert web.ctx.workspace().root == ws.root
+
+
+def test_a_folder_deep_inside_a_custom_workspace_means_that_workspace(web, tmp_path):
+    studio = tmp_path / "Studio"
+    web.client.post("/api/settings/workspace", json={"path": str(studio)})
+    deep = studio / workspace_mod.DRAFTS_DIR / "calibration"
+    data = web.client.post("/api/settings/workspace", json={"path": str(deep)}).json()
+    assert data["adjusted"] == {"chosen": str(deep), "root": str(studio)}
+    assert data["workspace"]["root"] == str(studio) and data["workspace"]["custom"] is True
+    assert web.ctx.shop_prefs()["workspace"] == str(studio)
+    assert not (deep / workspace_mod.MOCKUPS_DIR).exists()
+
+
+def test_a_new_2_products_folder_makes_its_parent_the_workspace(web, tmp_path):
+    chosen = tmp_path / "Etsy" / "2-PRODUCTS"
+    data = web.client.post("/api/settings/workspace", json={"path": str(chosen)}).json()
+    assert data["adjusted"] == {"chosen": str(chosen), "root": str(tmp_path / "Etsy")}
+    assert (tmp_path / "Etsy" / workspace_mod.MOCKUPS_DIR).is_dir() and chosen.is_dir()
+    assert not (chosen / workspace_mod.PRODUCTS_DIR).exists()
+
+
+def test_an_ordinary_folder_is_not_adjusted(web, tmp_path):
+    data = web.client.post("/api/settings/workspace", json={"path": str(tmp_path / "S")}).json()
+    assert data["adjusted"] is None and data["workspace"]["nested_in"] is None
+
+
+def test_a_nested_folder_saved_by_an_older_version_is_pointed_out(web):
+    ws = web.ctx.workspace()
+    web.ctx.update_shop_prefs(workspace=str(ws.products))  # what v0.2.0 saved
+    web.ctx.workspace()  # and the second workspace it then made inside
+    folders = web.client.get("/api/settings").json()["workspace"]
+    assert folders["root"] == str(ws.products) and folders["nested_in"] == str(ws.root)
+    # "Ana klasörü kullan" posts the folder it names.
+    fixed = web.client.post("/api/settings/workspace", json={"path": folders["nested_in"]}).json()
+    assert fixed["adjusted"] is None
+    assert fixed["workspace"]["root"] == str(ws.root) and fixed["workspace"]["nested_in"] is None
+    assert web.client.get("/api/settings").json()["workspace"]["nested_in"] is None

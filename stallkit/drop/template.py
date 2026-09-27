@@ -7,6 +7,11 @@ picture. Guessing them would put wrong listings in a real shop.
 
 So the seller builds one listing properly in Etsy, by hand, and stallkit copies it.
 That is the whole mechanism, and it is why there is no six-question wizard here.
+
+The listing's type travels with it: a `physical` template makes physical drafts, a
+`download` template digital ones (no shipping profile needed) and `both` drafts that
+ship and download. Which file a buyer downloads is not a setting — it is the design
+itself, or a product folder's `dosyalar` subfolder (see drop.pipeline.deliverables).
 """
 
 from __future__ import annotations
@@ -17,6 +22,7 @@ from typing import Any
 from ..client import unescape_text
 from ..config import LISTING_TYPES, MAX_QUANTITY, WHEN_MADE, WHO_MADE
 from ..errors import ValidationError
+from ..listings import DIGITAL_TYPES, SHIPPING_ONLY_FIELDS
 
 # product.json files saved before 0.3.0 hold the listing's text exactly as Etsy sent it,
 # HTML-escaped ("Mom&#39;s Mug &amp; Gift"), and every draft built from one would copy
@@ -25,6 +31,13 @@ from ..errors import ValidationError
 # (once, as it reads it) and leaves a marked one alone, so a seller's own literal
 # "&amp;" in a newer file stays what they typed.
 PLAIN_TEXT = "plain_text"
+
+# download / both drafts get the product's files (listings.DIGITAL_TYPES); physical never.
+TYPE_NAMES = {
+    "physical": "Physical product",
+    "download": "Digital download (the design file is attached for buyers)",
+    "both": "Physical and digital (shipped, plus a download file)",
+}
 
 # Copied verbatim onto every draft. Anything not in this list is derived per product.
 INHERITED_FIELDS = (
@@ -96,6 +109,16 @@ class Template:
         except (KeyError, TypeError, ValueError) as exc:
             raise ValidationError(f"product.json is malformed: {exc}") from exc
 
+    @property
+    def listing_type(self) -> str:
+        """physical | download | both (as captured; physical when the template has none)."""
+        return str(self.fields.get("type") or "physical")
+
+    @property
+    def digital(self) -> bool:
+        """Its drafts carry download files: type download or both."""
+        return self.listing_type in DIGITAL_TYPES
+
     def missing_for_a_physical_draft(self) -> list[str]:
         """What would stop these settings producing a publishable listing."""
         gaps = []
@@ -113,6 +136,7 @@ class Template:
         f = self.fields
         rows = [
             ("Copied from", f"listing {self.source_listing_id} — {self.source_title[:60]}"),
+            ("Type", TYPE_NAMES.get(self.listing_type, self.listing_type)),
             ("Category", str(f.get("taxonomy_id", "—"))),
             ("Shipping profile", str(f.get("shipping_profile_id", "—"))),
             ("Return policy", str(f.get("return_policy_id", "—"))),
@@ -173,6 +197,11 @@ def capture(listing: dict[str, Any]) -> Template:
         fields.pop("who_made", None)
     if fields.get("when_made") not in WHEN_MADE:
         fields.pop("when_made", None)
+    # A digital download is never shipped, so whatever shipping, processing or parcel
+    # values Etsy still reports for it are not copied onto its digital drafts.
+    if fields.get("type") == "download":
+        for name in SHIPPING_ONLY_FIELDS:
+            fields.pop(name, None)
 
     return Template(
         source_listing_id=int(listing_id),

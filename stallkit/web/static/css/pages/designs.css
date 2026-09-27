@@ -183,6 +183,20 @@ button.dz-chip:hover {
 .page-designs button.dz-chip:hover .dz-chip-go {
   color: var(--accent-2);
 }
+/* A digital template adds a fourth chip ("Ürün: Dijital"). Below 1400 px the row keeps
+   to one line: the type chip drops its label, the template's title ends in "…" sooner
+   (the whole title is on hover). */
+.page-designs .dz-chip-type .dz-chip-icon {
+  color: var(--accent-2);
+}
+@media (max-width: 1400px) {
+  .page-designs .dz-chips.has-type .dz-chip-template {
+    max-width: 250px;
+  }
+  .page-designs .dz-chips.has-type .dz-chip-type .dz-chip-label {
+    display: none;
+  }
+}
 .page-designs .dz-chip-ok {
   display: grid;
   place-items: center;
@@ -336,6 +350,15 @@ button.dz-chip:hover {
   align-items: center;
   gap: 3px;
   color: var(--danger);
+}
+/* A loose design of a digital template: the file itself is the download. */
+.page-designs .dz-tile-dl {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.page-designs .dz-tile-dl > svg {
+  color: var(--accent-2);
 }
 .page-designs .dz-tile-x {
   position: absolute;
@@ -538,6 +561,44 @@ button.dz-chip:hover {
   flex: none;
   font-weight: 600;
   color: var(--accent-2);
+}
+/* A digital template: "Dijital ürün · tasarım dosyası indirilebilir dosya olarak eklenir". */
+.dz-modal-type {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--accent-soft);
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.dz-modal-type-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--accent-2);
+}
+.dz-modal-type-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.dz-modal-type-main strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.dz-modal-type-more {
+  color: var(--muted);
+  font-size: 12px;
 }
 .dz-options {
   display: flex;
@@ -1216,6 +1277,51 @@ button.dz-chip:hover {
 }
 .page-designs .dr-notes {
   gap: 8px;
+}
+/* A digital draft's download files, ticked off as they go up in the Taslak step: on the
+   heading's line, wrapping below it only when there are several. */
+.page-designs .dr-files-section .dr-section-head {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+.page-designs .dr-files-label {
+  white-space: nowrap;
+}
+.page-designs .dr-files {
+  display: flex;
+  flex-wrap: wrap;
+  flex: 0 1 auto;
+  min-width: 0;
+  gap: 6px;
+  margin: 0 0 0 4px;
+  padding: 0;
+  list-style: none;
+  font-weight: 500;
+}
+.page-designs .dr-files-section .dr-none {
+  margin: 0 0 0 4px;
+  font-weight: 400;
+  font-size: 12.5px;
+}
+.page-designs .dr-file-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  height: 27px;
+  padding: 0 9px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.page-designs .dr-file-item > svg {
+  flex: none;
+  color: var(--muted);
+}
+.page-designs .dr-file-item.is-sent > svg {
+  color: var(--success);
 }
 .page-designs .dr-detail {
   color: var(--muted);

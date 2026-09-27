@@ -1400,12 +1400,12 @@ async function mountEditor(el, ctx, name) {
 
   // ---- guards against losing unsaved work: the app asks before any in-app navigation
   // (library, sidebar, header, Back), a shop switch or a language change; setDirty makes
-  // a reload or closing the tab ask as well.
+  // a reload or closing the tab ask as well. A "leave" answer keeps the edits marked as
+  // unsaved: the leave can still be called off after it (the quit question, a refused
+  // shop switch, a failed language save), and the page is unmounted when it happens.
   ctx.onBeforeLeave(async () => {
     if (!isDirty()) return true;
-    const ok = await ctx.confirm({ title: t("editor.unsaved_title"), message: t("editor.unsaved_msg"), confirmLabel: t("editor.leave"), danger: true });
-    if (ok) saved = { ...area }; // nothing left to guard
-    return ok;
+    return ctx.confirm({ title: t("editor.unsaved_title"), message: t("editor.unsaved_msg"), confirmLabel: t("editor.leave"), danger: true });
   });
 
   // ---- pointer editing

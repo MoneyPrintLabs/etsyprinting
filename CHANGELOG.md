@@ -28,6 +28,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CLI.md`, and SETUP.md names the app's screens.
 - The release check starts the packaged app's web server and fetches every file of the
   interface from it.
+- **Command line:**
+  - `stallkit drop run` and `stallkit drop auto` use the mockups switched on in
+    **Mockuplar**, in that order (the first is the main image), as the app does. `--mockups N`
+    now means the first N of that selection rather than the first N files in the folder;
+    with no saved selection the result is the same as before. `drop auto` gained
+    `--mockups`.
+  - `stallkit listings pull` no longer writes the `views` column. Etsy's API has no view
+    count, so it was always empty.
+  - `stallkit seo suggest` reads the listing as plain text, so a tag such as
+    `mother's day gift` is no longer measured (and flagged) as `mother&#39;s day gift`.
 
 ### Added
 
@@ -66,6 +76,16 @@ The screens from the video, all in Turkish and English:
 - **Across the app:** a notification bell, long tasks that keep running when you move
   between screens, and a question before you leave a page with unsaved edits.
 - **Etsy's trademark notice** is shown on every screen.
+- **Digital products.** A template listing of type `download` (or `both`) makes drafts of
+  that type, in the app and with `drop run` / `drop auto`. After its images each draft gets
+  the files the buyer downloads (Etsy's `uploadListingFile`): a loose design is delivered
+  as the design file itself; a product folder delivers the files in its `dosyalar` (or
+  `files`) subfolder, while the photos in the folder stay the listing's images. At most 5
+  files per listing and 20 MB per file (Etsy's seller limits; the API spec states none);
+  programs and scripts are refused. A download-only template needs no shipping profile.
+  A product with nothing to deliver, too many files or an oversized file stops with its
+  own message before its draft is made; the upload history records the files sent.
+  **Tasarım Yükle** and **Şablon İlan** show the product type and what the buyer gets.
 
 ### Fixed
 
@@ -90,6 +110,16 @@ From reports on 0.2.0:
 - **Running from source and troubleshooting are documented.** The README and SETUP.md
   cover running from source on Windows, macOS and Linux with Python 3.9–3.13, and both
   have a troubleshooting section.
+- **Digital templates were refused.** `drop auto` stopped with "Automatic upload currently
+  supports physical products only" when the template listing was a digital download.
+  Digital products are now supported (see Added).
+- **A products folder inside the products folder.** Choosing `2-PRODUCTS` (or
+  `1-MOCKUPS`, `3-DRAFTS`, or any folder inside them) as the products folder made a second
+  one inside the first (`Etsy Studio\2-PRODUCTS\2-PRODUCTS`), and the mockups already in
+  `Etsy Studio\1-MOCKUPS` were no longer found. **Ayarlar** and the `--path` option of the
+  `drop` commands now use the products folder those belong to and say so. A folder an
+  older version nested that way is pointed out in **Ayarlar** with a button to use the
+  main folder, and the folders it left inside `2-PRODUCTS` are never taken for products.
 
 From the review before this release:
 
