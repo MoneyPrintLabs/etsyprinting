@@ -330,10 +330,13 @@ def connect(req: Request, state: PinState) -> dict[str, Any]:
     # The listener's class state: one connect flow at a time (state.connecting).
     pinterest._Callback.result = {}
     pinterest._Callback.return_url = f"http://localhost:{ctx.port}{DONE_PATH}?service=pinterest"
+    # A request without our state (any page can hit localhost) is refused; the wait goes on.
+    pinterest._Callback.expected_state = oauth_state
     try:
         server = pinterest.LoopbackServer(("127.0.0.1", port), pinterest._Callback)
     except OSError as exc:
         pinterest._Callback.return_url = None
+        pinterest._Callback.expected_state = None
         with state.lock:
             state.connecting = False
         raise ApiError(409, "pinterest_port_busy", str(exc), port=port) from exc
@@ -349,6 +352,7 @@ def connect(req: Request, state: PinState) -> dict[str, Any]:
         server.shutdown()
         server.server_close()
         pinterest._Callback.return_url = None
+        pinterest._Callback.expected_state = None
         with state.lock:
             state.connecting = False
 

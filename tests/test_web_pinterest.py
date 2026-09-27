@@ -248,12 +248,15 @@ def test_refusing_on_pinterest_ends_the_job(web, keys):
     assert job["status"] == "error" and job["error"]["code"] == "pinterest_denied"
 
 
-def test_an_answer_to_another_request_is_refused(web, keys):
+def test_an_answer_to_another_request_is_refused_and_the_wait_goes_on(web, keys):
     data, _query = _start_connect(web)
     with httpx.Client(trust_env=False) as browser:
-        browser.get(f"http://127.0.0.1:{keys}/", params={"code": "c", "state": "forged"})
-    job = wait_for_job(web, data["job"]["id"])
-    assert job["error"]["code"] == "pinterest_state"
+        forged = browser.get(f"http://127.0.0.1:{keys}/", params={"code": "c", "state": "forged"})
+    assert forged.status_code == 400
+    job = web.client.get(f"/api/jobs/{data['job']['id']}").json()
+    assert job["status"] in ("queued", "running")  # still waiting for the real answer
+    web.client.post(f"/api/jobs/{data['job']['id']}/cancel")
+    assert wait_for_job(web, data["job"]["id"])["status"] == "cancelled"
 
 
 def test_cancel_closes_the_listener(web, keys):
