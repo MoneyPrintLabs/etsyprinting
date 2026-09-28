@@ -282,7 +282,7 @@
 }
 .page-settings .st-etsy-state b {
   color: var(--text);
-  font-weight: 650;
+  font-weight: 600;
   min-width: 0;
 }
 .page-settings .st-facts {
@@ -346,11 +346,11 @@
   font-weight: 600;
 }
 .page-settings .st-check.is-ok .st-check-title {
-  font-weight: 550;
+  font-weight: 500;
   color: var(--text-2);
 }
 .page-settings .st-optional {
-  font-weight: 450;
+  font-weight: 400;
   color: var(--muted);
 }
 .page-settings .st-check-help {

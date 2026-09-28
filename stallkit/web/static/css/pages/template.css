@@ -28,6 +28,8 @@
   flex-direction: column;
 }
 .page-template .tpl-card .card-title {
+  font-family: var(--font-display);
+  word-spacing: var(--display-word-spacing);
   font-size: 17.5px;
   font-weight: 700;
   letter-spacing: -0.01em;
@@ -180,14 +182,6 @@
   font-weight: 600;
   letter-spacing: -0.005em;
   color: var(--text);
-}
-.tpl-current-dot {
-  flex: none;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent-2);
-  box-shadow: 0 0 0 3px rgba(124, 108, 246, 0.2);
 }
 .tpl-row-sub {
   display: flex;
@@ -433,11 +427,13 @@
   font-size: 14.5px;
   font-weight: 600;
 }
+/* SablonEkrani.tsx: i_did / made_to_order on a faint white fill with a borderSoft hairline. */
 .tpl-code {
   flex: none;
-  padding: 4px 7px;
+  padding: 3px 7px;
   border-radius: 6px;
-  background: var(--panel-3);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-soft);
   color: var(--muted);
   font-family: var(--mono);
   font-size: 11.5px;
@@ -466,10 +462,27 @@
   border-radius: 6px;
   background: rgba(255, 255, 255, 0.06);
 }
-/* After a pick the values come in row by row, each check filling in. */
+/* After a pick the values come in row by row, each check filling in; each row keeps its
+   grey bar until its value has replaced it (SablonEkrani.tsx FieldRow's cross-fade). */
 .tpl-fields-list.is-reveal .tpl-field-value {
+  position: relative;
+}
+.tpl-fields-list.is-reveal .tpl-field-value > :not(.tpl-bar-out) {
   animation: tpl-in 0.35s var(--ease) both;
   animation-delay: calc(var(--i, 0) * 70ms);
+}
+.tpl-bar-out {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  max-width: none;
+  margin-top: -6px;
+  pointer-events: none;
+  animation: tpl-bar-out 0.35s var(--ease) both;
+  animation-delay: calc(var(--i, 0) * 70ms);
+}
+.tpl-fields-list:not(.is-reveal) .tpl-bar-out {
+  display: none;
 }
 .tpl-fields-list.is-reveal .tpl-check {
   animation: tpl-check-in 0.35s var(--ease) both;
@@ -481,15 +494,23 @@
     transform: translateX(10px);
   }
 }
+@keyframes tpl-bar-out {
+  to {
+    opacity: 0;
+  }
+}
 @keyframes tpl-check-in {
   from {
     opacity: 0.25;
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .tpl-fields-list.is-reveal .tpl-field-value,
+  .tpl-fields-list.is-reveal .tpl-field-value > *,
   .tpl-fields-list.is-reveal .tpl-check {
     animation: none;
+  }
+  .tpl-bar-out {
+    display: none;
   }
 }
 .tpl-field.is-idle .tpl-field-icon {
@@ -516,21 +537,31 @@
 .tpl-notes:empty {
   display: none;
 }
+/* SablonEkrani.tsx: skySoft with a 0.28 sky hairline, the info icon in sky at 22px (19
+   here) on the first line, text 15.5px (13.5 here). */
 .tpl-bottom .note {
-  padding: 11px 14px;
+  align-items: flex-start;
+  padding: 14px 16px;
+  font-size: 13.5px;
 }
 /* "Bunlar ticari kararlar." is semibold in the video, not bold. */
 .tpl-bottom .note-text b {
   font-weight: 600;
 }
 .tpl-bottom .note.tone-info {
-  background: rgba(64, 132, 238, 0.13);
-  border-color: rgba(64, 132, 238, 0.3);
+  background: var(--info-soft);
+  border-color: rgba(90, 184, 255, 0.28);
 }
 .tpl-bottom .note.tone-info .note-icon {
-  color: #6ea8ff;
+  width: 19px;
+  height: 19px;
+  margin-top: 1px;
+  color: var(--info);
   background: transparent;
-  width: 18px;
+}
+.tpl-bottom .note.tone-info .note-icon .icon {
+  width: 19px;
+  height: 19px;
 }
 .tpl-actions {
   display: flex;
@@ -582,6 +613,13 @@
   .tpl-code {
     display: none;
   }
+  /* A 1280 px window: a slimmer save button keeps "Varyasyonlar da kopyalanır" on one line. */
+  .tpl-actions {
+    gap: 12px;
+  }
+  .tpl-actions .btn-lg {
+    padding: 0 16px;
+  }
 }
 
 /* ------------------------------------------------------------------ narrow / short */
@@ -598,6 +636,10 @@
   .tpl-bottom {
     gap: 10px;
     padding-top: 12px;
+  }
+  /* The note takes two lines here: a little less padding keeps the card on screen. */
+  .tpl-bottom .note {
+    padding: 10px 14px;
   }
   .tpl-row {
     min-height: 78px;

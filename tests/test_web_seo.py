@@ -245,6 +245,19 @@ def test_title_repetition_fix_drops_only_whole_repeated_phrases():
     assert seo_api.dedupe_title("Pepper Mill, Salt & Pepper") == ("Pepper Mill, Salt & Pepper", [])
 
 
+def test_a_title_change_that_would_still_repeat_a_word_is_not_offered():
+    # Dropping "Floral Print" still leaves "floral" three times: no half fix is offered.
+    title = "Floral Print Poster, Floral Wall Art, Floral Print, Botanical Floral Decor"
+    assert seo_api.dedupe_title(title)[1] == ["Floral Print"]
+    proposal = seo_api.proposal({"title": title, "tags": ["floral"]}, {"title.repetition"})
+    assert proposal["title"] is None and proposal["manual"][0] == "title.repetition"
+    # One that ends the repetition is offered, and not also listed as manual work.
+    title = "Floral Print Poster, Floral Wall Art, Floral Print"
+    proposal = seo_api.proposal({"title": title, "tags": ["floral"]}, {"title.repetition"})
+    assert proposal["title"]["after"] == "Floral Print Poster, Floral Wall Art"
+    assert "title.repetition" not in proposal["manual"]
+
+
 def test_a_title_that_repeats_inside_its_phrases_is_left_to_the_seller():
     listing = {"title": "Cat Mom Tote Bag, Cute Cat Lover Tote, Cat Mom Tote Gift", "tags": ["cat"]}
     proposal = seo_api.proposal(listing, {"title.repetition"})

@@ -117,6 +117,7 @@ const statusListeners = new Set();
 const els = { nav: new Map() };
 let root = null;
 let notifPop = null;
+const readByPage = new Set(); // notification ids a page marked read (their event may come later)
 let shopChain = Promise.resolve();
 const t = i18n.t;
 
@@ -580,6 +581,9 @@ function makeCtx(cur) {
     openNotifications: () => {
       if (els.bell && !els.bell.__popover) toggleNotifications();
     },
+    markNotificationsRead: (ids) => markNotificationsRead(ids),
+    /** The open shop's name as the sidebar's shop card shows it. */
+    shopLabel: () => currentShopLabel(),
     showReleaseNotes,
     refreshStatus,
     setLanguage,
@@ -668,14 +672,18 @@ function shopLabel(shop, index) {
   return index > 0 ? t("shop.unnamed", { n: index + 1 }) : t("shop.default_name");
 }
 
-function renderShop() {
-  if (!els.shopName) return;
+function currentShopLabel() {
   const sess = state.session || {};
   const shops = sess.shops || [];
   const idx = shops.findIndex((s) => s.id === sess.shop_id);
-  const st = (state.status && state.status.state) || "checking";
   const statusName = state.status && state.status.shop && state.status.shop.name;
-  const name = statusName || shopLabel(shops[idx], Math.max(idx, 0));
+  return statusName || shopLabel(shops[idx], Math.max(idx, 0));
+}
+
+function renderShop() {
+  if (!els.shopName) return;
+  const st = (state.status && state.status.state) || "checking";
+  const name = currentShopLabel();
   els.shopName.textContent = name;
   els.shopName.title = name;
   els.shopState.className = cx("shop-state", `tone-${STATE_TONE[st] || "muted"}`);
@@ -873,6 +881,27 @@ async function loadNotifications() {
   if (notifPop) renderNotifList();
 }
 
+/** Mark these notifications read (a page that already told the seller, like the connect
+ * page's own toast): the bell's badge and list follow. */
+async function markNotificationsRead(ids) {
+  const list = (Array.isArray(ids) ? ids : []).filter((id) => typeof id === "string" && id);
+  if (!list.length) return;
+  for (const id of list) readByPage.add(id);
+  let r;
+  try {
+    r = await api.post("/api/notifications/read", { ids: list });
+  } catch {
+    return;
+  }
+  if (r && Array.isArray(r.items)) state.notifications = r.items;
+  if (r && typeof r.unread === "number") state.unread = r.unread;
+  updateBell();
+  if (notifPop) {
+    for (const id of list) notifPop.unreadIds.delete(id);
+    renderNotifList();
+  }
+}
+
 function updateBell() {
   if (!els.bell) return;
   els.bell.setBadge(state.unread);
@@ -971,6 +1000,7 @@ async function toggleNotifications() {
 
 async function onNotification(n) {
   if (!n || typeof n !== "object") return;
+  if (readByPage.has(n.id)) n.read = true; // its event came after the page marked it read
   if (n.ns === "pinterest" && !state.pinterestSeen) {
     state.pinterestSeen = true;
     updateOptionalNav();

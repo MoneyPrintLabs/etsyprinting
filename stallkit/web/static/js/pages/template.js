@@ -5,9 +5,13 @@
 
 import { badge, button, card, cx, h, infoNote, mount, searchInput, thumb } from "../ui.js";
 import { icon } from "../icons.js";
-import { lower, money, number, relative } from "../format.js";
+import { lower, money, monthName, number, relative } from "../format.js";
 
+// Until "N ilan daha göster" is pressed the list shows only the rows that fit whole in its
+// card (the video's five, then empty room, then the link): at most FIRST_PAGE, at least
+// MIN_FIT. Each press adds MORE_PAGE and the list scrolls.
 const FIRST_PAGE = 20;
+const MIN_FIT = 3;
 const MORE_PAGE = 20;
 const FIELDS = ["price", "shipping", "category", "who_made", "when_made", "processing", "returns"];
 const FIELD_ICON = {
@@ -22,6 +26,16 @@ const FIELD_ICON = {
 
 function fieldIcon(key) {
   return icon(FIELD_ICON[key], { size: 15 });
+}
+
+/** Etsy's category names as i18n keys: "Home & Living" -> home_living, "T-shirts" -> t_shirts. */
+function catSlug(name) {
+  return String(name || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
 }
 const STATE_TONE = { active: "success", draft: "muted", inactive: "muted", sold_out: "warning", expired: "warning" };
 // Etsy's listing types, and what the drafts made from such a template are.
@@ -41,7 +55,10 @@ export default {
       listError: null,
       setupStep: null, // "keys" | "connect" when the shop is not set up
       query: "",
+      expanded: false, // "daha göster" pressed: show `limit` rows and scroll
       limit: FIRST_PAGE,
+      fit: null, // how many whole rows fit in the list before that (measured)
+      sales: null, // {months: ["YYYY-MM"]} when the rows carry units sold
       current: undefined, // undefined while loading, null when there is none
       currentProblem: null,
       selectedId: null,
@@ -73,7 +90,7 @@ export default {
       ariaLabel: t("search_aria"),
       onInput: (v) => {
         st.query = v.trim();
-        st.limit = FIRST_PAGE;
+        st.expanded = false;
         renderList();
       },
       onEnter: () => {
@@ -138,6 +155,10 @@ export default {
       if (banner) resizer.observe(banner);
     }
     fit();
+    // The list's own height decides how many whole rows it shows (it follows the window
+    // and the fields card); the rows are only re-rendered when that number changes.
+    const listSizer = typeof ResizeObserver === "function" ? new ResizeObserver(() => refit()) : null;
+    if (listSizer) listSizer.observe(listEl);
 
     // ------------------------------------------------------------------ helpers
 
@@ -244,6 +265,7 @@ export default {
         thumb_url: s.thumb_url,
         state: s.state,
         num_favorers: null,
+        sold: null,
         product_type: null,
         product_type_key: null,
         listing_type: s.listing_type,
@@ -279,7 +301,10 @@ export default {
       if (kind !== "physical") sub.push(h("span", { class: "tpl-row-type" }, icon(TYPE_ICON[kind], { size: 12 }), t(`type.${kind}_short`)));
       const product = productType(row);
       if (product) sub.push(h("span", null, product));
-      if (row.num_favorers !== null && row.num_favorers !== undefined) {
+      // Units sold (Kâr-Zarar's months on disk) as in the video; the favourites without them.
+      if (row.sold !== null && row.sold !== undefined) {
+        sub.push(h("span", { class: "tpl-sold", title: salesHint() }, t("sales", { n: row.sold, count: number(row.sold) })));
+      } else if (row.num_favorers !== null && row.num_favorers !== undefined) {
         sub.push(h("span", null, t("favorites", { n: row.num_favorers, count: number(row.num_favorers) })));
       }
       if (row.state) sub.push(stateEl(row.state));
@@ -288,9 +313,12 @@ export default {
         if (i) parts.push(dotSep());
         parts.push(node);
       });
+      // The saved template has no mark of its own (the video has none): it is pinned first
+      // and picked at load; its tooltip and the screen reader say which one it is.
+      const current = isCurrent(id);
       return h(
         "label",
-        { class: cx("tpl-row", selected && "is-selected"), dataset: { id: String(id) } },
+        { class: cx("tpl-row", selected && "is-selected"), dataset: { id: String(id) }, title: current ? t("current") : undefined },
         input,
         h("span", { class: "tpl-radio", "aria-hidden": "true" }),
         thumb({ src: row.thumb_url, size: 64, radius: 9, icon: "image" }),
@@ -300,11 +328,8 @@ export default {
           h(
             "span",
             { class: "tpl-row-head" },
-            // The saved template: a small accent dot, not a pill that cuts the title short.
-            isCurrent(id)
-              ? [h("span", { class: "tpl-current-dot", "aria-hidden": "true", title: t("current") }), h("span", { class: "sr-only" }, `${t("current")}: `)]
-              : null,
-            h("span", { class: "tpl-row-title ellipsis", title: row.title }, row.title),
+            current ? h("span", { class: "sr-only" }, `${t("current")}: `) : null,
+            h("span", { class: "tpl-row-title ellipsis", title: current ? `${t("current")}: ${row.title}` : row.title }, row.title),
           ),
           h("span", { class: "tpl-row-sub" }, parts),
         ),
@@ -334,6 +359,64 @@ export default {
       return out;
     }
 
+    /** "Nis 2026 – Eyl 2026": the months the units sold were counted over. */
+    function salesHint() {
+      const months = (st.sales && st.sales.months) || [];
+      if (!months.length) return "";
+      const label = (ym) => {
+        const [y, m] = String(ym).split("-").map(Number);
+        return y && m ? `${monthName(m - 1, true)} ${y}` : String(ym);
+      };
+      const first = label(months[0]);
+      const last = label(months[months.length - 1]);
+      return t("sales_hint", { n: months.length, range: first === last ? first : `${first} – ${last}` });
+    }
+
+    /** Rows shown before "daha göster" is pressed: what fits whole, else FIRST_PAGE. */
+    function rowLimit() {
+      return st.expanded ? st.limit : st.fit || FIRST_PAGE;
+    }
+
+    /**
+     * How many whole rows fit in the list's box: the rows as rendered, in order, and more
+     * of the last one's height when every rendered row fits. null before it is laid out.
+     */
+    function measureFit() {
+      if (!listEl.isConnected || !listEl.clientHeight) return null;
+      const rowsEls = [...listEl.children].filter((node) => node.matches(".tpl-row[data-id]"));
+      if (!rowsEls.length) return null;
+      const cs = getComputedStyle(listEl);
+      const gap = parseFloat(cs.rowGap) || 0;
+      let avail = listEl.clientHeight - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0);
+      // Anything above the rows (the "use listing #id" button) takes its room first.
+      for (const node of listEl.children) {
+        if (node === rowsEls[0]) break;
+        avail -= node.getBoundingClientRect().height + gap;
+      }
+      let used = 0;
+      let n = 0;
+      let last = 0;
+      for (const rowEl of rowsEls) {
+        const height = rowEl.getBoundingClientRect().height;
+        const next = used + (n ? gap : 0) + height;
+        if (next > avail + 0.5) return Math.max(MIN_FIT, n);
+        used = next;
+        n += 1;
+        last = height;
+      }
+      return Math.max(MIN_FIT, n + Math.max(0, Math.floor((avail - used) / (last + gap))));
+    }
+
+    /** The list's height changed: re-render only when a different number of rows fits. */
+    function refit() {
+      if (st.expanded || !st.items || st.setupStep) return;
+      const fitted = measureFit();
+      if (fitted !== null && fitted !== st.fit) {
+        st.fit = fitted;
+        renderList();
+      }
+    }
+
     function renderCount() {
       mount(
         countSlot,
@@ -341,7 +424,7 @@ export default {
       );
     }
 
-    function renderList() {
+    function renderList(again = false) {
       renderCount();
       search.hidden = !!st.setupStep;
       refreshBtn.setDisabled(!!st.setupStep);
@@ -373,7 +456,7 @@ export default {
 
       const q = st.query;
       const rows = allRows().filter((row) => matches(row, q));
-      const shown = rows.slice(0, st.limit);
+      const shown = rows.slice(0, rowLimit());
       const nodes = [];
       const wanted = manualId(q);
       if (wanted && !rows.some((row) => row.listing_id === wanted)) {
@@ -387,7 +470,8 @@ export default {
           ),
         );
       }
-      nodes.push(...shown.map(listRow));
+      const rowNodes = shown.map(listRow);
+      nodes.push(...rowNodes);
       if (!rows.length && !nodes.length) {
         nodes.push(
           h(
@@ -399,8 +483,26 @@ export default {
         );
       }
       mount(listEl, nodes);
+      let count = shown.length;
+      if (!st.expanded) {
+        // Whole rows only: measured on the rows just rendered, then shown once more when
+        // the number differs. Rows of different heights could disagree between the two
+        // passes: then whatever does not fit whole is dropped instead of rendered again.
+        const fitted = measureFit();
+        if (fitted !== null && fitted !== st.fit) {
+          st.fit = fitted;
+          if (!again && Math.min(rows.length, fitted) !== count) {
+            renderList(true);
+            return;
+          }
+        }
+        if (fitted !== null && fitted < count) {
+          for (const node of rowNodes.slice(fitted)) node.remove();
+          count = fitted;
+        }
+      }
 
-      const left = rows.length - shown.length;
+      const left = rows.length - count;
       const hidden = !q && st.truncated ? Math.max(0, st.count - (st.items || []).length) : 0;
       mount(
         moreEl,
@@ -411,7 +513,8 @@ export default {
                 type: "button",
                 class: "tpl-more-btn",
                 onClick: () => {
-                  st.limit += MORE_PAGE;
+                  st.limit = count + MORE_PAGE;
+                  st.expanded = true;
                   renderList();
                 },
               },
@@ -446,11 +549,7 @@ export default {
           if (v.title) return { text: v.origin_country ? `${v.title} · ${country(v.origin_country)}` : v.title };
           return { text: t("shipping.id", { id: v.id }) };
         case "category":
-          if (v.path && v.path.length) {
-            // The last two levels ("Tops & Tees › T-shirts"), one when both are the same word.
-            const tail = v.path.slice(-2).filter((name, i, arr) => i === 0 || name !== arr[i - 1]);
-            return { text: tail.join(" › "), title: v.path.join(" › ") };
-          }
+          if (v.path && v.path.length) return { text: categoryText(v.path), title: v.path.join(" › ") };
           return { text: t("category.id", { id: v.id }) };
         case "who_made":
           return { code: v.code, text: tOr(`who.${v.code}`, v.code) };
@@ -463,6 +562,21 @@ export default {
         default:
           return { text: "" };
       }
+    }
+
+    /**
+     * Etsy's root and leaf ("Giyim › Tişörtler", the video's), in the UI's language by the
+     * exact Etsy name. When either has no string, both stay in Etsy's English rather than
+     * a Turkish-English mix. The full path is the tooltip.
+     */
+    function categoryText(path) {
+      const root = String(path[0]);
+      const leaf = String(path[path.length - 1]);
+      const rootKey = `category_root.${catSlug(root)}`;
+      if (path.length === 1 || root === leaf) return t.has(rootKey) ? t(rootKey) : root;
+      const leafKey = `category_leaf.${catSlug(leaf)}`;
+      if (t.has(rootKey) && t.has(leafKey)) return `${t(rootKey)} › ${t(leafKey)}`;
+      return `${root} › ${leaf}`;
     }
 
     function whenText(code) {
@@ -494,8 +608,8 @@ export default {
       return v.accepts_exchanges ? t("returns.exchanges") : t("returns.none");
     }
 
-    function fieldRow(key, f, mode) {
-      // mode: "value" | "loading" | "blank"
+    function fieldRow(key, f, mode, reveal = false) {
+      // mode: "value" | "loading" | "blank"; reveal: the values fade in over grey bars
       const label = h("span", { class: "tpl-field-label" }, t(`field.${key}`));
       let value = null;
       let mark = null;
@@ -510,6 +624,8 @@ export default {
       } else if (f.ok) {
         const d = describe(f);
         value = [
+          // The video keeps each row's grey bar until its value has faded in over it.
+          reveal ? h("span", { class: "tpl-bar tpl-bar-out", "aria-hidden": "true" }) : null,
           d.code ? h("code", { class: "tpl-code" }, d.code) : null,
           h("span", { class: cx("tpl-value ellipsis", key === "price" && "mono"), title: d.title || d.text }, d.text),
         ];
@@ -570,7 +686,7 @@ export default {
         mount(
           fieldsEl,
           p.fields.map((f, i) => {
-            const row = fieldRow(f.key, f, "value");
+            const row = fieldRow(f.key, f, "value", reveal);
             row.style.setProperty("--i", String(i));
             return row;
           }),
@@ -667,6 +783,7 @@ export default {
         st.count = r.count || st.items.length;
         st.truncated = !!r.truncated;
         st.currency = r.currency || null;
+        st.sales = r.sales || null;
         if (refresh) {
           // Everything but the saved template may have changed on Etsy.
           for (const key of [...st.previews.keys()]) if (!isCurrent(key)) st.previews.delete(key);
@@ -784,6 +901,7 @@ export default {
     if (st.selectedId !== null && !st.previews.has(st.selectedId) && !st.previewLoading) loadPreview(st.selectedId);
     return () => {
       if (resizer) resizer.disconnect();
+      if (listSizer) listSizer.disconnect();
     };
   },
 };

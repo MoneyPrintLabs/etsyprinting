@@ -46,6 +46,10 @@ const IMAGE_MAX = 1400;
 const HANDLES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
 const SAMPLE = { id: "sample", version: "1" };
 const GRID_PATH = "/kurulum/mockuplar";
+// The "Baskı alanı" pill shows once the rectangle is this big on screen (CSS px): the
+// video's PrintGuide shows it from 104 x 44 px on a 540 px photo, about 94 x 40 here.
+const LABEL_MIN_W = 94;
+const LABEL_MIN_H = 40;
 
 const enc = encodeURIComponent;
 const editorPath = (name) => `${GRID_PATH}/${enc(name)}`;
@@ -443,7 +447,8 @@ async function mountGrid(el, ctx) {
     { class: "mk-toolbar" },
     chipsCtl.el,
     selectStartBtn,
-    h("p", { class: "mk-autonote" }, icon("sparkles", { size: 14 }), h("span", null, t("auto_note"))),
+    // The video's burst ("sparkle", MockuplarEkrani.tsx FilterBar), not the twin stars.
+    h("p", { class: "mk-autonote" }, icon("sparkle", { size: 15 }), h("span", null, t("auto_note"))),
   );
   const usageHost = h("section", { class: "mk-usage", "aria-label": t("usage.label") });
   // Selection tools sit under the counter and scroll away; the counter and Save stay.
@@ -1643,6 +1648,7 @@ async function mountEditor(el, ctx, name) {
     art.style.width = `${Math.max(1, Math.round(W() * scale))}px`;
     art.style.height = `${Math.max(1, Math.round(H() * scale))}px`;
     zoomVal.textContent = percent(zoom, 0);
+    fitLabel();
   }
 
   function setZoom(next) {
@@ -1671,7 +1677,16 @@ async function mountEditor(el, ctx, name) {
     sizeChip.textContent = `${Math.round(area.w * W())} × ${Math.round(area.h * H())} px`;
     rect.setAttribute("aria-label", t("editor.area_aria", { x: pct(area.x), y: pct(area.y), w: pct(area.w), h: pct(area.h) }));
     rect.classList.toggle("is-ghost", isGhost());
+    fitLabel();
     renderFields(false);
+  }
+
+  /** The "Baskı alanı" pill only where it fits, measured on screen so zoom counts too. */
+  function fitLabel() {
+    if (!area) return;
+    const w = area.w * art.clientWidth;
+    const hh = area.h * art.clientHeight;
+    rect.classList.toggle("has-label", w >= LABEL_MIN_W && hh >= LABEL_MIN_H);
   }
 
   /**
@@ -1736,6 +1751,11 @@ async function mountEditor(el, ctx, name) {
           : h("span", { class: "mk-stage-pill" }, icon("target", { size: 13 }), h("span", null, t("editor.draw_hint"))),
       );
     }
+    // Never drawn: Kaydet is dimmed like the video's until the area is drawn (a class of
+    // its own, so a drag's is-waiting stays as it is). It still saves the default area.
+    const unset = isGhost();
+    saveBtn.classList.toggle("is-unset", unset);
+    saveBtn.title = unset ? t("editor.save_unset_hint") : "";
     appliedCard.hidden = !(lastApplied && !dirty);
     nextHost.hidden = !(lastApplied && !dirty) || !nextHost.firstChild;
     main.classList.toggle("is-dirty", dirty);

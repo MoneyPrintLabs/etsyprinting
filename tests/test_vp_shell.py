@@ -265,7 +265,9 @@ def _rule(css: str, selector: str) -> str:
 def test_only_the_videos_font_weights():
     # fonts.ts loads Inter 400-700 and Plus Jakarta Sans 600-800: no in-between weights.
     for rel in ("css/base.css", "css/pages/panel.css"):
-        weights = set(re.findall(r"font-weight:\s*(\d+)", _read(rel)))
+        # An @font-face rule names the range its variable file draws (Inter 100 900).
+        rules = re.sub(r"@font-face\s*\{[^}]*\}", "", _read(rel))
+        weights = set(re.findall(r"font-weight:\s*(\d+)", rules))
         assert weights <= {"400", "500", "600", "700", "800"}, (rel, weights)
     css = _read("css/base.css")
     for selector, weight in ((".stat-label", 500), (".field-label", 600), (".tbl th", 600), (".tab", 500),

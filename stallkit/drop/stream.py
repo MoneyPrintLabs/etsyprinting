@@ -33,6 +33,18 @@ folder with only its `dosyalar` and no photos fails step 5 at once (no_photos), 
 the template. A file that fails after the draft exists leaves the product `partial`,
 and the history records `files_uploaded` next to `images_uploaded`.
 
+A loose design without see-through pixels is a finished photo and goes up as it is,
+with an `as_is` warning (never silently). With `opaque="place"` (the page's choice for
+the batch), one saved on a solid background (all four borders one colour,
+mockup.ground_colour) has that background removed from the edges inwards and goes onto
+the mockups like any transparent design; a real photo still goes up as it is.
+
+Every picture a draft gets carries an alt text Etsy stores with it: the concept, and
+on a mockup the mockup's product and colour ("Retro Mountain Sunset t-shirt, white").
+Step 5 warns (never fails) when a picture's short side is under 1000 px
+(`small_image`), or when a design had to be enlarged more than twice onto a mockup or
+its flat render (`design_small`): both would look soft on Etsy.
+
 `drop run` and `drop auto` are untouched; this module only reuses their pieces.
 
 Events: `on_event(name, step, status, data)`, always with `data["index"]`.
@@ -90,6 +102,20 @@ FINAL = frozenset({OK, PARTIAL, FAILED, CANCELLED, CHECKED})
 
 # Fewer ranking listings than this is too thin a sample to borrow tags from.
 THIN_SAMPLE = 20
+# What becomes of a loose design without see-through pixels (run_stream's `opaque`).
+OPAQUE_AS_IS = "as_is"  # a finished photo: up as it is
+OPAQUE_PLACE = "place"  # on a solid background: the background removed, onto the mockups
+OPAQUE_CHOICES = (OPAQUE_AS_IS, OPAQUE_PLACE)
+# A picture shorter than this on its short side looks soft on Etsy (it recommends 2000).
+SMALL_IMAGE_EDGE = 1000
+# Etsy stores up to 500 characters of alt text (OAS uploadListingImage); we send 250.
+ALT_TEXT_MAX = 250
+# A mockup type as a buyer reads it in an alt text (the drafts' copy is English).
+TYPE_NOUNS = {
+    "tshirt": "t-shirt", "sweatshirt": "sweatshirt", "hoodie": "hoodie", "mug": "mug",
+    "poster": "poster", "canvas": "canvas print", "phone_case": "phone case",
+    "tote": "tote bag", "pillow": "pillow", "sticker": "sticker",
+}
 # Drafts failing one after another usually share a cause (a template Etsy refuses, a
 # lost connection). Stopping spares the rest from being marked as failed attempts.
 STOP_AFTER_FAILURES = 3
@@ -151,6 +177,8 @@ class StreamItem:
     row: dict[str, str] | None = None  # the same row as `listings push` reads it back
     csv_line: int | None = None
     market: MarketReport | None = None
+    alts: dict[str, str] = field(default_factory=dict)  # image path -> its alt text
+    upscale: float = 0.0  # the most a design was enlarged onto a mockup or flat render
 
     @property
     def kind(self) -> str:
@@ -229,6 +257,7 @@ def run_stream(
     sample: int = 200,
     use_cache: bool = True,
     dry_run: bool = False,
+    opaque: str = OPAQUE_AS_IS,
 ) -> StreamReport:
     """Create a draft for every product in 2-PRODUCTS the history has not seen yet.
 
@@ -236,13 +265,14 @@ def run_stream(
     `cancel` is anything with `is_set()`: once set, no new product is started and no new
     draft is created; the draft being created finishes. `dry_run` stops every product
     after the check step and needs no client (research is then skipped or cached).
+    `opaque` says what becomes of a loose design without see-through pixels (OPAQUE_*).
     Raises ValidationError / UploadLocked for problems that stop the whole run before
     anything is sent; everything that concerns one product lands on that product.
     """
     return _Run(
         workspace, template, client, mockups=list(mockups), on_event=on_event, cancel=cancel,
         concurrency=concurrency, include_flat=include_flat, sample=sample,
-        use_cache=use_cache, dry_run=dry_run,
+        use_cache=use_cache, dry_run=dry_run, opaque=opaque,
     ).run()
 
 
@@ -296,13 +326,79 @@ def _fatal(exc: BaseException | None) -> Problem | None:
     return None
 
 
+def _image_key(path: Any) -> str:
+    """A picture's key in StreamItem.alts: its resolved path."""
+    try:
+        return str(Path(path).resolve())
+    except OSError:
+        return str(path)
+
+
+# The catalog's colour words (Turkish display words) in English, for the alt texts.
+_ENGLISH_COLOURS = {
+    "Beyaz": "white", "Siyah": "black", "Lacivert": "navy", "Krem": "cream", "Gri": "gray",
+    "Kırmızı": "red", "Bordo": "burgundy", "Mavi": "blue", "Yeşil": "green",
+    "Haki": "olive", "Pembe": "pink", "Sarı": "yellow", "Turuncu": "orange",
+    "Mor": "purple", "Kahverengi": "brown", "Bej": "beige", "Meşe": "oak", "Ceviz": "walnut",
+}
+# Other words a seller writes next to a colour ("Meşe çerçeve", "açık mavi").
+_ENGLISH_WORDS = {"cerceve": "frame", "cerceveli": "framed", "acik": "light", "koyu": "dark",
+                  "ahsap": "wood"}
+
+
+def english_colour(colour: str) -> str:
+    """A mockup's colour as an English alt text says it: "Beyaz" -> "white", "Meşe
+    çerçeve" -> "oak frame". A colour typed in English stays as typed; one that cannot
+    be put in English is left out ("")."""
+    text = colour.strip()
+    if not text:
+        return ""
+
+    def word(folded: str) -> str | None:
+        for display, keys in catalog._COLOR_WORDS:
+            if folded in keys or folded == catalog._fold(display):
+                return _ENGLISH_COLOURS.get(display)
+        return _ENGLISH_WORDS.get(folded)
+
+    whole = word(catalog._fold(text))
+    if whole:
+        return whole
+    parts = [word(w) for w in catalog._fold(text).split()]
+    if parts and all(parts):
+        return " ".join(dict.fromkeys(parts))  # "white white" once
+    return text if text.isascii() else ""
+
+
+def alt_text(concept: str, kind: str = "", colour: str = "", *, flat: bool = False,
+             digital: bool = False) -> str:
+    """The alt text Etsy stores with a picture: "Retro Mountain Sunset t-shirt, white".
+
+    kind/colour: the mockup's product type and colour (catalog); neither for a seller's
+    own photo, which is named by its concept only. flat: the plain design
+    on white; digital: that render is a digital product's preview. At most ALT_TEXT_MAX
+    characters.
+    """
+    name = " ".join(word[:1].upper() + word[1:] for word in concept.split())
+    if flat:
+        text = f"{name} {'digital download preview' if digital else 'design'}"
+    else:
+        noun = TYPE_NOUNS.get(kind, "")
+        text = f"{name} {noun}" if noun else name
+        shade = english_colour(colour) if colour else ""
+        if shade:
+            text = f"{text}, {shade}"
+    return text.strip()[:ALT_TEXT_MAX].strip()
+
+
 class _Recorder(automation.RecordedClient):
     """automation's history-writing client, plus what the stream needs to know."""
 
-    def __init__(self, client, path, state, entry, on_image, on_file=None) -> None:
+    def __init__(self, client, path, state, entry, on_image, on_file=None,
+                 alts=None) -> None:
         super().__init__(client, path, state, entry)
         self.on_image = on_image
         self.on_file = on_file
+        self.alts: dict[str, str] = dict(alts or {})
         self.created = False
         self.error: BaseException | None = None
 
@@ -323,8 +419,9 @@ class _Recorder(automation.RecordedClient):
             raise
 
     def upload_listing_image(self, listing_id, image, *, rank):
+        alt = self.alts.get(_image_key(image)) or self.alts.get(Path(image).name, "")
         try:
-            result = super().upload_listing_image(listing_id, image, rank=rank)
+            result = super().upload_listing_image(listing_id, image, rank=rank, alt_text=alt)
         except BaseException as exc:
             self.error = exc
             raise
@@ -346,7 +443,7 @@ class _Run:
     def __init__(self, workspace: Workspace, template: Template, client: Any, *,
                  mockups: list[Path], on_event: OnEvent | None, cancel: Any,
                  concurrency: int, include_flat: bool, sample: int, use_cache: bool,
-                 dry_run: bool) -> None:
+                 dry_run: bool, opaque: str = OPAQUE_AS_IS) -> None:
         self.ws = workspace
         self.template = template
         self.listing_type = template.fields.get("type") or "physical"
@@ -366,6 +463,9 @@ class _Run:
         self.sample = sample
         self.use_cache = use_cache
         self.dry_run = dry_run
+        if opaque not in OPAQUE_CHOICES:
+            raise ValueError(f"opaque must be one of {OPAQUE_CHOICES}")
+        self.opaque = opaque
         batch = pipeline._batch_name()
         self.report = StreamReport(batch=batch, out_dir=workspace.drafts / batch, dry_run=dry_run)
         self.out_dir = self.report.out_dir
@@ -377,6 +477,8 @@ class _Run:
         self._markets: dict[str, tuple[MarketReport | None, Problem | None]] = {}
         self._research_down: Problem | None = None
         self.areas: dict[str, tuple[mockup.PrintArea, str]] = {}
+        self.mockup_facts: dict[str, catalog.MockupInfo] = {}  # for the alt texts
+        self.mockup_sizes: dict[str, tuple[int, int]] = {}
         self.inventory: dict[str, Any] | None = None
         self.state: dict = {}
         self.history: dict = {}
@@ -429,6 +531,11 @@ class _Run:
             # macOS/Linux a `..` only resolves through a folder that exists.
             self.out_dir.mkdir(parents=True, exist_ok=True)
             self.areas = catalog.effective_areas(self.ws)
+            try:
+                self.mockup_facts = catalog.load(self.ws)
+            except (OSError, ValueError):
+                self.mockup_facts = {}
+            self.mockup_sizes = mockup.mockup_sizes(list(self.mockups))
             if not self.dry_run:
                 self.state[shop] = self.history
             try:
@@ -649,6 +756,15 @@ class _Run:
         with self._lock:
             return pipeline._output_name(source, template_image, self._taken)
 
+    def _enlarged(self, item: StreamItem, design: Path, mockup_size: tuple[int, int] | None,
+                  area: mockup.PrintArea | None, *, edge: int = mockup.OUTPUT_MIN_EDGE) -> None:
+        """Remember how much `design` was enlarged (the check step warns past 2x)."""
+        size = mockup.display_size(design)
+        if size is None or (mockup_size is None and area is not None):
+            return
+        factor = mockup.upscale_factor(size, mockup_size, area, min_edge=edge)
+        item.upscale = max(item.upscale, factor)
+
     def _images(self, item: StreamItem) -> None:
         """Step 1: composite onto the mockups, or take the product's own photos."""
         self._step(item, "mockup", RUNNING)
@@ -677,6 +793,17 @@ class _Run:
             ))
         images: list[Path] = []
         flat_image: Path | None = None
+        alts: dict[Path, str] = {}  # each picture's alt text, before any conversion
+        concept = item.seed.text
+        design = item.source  # what goes onto the mockups (its ground removed, maybe)
+        # A loose design with nothing to see through: a finished photo, or a design saved
+        # on a solid background. Never for a digital template: the loose file is then the
+        # download being sold (an opaque printable too), so it always goes onto the mockups.
+        opaque, ground = False, None
+        if not item.photos and not self.digital:
+            background, colour = mockup.design_ground(item.source)  # one read of the file
+            opaque = background != "transparent"
+            ground = colour if self.opaque == OPAQUE_PLACE else None
         if item.photos:
             item.mode = "photos"
             if len(item.photos) > MAX_LISTING_IMAGES:
@@ -695,13 +822,25 @@ class _Run:
                     "mockup", n=len(bare), names=", ".join(bare[:3]),
                 )
             images = list(item.photos)
-        elif not self.digital and not mockup.looks_like_artwork(item.source):
-            # A finished product photo needs no compositing; it goes up as it is. Never
-            # for a digital template: the loose file is then the download being sold
-            # (an opaque printable too), so it goes onto the mockups, never up as it is.
+            alts = {photo: alt_text(concept) for photo in images}
+        elif opaque and ground is None:
+            # A finished product photo needs no compositing; it goes up as it is, and the
+            # row says so (a design saved without transparency would otherwise land on no
+            # mockup without a word).
             item.mode = "as_is"
             images = [item.source]
+            alts = {item.source: alt_text(concept)}
+            self._warn(item, "as_is",
+                       f"{item.source.name} has no transparent background, so it was not "
+                       "placed on the mockups: it goes up as it is.", "mockup",
+                       name=item.source.name)
         else:
+            if ground is not None:
+                # The seller chose to place designs saved on a solid background: the
+                # background joined to the edges becomes see-through, then as usual.
+                keyed = self.out_dir / item.source.stem / (
+                    f"{item.source.stem}-{item.source.suffix.lstrip('.').lower()}-transparent.png")
+                design = mockup.remove_ground(item.source, keyed, ground)
             item.mode = "composited"
             if not self.mockups:
                 self._warn(item, "no_mockups",
@@ -711,11 +850,16 @@ class _Run:
                 area = self.areas.get(template_image.name, (mockup.DEFAULT_PRINT_AREA, ""))[0]
                 out = self.out_dir / self._output_name(item.source, template_image)
                 try:
-                    images.append(mockup.compose(item.source, template_image, out, area=area))
+                    images.append(mockup.compose(design, template_image, out, area=area))
                 except Exception as exc:  # noqa: BLE001 — one mockup must not stop the product
                     self._warn(item, "mockup_failed", f"mockup {template_image.name} failed: {exc}",
                                "mockup", mockup=template_image.name)
                     continue
+                facts = self.mockup_facts.get(template_image.name)
+                kind, colour = ((facts.type, facts.color) if facts is not None
+                                else catalog.guess(template_image.name))
+                alts[images[-1]] = alt_text(concept, kind, colour)
+                self._enlarged(item, design, self.mockup_sizes.get(template_image.name), area)
                 self._step(item, "mockup", RUNNING, images=[self._rel(p) for p in images],
                            mode=item.mode)
             if self.include_flat:
@@ -724,8 +868,10 @@ class _Run:
                 # A digital design's flat render is a preview, not a copy of the download.
                 edge = mockup.DIGITAL_PREVIEW_EDGE if self.digital else mockup.OUTPUT_MIN_EDGE
                 try:
-                    flat_image = mockup.flatten_design(item.source, flat, edge=edge)
+                    flat_image = mockup.flatten_design(design, flat, edge=edge)
                     images.append(flat_image)
+                    alts[flat_image] = alt_text(concept, flat=True, digital=self.digital)
+                    self._enlarged(item, design, None, None, edge=edge)
                 except Exception as exc:  # noqa: BLE001
                     self._warn(item, "flat_failed", f"flat render failed: {exc}", "mockup")
 
@@ -761,6 +907,9 @@ class _Run:
                            name=converted.name, mb=round(size / 1024 / 1024, 1))
             if image == flat_image:
                 item.flat = fitted
+            if alts.get(image):
+                item.alts[_image_key(fitted)] = alts[image]
+                item.alts[fitted.name] = alts[image]
             uploadable.append(fitted)
         if not uploadable:
             raise _ProductFailed(Problem(
@@ -940,11 +1089,35 @@ class _Run:
                     "invalid_image", f"Invalid image {image.name}: {exc}", "check",
                     {"name": image.name},
                 )) from exc
+        if self._small_pictures(item):
+            warned = True
         with self._lock:
             item.csv_data = data
             item.row = row
         self._step(item, "check", WARN if warned else DONE,
                    deliverables=[self._rel(p) for p in item.deliverables])
+
+    def _small_pictures(self, item: StreamItem) -> bool:
+        """Warn (never fail) about pictures that would look soft on Etsy: a short side
+        under SMALL_IMAGE_EDGE px, or a design enlarged past MAX_UPSCALE."""
+        warned = False
+        for image in item.images:
+            size = mockup.display_size(image)
+            if size is not None and min(size) < SMALL_IMAGE_EDGE:
+                self._warn(item, "small_image",
+                           f"{image.name} is {size[0]}x{size[1]} px; Etsy recommends at least "
+                           "2000 px on the short side, so it may look soft.", "check",
+                           name=image.name, px=min(size), min=SMALL_IMAGE_EDGE)
+                warned = True
+        if item.upscale > mockup.MAX_UPSCALE:
+            size = mockup.display_size(item.source) or (0, 0)
+            self._warn(item, "design_small",
+                       f"{item.source.name} ({size[0]}x{size[1]} px) was enlarged "
+                       f"{item.upscale:.1f}x to fill the print area; it may look soft.",
+                       "check", name=item.source.name, px=min(size),
+                       factor=round(item.upscale, 1))
+            warned = True
+        return warned
 
     # --- step 6 (the calling thread) ------------------------------------------------------
 
@@ -978,7 +1151,7 @@ class _Run:
         counts = {"images_total": total, "files_total": files_total}
         self._step(item, "draft", RUNNING, images_uploaded=0, files_uploaded=0, **counts)
         entry = {"status": "pending", "listing_id": None, "images_uploaded": 0,
-                 "files_uploaded": 0, "review_csv": str(self.csv_path)}
+                 "files_uploaded": 0, "review_csv": str(self.csv_path), **counts}
         self.history[item.name] = entry
         # Persist intent BEFORE the request, including ambiguous network failures. A
         # history that cannot be saved stops the whole run (ValidationError).
@@ -995,7 +1168,7 @@ class _Run:
                        files_uploaded=rank, **counts)
 
         recorder = _Recorder(self.client, self.history_file, self.state, entry, on_image,
-                             on_file)
+                             on_file, alts=item.alts)
         try:
             result = listings.push(recorder, [item.row], base_dir=self.out_dir,
                                    inventory=self.inventory).results[0]

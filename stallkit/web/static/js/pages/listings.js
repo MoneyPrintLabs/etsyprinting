@@ -452,8 +452,12 @@ export default {
       tabsCtl.update(tabItems(data.counts), st.tab);
       const all = data.counts.all || 0;
       const drafts = data.counts.draft || 0;
+      // "yeni" only for the drafts of stallkit's latest run (counts.new_drafts); older
+      // drafts are just drafts.
+      const fresh = Math.min(drafts, data.counts.new_drafts || 0);
       const parts = [t("count.listings", { n: all })];
-      if (drafts) parts.push(t("count.new_drafts", { n: drafts }));
+      if (fresh) parts.push(t("count.new_drafts", { n: fresh }));
+      else if (drafts) parts.push(t("count.drafts", { n: drafts }));
       ctx.setHeader({ subtitle: parts.join(" · ") });
       if (!st.selTouched) {
         // Untouched: the drafts tab ticks its page (the video's "8 ilan seçili"); the

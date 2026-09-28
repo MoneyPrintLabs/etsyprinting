@@ -36,3 +36,16 @@ does not drive Etsy's seller interface, and stores no Etsy session cookies.
 
 Development only: [pytest](https://github.com/pytest-dev/pytest) (MIT),
 [ruff](https://github.com/astral-sh/ruff) (MIT).
+
+## Fonts
+
+The app's interface ships three typefaces in `stallkit/web/static/fonts`, as the latin and
+latin-ext WOFF2 files Google Fonts serves. All three are licensed under the
+[SIL Open Font License 1.1](stallkit/web/static/fonts/OFL.txt) (OFL-1.1); the licence text
+and their copyright lines are in `OFL.txt` next to them.
+
+| Font | Copyright |
+|---|---|
+| [Inter](https://github.com/rsms/inter) | The Inter Project Authors |
+| [Plus Jakarta Sans](https://github.com/tokotype/PlusJakartaSans) | The Plus Jakarta Sans Project Authors |
+| [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) | The JetBrains Mono Project Authors |

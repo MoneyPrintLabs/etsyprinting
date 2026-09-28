@@ -266,11 +266,16 @@ def workspace_thumb(req: Request) -> Response:
     target = _image(req)
     width = req.int_query("w", 400)
     width = max(files.THUMB_MIN, min(files.THUMB_MAX, width or 400))
+    # bg=checker: the page draws a transparent design on its checkerboard, so the
+    # thumbnail keeps its alpha (a PNG); anything else is flattened on white (a JPEG).
+    keep_alpha = req.query.get("bg") == "checker"
     try:
-        thumb = files.thumbnail(target, width, home_dir() / "cache" / "thumbs")
+        thumb = files.thumbnail(target, width, home_dir() / "cache" / "thumbs",
+                                keep_alpha=keep_alpha)
     except (OSError, ValueError, Image.DecompressionBombError) as exc:
         raise ApiError(404, "not_found", "This file cannot be shown as an image.") from exc
-    return Response.file(thumb, "image/jpeg", _cache_headers(req))
+    return Response.file(thumb, "image/png" if keep_alpha else "image/jpeg",
+                         _cache_headers(req))
 
 
 def open_folder(req: Request) -> dict[str, Any]:

@@ -643,6 +643,9 @@ class OrdersApi:
         return {
             **cached,
             "tracking_restricted": bool(prefs.get("tracking_restricted")),
+            # Etsy has accepted a tracking number from this shop's key before: the page's
+            # advance note ("Etsy may refuse...", for a Türkiye ship-from) is not needed.
+            "tracking_sent": bool(prefs.get("tracking_sent")),
             "sold_orders_url": SOLD_ORDERS_URL,
         }
 
@@ -925,6 +928,8 @@ class OrdersApi:
             changes["tracking_restricted"] = True
         elif counts["sent"]:
             changes["tracking_restricted"] = None
+        if counts["sent"] and not ctx.shop_prefs().get("tracking_sent"):
+            changes["tracking_sent"] = True
         if used and country:
             last = ctx.shop_prefs().get("last_carrier")
             last = dict(last) if isinstance(last, dict) else {}

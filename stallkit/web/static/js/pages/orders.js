@@ -531,8 +531,8 @@ export default {
           { class: "o-cell" },
           // The listing's page in the app (İlanlar detail), when Etsy says which listing.
           Number.isInteger(first.listing_id) && first.listing_id > 0
-            ? h("a", { class: "o-title o-title-link ellipsis", href: `/ilanlar/${first.listing_id}` }, shortTitle(first.title))
-            : h("span", { class: "o-title ellipsis" }, shortTitle(first.title)),
+            ? h("a", { class: "o-title o-title-link ellipsis", href: `/ilanlar/${first.listing_id}`, title: shortTitle(first.title) }, shortTitle(first.title))
+            : h("span", { class: "o-title ellipsis", title: shortTitle(first.title) }, shortTitle(first.title)),
           sub,
         ),
       );
@@ -966,22 +966,44 @@ export default {
       const done = S.lastDone;
       renderSlot();
       const restricted = (S.summary && S.summary.tracking_restricted) || (done && done.restricted);
-      mount(
-        alerts,
-        restricted
-          ? infoNote({
-              tone: "warning",
-              icon: "alert",
-              text: [t("restricted.text"), " ", h("span", { class: "muted" }, t("restricted.csv"))],
-              action: h(
-                "a",
-                { class: "btn btn-secondary btn-sm", href: SOLD_URL, target: "_blank", rel: "noopener noreferrer" },
-                h("span", { class: "btn-label" }, t("restricted.link")),
-                icon("external", { size: 14 }),
-              ),
-            })
-          : null,
-      );
+      const etsyLink = () =>
+        h(
+          "a",
+          { class: "btn btn-secondary btn-sm", href: SOLD_URL, target: "_blank", rel: "noopener noreferrer" },
+          h("span", { class: "btn-label" }, t("restricted.link")),
+          icon("external", { size: 14 }),
+        );
+      let note = null;
+      if (restricted) {
+        note = infoNote({
+          tone: "warning",
+          icon: "alert",
+          text: [t("restricted.text"), " ", h("span", { class: "muted" }, t("restricted.csv"))],
+          action: etsyLink(),
+        });
+      } else if (mayBeRestricted()) {
+        // Said before the first send, not only after Etsy's refusal: since 2024 Etsy
+        // refuses tracking from newer keys for shops shipping from Türkiye. Gone for good
+        // once Etsy has accepted a number from this key (summary.tracking_sent).
+        note = infoNote({
+          tone: "info",
+          icon: "info",
+          text: t("restricted.maybe"),
+          action: [
+            button({ label: t("csv.export"), icon: "download", variant: "secondary", size: "sm", onClick: () => exportCsv() }),
+            etsyLink(),
+          ],
+        });
+      }
+      mount(alerts, note);
+    }
+
+    /** A Türkiye ship-from whose key has never had a tracking number accepted. */
+    function mayBeRestricted() {
+      const sum = S.summary;
+      if (!sum || sum.tracking_sent !== false) return false;
+      if (S.lastDone && S.lastDone.sent > 0) return false;
+      return !!(S.carriers && S.carriers.country === "TR");
     }
 
     // --------------------------------------------------------------- loading
@@ -1042,6 +1064,7 @@ export default {
       const last = canonicalCarrier(c.last_carrier || "");
       if (changedCountry || !S.defaultCarrier || !carrierKnown(S.defaultCarrier)) S.defaultCarrier = last;
       if (S.data) renderRows();
+      renderBanner(); // the ship-from country decides the advance note
     }
 
     async function loadCarriers() {

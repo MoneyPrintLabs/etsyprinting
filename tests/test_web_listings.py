@@ -155,7 +155,7 @@ def test_tabs_counts_and_pages(web):
     shop = shop_with(web, drafts=20, active=5, inactive=1)
     data = web.client.get("/api/listings", params={"tab": "draft", "per_page": 8}).json()
     assert data["counts"] == {"draft": 20, "active": 5, "inactive": 1, "sold_out": 0, "expired": 0,
-                              "all": 26}
+                              "all": 26, "new_drafts": 0}
     assert (data["total"], data["pages"], data["page"], len(data["items"])) == (20, 3, 1, 8)
     assert (data["start"], data["end"]) == (1, 8)
     assert len(data["ids"]) == 20 and data["currency"] == "USD"
@@ -171,6 +171,30 @@ def test_tabs_counts_and_pages(web):
     assert {r["state"] for r in everything["items"]} == {"draft", "active", "inactive"}
     active = web.client.get("/api/listings", params={"tab": "active"}).json()
     assert {r["state"] for r in active["items"]} == {"active"} and active["total"] == 5
+
+
+def test_only_the_latest_runs_drafts_are_new(web):
+    # Two runs: drafts 1-3 from an older one, 4-5 from the latest (its own review.csv).
+    # Draft 5 was published since, and draft 6 was made by hand.
+    shop = shop_with(web, drafts=6, active=1, inactive=0)
+    shop.by_id[1000005]["state"] = "active"
+    old = "C:/Etsy Studio/3-DRAFTS/2026-09-01_1000/review.csv"
+    new = "C:/Etsy Studio/3-DRAFTS/2026-09-20_0900/review.csv"
+    history(web, {
+        **{f"old-{n}.png": {"status": "ok", "listing_id": 1000000 + n, "review_csv": old}
+           for n in (1, 2, 3)},
+        "failed.png": {"status": "error", "listing_id": None, "review_csv": new},
+        **{f"new-{n}.png": {"status": "ok", "listing_id": 1000000 + n, "review_csv": new}
+           for n in (4, 5)},
+    })
+    for tab in ("draft", "active", "all"):
+        data = web.client.get("/api/listings", params={"tab": tab}).json()
+        assert data["counts"]["new_drafts"] <= data["counts"]["draft"], tab
+    data = web.client.get("/api/listings", params={"tab": "draft"}).json()
+    assert (data["counts"]["draft"], data["counts"]["new_drafts"]) == (5, 1)
+    history(web, {})
+    listings_api.invalidate()
+    assert web.client.get("/api/listings").json()["counts"]["new_drafts"] == 0
 
 
 def test_bad_parameters_are_refused(web):

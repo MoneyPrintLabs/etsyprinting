@@ -67,7 +67,7 @@
   box-shadow: var(--shadow-pop);
   color: var(--text);
   font-size: 12px;
-  font-weight: 550;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   pointer-events: none;
@@ -157,7 +157,7 @@
 }
 .pf-loading-title {
   font-size: 13.5px;
-  font-weight: 650;
+  font-weight: 600;
 }
 .pf-loading-msg {
   margin-top: 1px;
@@ -272,6 +272,7 @@
 }
 .pf-kpi .pf-net-card .stat-value {
   font-size: 35px;
+  font-weight: 800; /* KarZararEkrani's NET KÂR amount (Money weight 800) */
 }
 .pf-kpi .pf-net-card .stat-sub {
   font-size: 14px;
@@ -381,7 +382,7 @@
 }
 .pf-warn {
   color: var(--warning);
-  font-weight: 550;
+  font-weight: 500;
 }
 
 /* ------------------------------------------------------------------ notes / CTA */
@@ -430,7 +431,7 @@
 }
 .pf-cta-title {
   font-size: 14.5px;
-  font-weight: 650;
+  font-weight: 600;
 }
 .pf-cta-msg {
   margin-top: 2px;
@@ -646,7 +647,7 @@
   padding: 0 6px;
   border-radius: 7px;
   font-size: 12.5px;
-  font-weight: 650;
+  font-weight: 600;
   white-space: nowrap;
 }
 /* MARJ: "−%70,2" or "−%100,0" never ends in "…"; the pill may use the cell's padding. */
@@ -820,7 +821,7 @@
   align-items: center;
   gap: 8px;
   font-size: 14px;
-  font-weight: 650;
+  font-weight: 700;
 }
 .pf-fees-total {
   font-size: 12.5px;
@@ -910,7 +911,7 @@
 }
 .pf-ratepop-title {
   font-size: 13.5px;
-  font-weight: 650;
+  font-weight: 600;
 }
 .pf-ratepop-desc {
   font-size: 12px;
@@ -929,7 +930,7 @@
 }
 .pf-ratepop-rate b {
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 700;
   white-space: normal;
 }
 .pf-ratepop .note {
@@ -1004,7 +1005,7 @@
 }
 .pf-cm-h {
   font-size: 10.5px;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: 0.09em;
   text-transform: uppercase;
   color: var(--muted);
@@ -1234,6 +1235,23 @@
   }
   .pf-kpi > .stat {
     padding: 16px 15px;
+  }
+  /* Inter is a little wider than the system face: "Ürün maliyeti" keeps to one line, so
+     the five amounts stay on one row. */
+  .pf-kpi .stat-head {
+    gap: 8px;
+  }
+  .pf-kpi .stat-label {
+    font-size: 12.5px;
+  }
+  /* "NET PROFIT" next to its change badge: one line too. */
+  .pf-kpi .pf-net-card .stat-head {
+    gap: 6px;
+  }
+  .pf-kpi > .stat.pf-net-card .stat-label {
+    font-size: 12px;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
   }
   .pf-kpi .stat-value {
     font-size: 24px;

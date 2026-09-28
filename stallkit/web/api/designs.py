@@ -5,7 +5,8 @@
            a digital product's download file (any type but programs), raw body
     DELETE /api/designs/files?path=<name | folder | folder/name>       -> moved to archive/
     GET    /api/designs/pending        what the next run would do, and what blocks it
-    POST   /api/designs/start          {"dry_run"?: bool} -> job "designs" (drop.stream)
+    POST   /api/designs/start          {"dry_run"?: bool, "opaque"?: "as_is" | "place"}
+                                       -> job "designs" (drop.stream)
     GET    /api/designs/last           the last finished run (3-DRAFTS/last-run.json)
     POST   /api/designs/review/forget  {"name", "confirm": true}: try a product again
     POST   /api/designs/unlock         {"confirm": true}: remove a crashed run's lock
@@ -17,6 +18,17 @@ A digital template (type download or both) makes digital drafts: each product's
 download files go up after its images — a loose design's original file, a folder
 product's `dosyalar` / `files` subfolder (drop.pipeline.deliverables). The pending view
 says per product what would be attached and what is wrong with it.
+
+A download-only template's drafts show what the buyer gets: of the switched-on mockups
+only those that are no physical product (posters, canvases, frames, "other") are used,
+plus the flat preview; the pending view names them and the ones left out.
+
+The pending view also says, for the start card:
+- per loose design its background (`ground`: transparent | flat | photo, None while not
+  read yet): an opaque one goes up as it is unless the seller asks (start's `opaque`) to
+  place those on a solid background onto the mockups (drop.stream);
+- the template's product as a mockup type (`template.product`) and the main mockup's
+  (`mockups.main_type`), so a mug template with a T-shirt main image is pointed out.
 """
 
 from __future__ import annotations
@@ -59,6 +71,15 @@ _STATE_BLOCKERS = {
 _ETSY_BLOCKERS = set(_STATE_BLOCKERS.values())
 # At most this often the whole job state is copied for GET /api/jobs/{id}.
 STATE_INTERVAL = 0.5
+# Mockup types that show a physical product: never the photos of a download-only draft.
+PHYSICAL_TYPES = frozenset({"tshirt", "sweatshirt", "hoodie", "mug", "phone_case", "tote",
+                            "pillow", "sticker"})
+# How long one pending view may spend reading new designs' backgrounds (the rest are
+# read by the next view; every answer is kept per file version).
+GROUND_BUDGET = 2.0
+_grounds_lock = threading.Lock()
+_grounds: dict[tuple[str, int, int], str] = {}  # (path, mtime_ns, size) -> ground
+_KEEP_GROUNDS = 5000
 
 # Checking "is a run active?" and starting one happen together, so a double click
 # cannot queue a second run behind the first.
@@ -521,6 +542,8 @@ def _template_info(ctx: AppContext, ws: Any) -> tuple[dict[str, Any] | None, str
         "tags": len(template.tags),
         # Saved by Şablon İlan; None for a template captured before it was (unknown).
         "has_variations": has_variations if isinstance(has_variations, bool) else None,
+        # What the template sells, as a mockup type (tshirt, mug...): None when unknown.
+        "product": _template_product(template),
         "invalid": None,
     }
     try:
@@ -547,6 +570,57 @@ def _review_problem(entry: dict[str, Any]) -> str:
     return "uncertain"
 
 
+def _ground(path: Path, deadline: float) -> str | None:
+    """transparent | flat | photo for a loose design (drop.mockup.design_ground), kept per
+    file version; None when it is not known yet and the time for reading is up."""
+    from ...drop import mockup
+
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    with _grounds_lock:
+        known = _grounds.get(key)
+    if known is not None:
+        return known
+    if time.monotonic() > deadline:
+        return None
+    ground = mockup.design_ground(path)[0] or "photo"  # unreadable: never composited
+    with _grounds_lock:
+        if len(_grounds) >= _KEEP_GROUNDS:
+            _grounds.clear()
+        _grounds[key] = ground
+    return ground
+
+
+def _template_product(template: Any) -> str | None:
+    """The template listing's product as a mockup type, from its category (the cached
+    seller taxonomy, never a request) or its title; None when neither says."""
+    from . import listings as listings_api
+
+    listing = {"taxonomy_id": template.fields.get("taxonomy_id"), "title": template.source_title}
+    return listings_api.product_type_of(listing, listings_api.cached_taxonomy_paths())
+
+
+def used_mockups(ws: Any, listing_type: str | None,
+                 infos: dict[str, Any] | None = None) -> tuple[list[str], list[str]]:
+    """(the mockups a run uses, the switched-on ones a download-only template leaves out).
+
+    catalog.usage's rule (switched on, the seller's order, at most 19; the first is the
+    main image), and for a download-only template none that shows a physical product.
+    """
+    from ...drop import catalog
+
+    if infos is None:
+        infos = catalog.load(ws)
+    used = list(catalog.usage(ws, infos)["used"])
+    if listing_type != "download":
+        return used, []
+    physical = [n for n in used if n in infos and infos[n].type in PHYSICAL_TYPES]
+    return [n for n in used if n not in physical], physical
+
+
 def _pending_info(ctx: AppContext) -> dict[str, Any]:
     from ...config import MAX_LISTING_IMAGES
     from ...drop import automation, catalog, pipeline, seeds
@@ -564,6 +638,7 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
     template, template_problem = _template_info(ctx, ws)
     digital = bool(template and template.get("digital"))
     to_order = bool(template and template.get("made_to_order"))
+    deadline = time.monotonic() + GROUND_BUDGET
     for path, photos in groups:
         if path.name.casefold() in known:
             continue
@@ -592,9 +667,14 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
             downloads = [{"name": f.name, "path": _rel(ws, f), "size": _size(f)} for f in found]
             if issue is not None:
                 deliverable_problem = {"code": issue[0], "params": issue[2]}
+        # A loose design's background (a digital one always goes onto the mockups).
+        ground = None
+        if not folder and not digital and seed:
+            ground = _ground(path, deadline)
         items.append({
             "name": path.name,
             "kind": "folder" if folder else "design",
+            "ground": ground,
             "files": len(photos) if folder else 1,
             "thumb_path": "" if no_photos else _rel(ws, shown),
             "mtime": mtime,
@@ -617,9 +697,11 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
 
     infos = catalog.load(ws)
     # The same rule as the Mockuplar page and the run itself (catalog.usage): switched-on
-    # mockups in the seller's order, at most 19; the first is the main image.
+    # mockups in the seller's order, at most 19; the first is the main image. A
+    # download-only template leaves out those showing a physical product.
     use = catalog.usage(ws, infos)
-    enabled = use["used"]
+    enabled, left_out = used_mockups(ws, template.get("listing_type") if template else None,
+                                     infos)
     types = collections.Counter(infos[name].type for name in enabled if name in infos)
 
     blockers: list[str] = []
@@ -636,6 +718,11 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
     elif lock is not None:
         blockers.append("locked")
     runnable = sum(1 for item in items if _runnable(item))
+    # Loose designs with nothing to see through: up as they are, or (the seller's choice
+    # on the start card) onto the mockups when on a solid background.
+    grounds = collections.Counter(item["ground"] or "unknown" for item in items
+                                  if _runnable(item) and item["kind"] == "design"
+                                  and item["ground"] != "transparent" and not digital)
     if not items:
         blockers.append("empty")
     elif not runnable:
@@ -657,7 +744,7 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
         warnings.append("deliverables")
     if any(item["no_photos"] for item in items):
         warnings.append("no_photos")
-    if not enabled and any(item["kind"] == "design" for item in items):
+    if not enabled and not left_out and any(item["kind"] == "design" for item in items):
         warnings.append("no_mockups")
     if template and template.get("needs_shipping") and not template.get("shipping_profile"):
         warnings.append("no_shipping_profile")
@@ -702,10 +789,18 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
             "over_limit": len(use["over_limit"]),
             "max": use["max"],
             "main": enabled[0] if enabled else None,
+            "main_type": (infos[enabled[0]].type if enabled and enabled[0] in infos
+                          else None),
             "total": len(infos),
             "types": dict(types),
             "primary": types.most_common(1)[0][0] if types else None,
+            # The ones this run uses, in order, and (a download-only template) the
+            # switched-on ones it leaves out because they show a physical product.
+            "names": list(enabled),
+            "left_out": [{"name": n, "type": infos[n].type} for n in left_out if n in infos],
         },
+        "opaque": {"flat": grounds.get("flat", 0), "photo": grounds.get("photo", 0),
+                   "unknown": grounds.get("unknown", 0)},
         "template": template,
         "shop": {"connected": state == "connected", "name": shop.get("name"),
                  "state": state},
@@ -999,11 +1094,16 @@ def start(req: Request) -> dict[str, Any]:
     dry_run = body.get("dry_run", False)
     if not isinstance(dry_run, bool):
         raise ApiError(422, "invalid", "dry_run must be true or false", field="dry_run")
+    from ...drop import stream
+
+    opaque = body.get("opaque", stream.OPAQUE_AS_IS)
+    if opaque not in stream.OPAQUE_CHOICES:
+        raise ApiError(422, "invalid", "opaque must be as_is or place", field="opaque")
     with _start_lock:
-        return _start(ctx, dry_run)
+        return _start(ctx, dry_run, opaque)
 
 
-def _start(ctx: AppContext, dry_run: bool) -> dict[str, Any]:
+def _start(ctx: AppContext, dry_run: bool, opaque: str = "as_is") -> dict[str, Any]:
     from ...drop import automation, catalog, stream
     from ...drop.template import Template
 
@@ -1017,6 +1117,10 @@ def _start(ctx: AppContext, dry_run: bool) -> dict[str, Any]:
     ws = ctx.workspace()
     template = Template.from_dict(ws.read_template())
     mockups_info = dict(info["mockups"])
+    # The mockups the start card named (a download-only template's without the physical
+    # ones), in catalog.enabled_mockups' order.
+    named = {name.casefold() for name in mockups_info.get("names") or []}
+    mockup_paths = [path for path in catalog.enabled_mockups(ws) if path.name.casefold() in named]
 
     def work(job: Job) -> dict[str, Any]:
         tracker = _Tracker(job, dry_run=dry_run, template=info["template"],
@@ -1031,9 +1135,9 @@ def _start(ctx: AppContext, dry_run: bool) -> dict[str, Any]:
                 client = ctx.client()
             try:
                 report = stream.run_stream(
-                    ws, template, client, mockups=catalog.enabled_mockups(ws),
+                    ws, template, client, mockups=mockup_paths,
                     on_event=tracker.on_event, cancel=_JobCancel(job),
-                    concurrency=CONCURRENCY, dry_run=dry_run,
+                    concurrency=CONCURRENCY, dry_run=dry_run, opaque=opaque,
                 )
             except automation.UploadLocked as exc:
                 raise ApiError(409, "locked", str(exc)) from exc

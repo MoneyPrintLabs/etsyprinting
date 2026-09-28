@@ -372,14 +372,16 @@ def proposal(listing: dict[str, Any], codes: set[str]) -> dict[str, Any]:
         ) if code in codes
     ]
     if "title.repetition" in codes:
-        # Only whole repeated phrases are offered for removal; words repeated inside
-        # phrases that say something new are the seller's to reword (the dialog links
-        # to the listing).
+        # Only whole repeated phrases are offered for removal, and only when that ends the
+        # repetition: "Düzelt" never offers a title that is still flagged. Words repeated
+        # inside phrases that say something new are the seller's to reword (the dialog
+        # links to the listing).
         after, dropped = dedupe_title(title)
-        if dropped and after and len(after) <= MAX_TITLE_LEN:
+        if (dropped and after and len(after) <= MAX_TITLE_LEN
+                and not repeated_title_words(after)):
             title_fix = {"before": title, "after": after, "phrases": dropped,
                          "words": repeated_title_words(title)}
-        if not title_fix or repeated_title_words(after):
+        else:
             manual.insert(0, "title.repetition")
     return {
         **tags,

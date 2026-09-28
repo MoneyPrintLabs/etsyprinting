@@ -360,16 +360,15 @@ export default {
         onClick: () => setSort(id),
       }));
       if (total > TOP_N) {
+        // An on/off switch, not one choice among the sorts.
         items.push({ divider: true }, {
           label: t("products.show_all", { n: total }),
           checked: state.showAll,
+          checkbox: true,
           onClick: () => setShowAll(!state.showAll),
         });
       }
-      const pop = menu(sortBtn, items, { placement: "bottom-end", width: 250 });
-      // The last item is an on/off switch, not one choice among the sorts.
-      const toggle = pop && total > TOP_N ? pop.el.querySelector(".menu-item:last-of-type") : null;
-      if (toggle) toggle.setAttribute("role", "menuitemcheckbox");
+      menu(sortBtn, items, { placement: "bottom-end", width: 250 });
     }
 
     function setSort(id) {

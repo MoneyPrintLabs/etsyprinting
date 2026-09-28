@@ -391,9 +391,17 @@ class RecordedClient:
         self._progress_saved()
         return result
 
-    def upload_listing_image(self, listing_id, image, *, rank):
-        result = self.client.upload_listing_image(listing_id, image, rank=rank)
+    def upload_listing_image(self, listing_id, image, *, rank, alt_text=""):
+        # alt_text only when there is one: a client that takes no alt text still works.
+        extra = {"alt_text": alt_text} if alt_text else {}
+        result = self.client.upload_listing_image(listing_id, image, rank=rank, **extra)
         self.entry["images_uploaded"] = rank
+        # Which file each picture on the draft is: a mockup's name says its product and
+        # colour, which the listing page shows on the picture. Keyed by Etsy's image id,
+        # so a picture moved in Etsy keeps its own name.
+        image_id = result.get("listing_image_id") if isinstance(result, dict) else None
+        if image_id:
+            self.entry.setdefault("images", {})[str(image_id)] = Path(image).name
         self._progress_saved()
         return result
 

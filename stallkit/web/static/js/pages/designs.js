@@ -1475,6 +1475,75 @@ class DesignsPage {
     const mk = p.mockups;
     // More mockups switched on than Etsy's 20 images leave room for: say which go.
     if (mk.enabled && mk.over_limit) notes.push(infoNote({ tone: "warning", icon: "image", text: t("ready.mockups_over", { n: mk.enabled, on: mk.switched_on }) }));
+    const typeName = (type) => (t.has(`type.${type}`) ? t(`type.${type}`) : t("type.other"));
+    const toMockups = () => button({ label: t("ready.go_mockups"), size: "sm", iconRight: "arrow-right", onClick: () => { m.close(); this.ctx.navigate("/kurulum/mockuplar"); } });
+    // A download's photos show no physical product: the run leaves those mockups out and
+    // the card names the ones it uses.
+    if (kind === "download") {
+      const left = mk.left_out || [];
+      if (left.length) {
+        const types = [...new Set(left.map((x) => typeName(x.type)))].join(", ");
+        notes.push(infoNote({ tone: "warning", icon: "image", text: t("ready.digital_physical", { n: left.length, types }) }));
+      }
+      const names = mk.names || [];
+      notes.push(h("p", { class: "dz-modal-hint dz-ready-names" }, names.length ? t("ready.digital_mockups", { names: names.join(", ") }) : t("ready.digital_flat_only")));
+    } else {
+      // One template sets every draft's product: a main image of another product (a mug
+      // template, a T-shirt first on Mockuplar) makes every draft contradict itself.
+      const product = p.template && p.template.product;
+      const main = mk.main_type;
+      if (product && main && main !== "other" && main !== product) {
+        notes.push(infoNote({ tone: "warning", icon: "image", text: t("ready.main_mismatch", { template: typeName(product), main: typeName(main) }), action: toMockups() }));
+      }
+    }
+    // Loose designs with nothing to see through: up as they are (a finished photo), or,
+    // on a solid background, onto the mockups with that background removed. The seller
+    // picks for the batch; the choice is offered only when such a design is there.
+    const op = (!digital && p.opaque) || {};
+    const flat = op.flat || 0;
+    const photos = op.photo || 0;
+    let opaque = flat ? "place" : "as_is";
+    if (flat || photos) {
+      const said = h("div", { class: "dz-ready-opaque-note" });
+      const say = () =>
+        mount(
+          said,
+          infoNote({
+            tone: "warning",
+            icon: "image",
+            text: opaque === "place" ? [t("ready.opaque_place", { n: flat }), photos ? ` ${t("ready.opaque_photos", { n: photos })}` : ""] : t("ready.opaque_as_is", { n: flat + photos }),
+          }),
+        );
+      say();
+      notes.push(said);
+      if (flat) {
+        const option = (id, title, sub, ic) =>
+          h(
+            "label",
+            { class: cx("dz-option", id === opaque && "is-selected"), dataset: { id } },
+            h("input", {
+              type: "radio",
+              name: "dz-opaque",
+              value: id,
+              checked: id === opaque,
+              onChange: () => {
+                opaque = id;
+                for (const o of box.querySelectorAll(".dz-option")) o.classList.toggle("is-selected", o.dataset.id === id);
+                say();
+              },
+            }),
+            h("span", { class: "dz-option-icon" }, icon(ic, { size: 16 })),
+            h("span", { class: "dz-option-text" }, h("strong", null, title), h("span", null, sub)),
+          );
+        const box = h(
+          "div",
+          { class: "dz-options dz-ready-opaque", role: "radiogroup", "aria-label": t("ready.opaque_label") },
+          option("place", t("ready.opaque.place"), t("ready.opaque.place_sub"), "layers"),
+          option("as_is", t("ready.opaque.as_is"), t("ready.opaque.as_is_sub"), "image"),
+        );
+        notes.push(box);
+      }
+    }
     // The video's start card (t210): a title, one line and Başlat. No ×: Escape or a
     // click outside still closes it.
     const m = this.ctx.modal({
@@ -1492,7 +1561,7 @@ class DesignsPage {
           class: "dz-ready-start",
           onClick: () => {
             m.close();
-            this.startRun(false);
+            this.startRun(false, { opaque });
           },
         }),
       ],
@@ -1585,10 +1654,13 @@ class DesignsPage {
     }
   }
 
-  async startRun(dryRun) {
+  /** opaque: what becomes of loose designs with nothing to see through ("as_is" | "place"). */
+  async startRun(dryRun, { opaque } = {}) {
     this.starting = true;
     try {
-      const job = await this.api.post("/api/designs/start", { dry_run: !!dryRun });
+      const body = { dry_run: !!dryRun };
+      if (opaque === "place" || opaque === "as_is") body.opaque = opaque;
+      const job = await this.api.post("/api/designs/start", body);
       await this.showJob(job.id, job);
     } catch (err) {
       if (err && err.code === "setup_incomplete" && this.pending) {

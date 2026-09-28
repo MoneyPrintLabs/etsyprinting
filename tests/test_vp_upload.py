@@ -8,6 +8,7 @@ helpers run under node when it is installed.
 
 from __future__ import annotations
 
+import io
 import json
 import re
 import shutil
@@ -15,6 +16,10 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from PIL import Image
+from test_drop_stream import SHOP, Client, _artwork, _history, studio  # noqa: F401
+from test_drop_stream import _run as _drop_run
+from test_web_listings import history, shop_with
 
 STATIC = Path(__file__).resolve().parents[1] / "stallkit" / "web" / "static"
 NODE = shutil.which("node")
@@ -169,3 +174,71 @@ def test_a_draft_opens_at_its_own_address():
     # Tasarım Yükle only ever links the drafts it made, at that address.
     source = (STATIC / "js" / "pages" / "designs.js").read_text(encoding="utf-8")
     assert "`/ilanlar/${" not in source and "`/ilanlar/taslak/${" in source
+
+
+# --- UP-2 / UP-3: what the history says about a draft's pictures ---------------------------------
+
+
+class _WithIds(Client):
+    def upload_listing_image(self, listing_id, image, *, rank, alt_text=""):
+        super().upload_listing_image(listing_id, image, rank=rank, alt_text=alt_text)
+        return {"listing_image_id": listing_id * 100 + rank, "rank": rank}
+
+
+def test_the_history_keeps_the_picture_count_and_each_pictures_file(studio):  # noqa: F811
+    ws, template = studio
+    _artwork(ws.products / "retro-mountain-sunset.png")
+    report = _drop_run(ws, template, _WithIds(ws))
+    item = report.items[0]
+    entry = _history(ws)[SHOP]["retro-mountain-sunset.png"]
+    assert entry["images_total"] == len(item.images) == entry["images_uploaded"] == 3
+    assert entry["files_total"] == 0
+    assert entry["images"] == {str(item.listing_id * 100 + rank): path.name
+                               for rank, path in enumerate(item.images, 1)}
+
+
+def test_the_detail_page_gets_the_count_and_each_pictures_product(web):
+    shop = shop_with(web, drafts=1, active=0, inactive=0)
+    ws = web.ctx.workspace()
+    for name in ("03-mug-white.jpg", "04-poster-oak-frame.jpg"):
+        Image.new("RGB", (40, 40), "white").save(ws.mockups / name)
+    (ws.mockups / "mockups.json").write_text(json.dumps({
+        "03-mug-white.jpg": {"type": "mug", "color": "Beyaz", "enabled": True},
+        "04-poster-oak-frame.jpg": {"type": "poster", "color": "Meşe çerçeve", "enabled": True},
+    }), encoding="utf-8")
+    listing = shop.by_id[1000001]
+    base = dict(listing["images"][0], alt_text="")
+    listing["images"] = [dict(base, listing_image_id=11, rank=1), dict(base, listing_image_id=12, rank=2),
+                         dict(base, listing_image_id=13, rank=3), dict(base, listing_image_id=14, rank=4)]
+    history(web, {"lake-life.png": {
+        "status": "ok", "listing_id": 1000001, "images_uploaded": 3, "images_total": 3,
+        "images": {"11": "lake-life--03-mug-white.jpg", "12": "lake-life--04-poster-oak-frame-2.jpg",
+                   "13": "lake-life--flat.jpg"}}})
+    data = web.client.get("/api/listings/1000001").json()
+    source = data["source"]
+    assert (source["status"], source["images_uploaded"], source["images_total"]) == ("ok", 3, 3)
+    views = [(i["type"], i["color"], i["color_key"], i["flat"]) for i in data["images"]]
+    assert views == [("mug", "Beyaz", "beyaz", False), ("poster", "Meşe çerçeve", "mese cerceve", False),
+                     ("", "", "", True), ("", "", "", False)]
+
+
+def test_a_listing_stallkit_did_not_make_keeps_its_alt_text_reading(web):
+    shop_with(web, drafts=1, active=0, inactive=0)
+    image = web.client.get("/api/listings/1000001").json()["images"][0]
+    assert (image["type"], image["color"], image["flat"]) == ("tshirt", "Beyaz", False)
+
+
+# --- UP-4: a transparent design's thumbnail for the checkerboard ---------------------------------
+
+
+def test_a_checker_thumbnail_keeps_its_transparency(web):
+    ws = web.ctx.workspace()
+    Image.new("RGBA", (80, 60), (0, 0, 0, 0)).save(ws.products / "clear.png")
+    resp = web.client.get("/api/files/thumb", params={"path": "2-PRODUCTS/clear.png", "w": 64, "bg": "checker"})
+    assert resp.status_code == 200 and resp.headers["content-type"] == "image/png"
+    with Image.open(io.BytesIO(resp.content)) as image:
+        assert image.mode == "RGBA" and image.getpixel((10, 10))[3] == 0
+    white = web.client.get("/api/files/thumb", params={"path": "2-PRODUCTS/clear.png", "w": 64})
+    assert white.headers["content-type"] == "image/jpeg"
+    other = web.client.get("/api/files/thumb", params={"path": "2-PRODUCTS/clear.png", "w": 64, "bg": "red"})
+    assert other.headers["content-type"] == "image/jpeg"

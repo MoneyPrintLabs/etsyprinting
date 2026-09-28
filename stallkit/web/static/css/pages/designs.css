@@ -1222,7 +1222,7 @@
 }
 .page-designs .dr-pipe-title {
   font-size: 16.5px;
-  font-weight: 650;
+  font-weight: 700;
   letter-spacing: -0.01em;
 }
 .page-designs .dr-pipe-count {
@@ -1333,7 +1333,7 @@
 }
 .page-designs .dr-name {
   font-size: 13.5px;
-  font-weight: 650;
+  font-weight: 600;
 }
 .page-designs .dr-state {
   font-size: 12px;
@@ -1807,13 +1807,19 @@
     display: none;
   }
   .page-designs .dr-head {
-    gap: 14px;
+    gap: 12px;
   }
   .page-designs .dr-head-sub {
     font-size: 12.5px;
   }
   .page-designs .dr-head.is-final .dr-chips {
     margin-left: 6px;
+    gap: 6px;
+  }
+  /* Inter is a little wider than the system face: "10 taslak Etsy'ye gönderildi" stays
+     on one line next to the chips and the buttons of a 1280 px window. */
+  .page-designs .dr-head.is-final .dr-head-title {
+    font-size: 17px;
   }
   .page-designs .dr-side-title {
     font-size: 15.5px;

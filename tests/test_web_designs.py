@@ -15,7 +15,7 @@ import pytest
 from PIL import Image
 from web_helpers import ETSY_SHOP_ID, read_events, use_fake_etsy, wait_for_job
 
-from stallkit.drop import mockup
+from stallkit.drop import mockup, stream
 from stallkit.drop.template import Template
 from stallkit.web.api import designs
 
@@ -58,6 +58,9 @@ def fast_images(monkeypatch):
 
     monkeypatch.setattr(mockup, "compose", small_compose)
     monkeypatch.setattr(mockup, "flatten_design", small_flat)
+    # These tiny pictures would each get a "may look soft" warning (tests/test_vp_flow.py).
+    monkeypatch.setattr(stream, "SMALL_IMAGE_EDGE", 0)
+    monkeypatch.setattr(mockup, "MAX_UPSCALE", float("inf"))
 
 
 def _setup_shop(web, *, connected=True, template=True, mockups=2):
@@ -112,8 +115,8 @@ def test_without_keys_the_pending_view_says_what_is_missing(web):
     assert data["items"] == [] and data["ready"] is False
     assert data["blockers"] == ["keys", "template", "empty"]
     assert data["mockups"] == {"enabled": 0, "used": 0, "switched_on": 0, "over_limit": 0,
-                               "max": 19, "main": None, "total": 0, "types": {},
-                               "primary": None}
+                               "max": 19, "main": None, "main_type": None, "total": 0,
+                               "types": {}, "primary": None, "names": [], "left_out": []}
     assert data["shop"]["connected"] is False
 
     start = web.client.post("/api/designs/start", json={})
@@ -837,9 +840,14 @@ def test_the_pending_view_of_a_digital_template(web, fast_images):
         "params": {"name": "sunset poster set", "folder": "dosyalar", "missing": True}}
     assert data["runnable"] == 2 and "deliverables" in data["warnings"]
     assert data["files_total"] == 2
-    # 2 products, 2 concepts: 4 research pages, 2 creates, 3 + 1 images, 2 download files,
+    # A download's photos show no physical product: the T-shirt and mug mockups are left
+    # out, so the loose design gets its flat preview only.
+    assert data["mockups"]["names"] == [] and data["mockups"]["main"] is None
+    assert data["mockups"]["left_out"] == [{"name": "mug-white.jpg", "type": "mug"},
+                                           {"name": "tshirt-white.jpg", "type": "tshirt"}]
+    # 2 products, 2 concepts: 4 research pages, 2 creates, 1 + 1 images, 2 download files,
     # 2 inventory updates (variations unknown) and the template's inventory.
-    assert data["estimate_requests"] == 4 + 2 + 4 + 2 + 2 + 1
+    assert data["estimate_requests"] == 4 + 2 + 2 + 2 + 2 + 1
 
 
 def test_a_physical_template_attaches_nothing_and_still_wants_a_profile(web):

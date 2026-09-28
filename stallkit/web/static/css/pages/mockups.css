@@ -36,23 +36,26 @@
   font-size: 13px;
   color: var(--text-2);
 }
+/* Not in the video (arranging and switching mockups needs it): a quiet control, so its
+   icon is muted rather than the accent. */
 .page-mockups .mk-select-start .icon {
   width: 14px;
   height: 14px;
-  color: var(--accent-2);
+  color: var(--muted);
 }
+/* MockuplarEkrani.tsx FilterBar: the 8-ray burst in accent2, text 15px (13px here). */
 .page-mockups .mk-autonote {
   display: inline-flex;
   align-items: center;
   gap: 8px;
   margin-left: auto;
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--muted);
   white-space: nowrap;
 }
 .page-mockups .mk-autonote .icon {
+  flex: none;
   color: var(--accent-2);
-  opacity: 0.85;
 }
 .page-mockups .mk-notes {
   display: flex;
@@ -659,6 +662,8 @@
   color: var(--accent-2);
 }
 .page-mockups .mk-grid-new-title {
+  font-family: var(--font-display);
+  word-spacing: var(--display-word-spacing);
   font-size: 17.5px;
   font-weight: 700;
   letter-spacing: -0.01em;
@@ -740,6 +745,8 @@
   box-shadow: 0 10px 30px rgba(124, 108, 246, 0.35);
 }
 .page-mockups .mk-empty-title {
+  font-family: var(--font-display);
+  word-spacing: var(--display-word-spacing);
   font-size: 18px;
   font-weight: 700;
   letter-spacing: -0.01em;
@@ -820,6 +827,8 @@
   background: linear-gradient(145deg, #8b7cff, #6a58ec);
 }
 .page-mockups .mk-drop-title {
+  font-family: var(--font-display);
+  word-spacing: var(--display-word-spacing);
   font-size: 17px;
   font-weight: 700;
 }
@@ -867,20 +876,23 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-family: var(--font-display);
+  word-spacing: var(--display-word-spacing);
   font-size: 17px;
   font-weight: 700;
   letter-spacing: -0.01em;
 }
+/* The video's neutral Badge: a borderless pill on a faint white fill. */
 .page-mockups .mk-lib-count {
   flex: none;
   white-space: nowrap;
   display: inline-flex;
   align-items: center;
-  height: 24px;
+  height: 21px;
   padding: 0 10px;
   border-radius: 999px;
-  background: var(--panel-3);
-  border: 1px solid var(--border-2);
+  background: rgba(255, 255, 255, 0.06);
+  border: 0;
   font-size: 11.5px;
   font-weight: 600;
   color: var(--text-2);
@@ -917,9 +929,10 @@
   background: linear-gradient(180deg, rgba(124, 108, 246, 0.2), rgba(124, 108, 246, 0.12));
   border-color: rgba(155, 140, 255, 0.55);
 }
+/* MockuplarEkrani.tsx ListRow: a mint wash, no outline. */
 .page-mockups .mk-lib-item.is-applied {
-  background: rgba(52, 211, 153, 0.08);
-  border-color: rgba(52, 211, 153, 0.1);
+  background: rgba(47, 214, 163, 0.06);
+  border-color: transparent;
 }
 .page-mockups .mk-lib-item.is-disabled .mk-lib-thumb img {
   opacity: 0.45;
@@ -1008,14 +1021,16 @@
   background: rgba(52, 211, 153, 0.14);
   color: var(--success);
 }
+/* MockuplarEkrani.tsx: 2px dashed in the video's border colour, 56 px (49 here). */
 .page-mockups .mk-lib-new {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  height: 46px;
+  flex: none;
+  height: 49px;
   margin-top: 12px;
-  border: 1.5px dashed var(--border-2);
+  border: 2px dashed var(--border);
   border-radius: 12px;
   color: var(--text-2);
   font-size: 13.5px;
@@ -1111,11 +1126,14 @@
 }
 
 /* the print area */
+/* At rest the design shows through almost untouched (the video's PrintGuide after the
+   save: a 0.042 lavender fill and a faint glow). */
 .page-mockups .mk-rect {
   position: absolute;
   box-sizing: border-box;
   border: 2px dashed #9d8eff;
-  background: rgba(124, 108, 246, 0.08);
+  background: rgba(123, 108, 255, 0.04);
+  box-shadow: 0 0 12px rgba(123, 108, 255, 0.18), inset 0 0 5px rgba(123, 108, 255, 0.1);
   cursor: move;
   outline: none;
 }
@@ -1136,11 +1154,12 @@
 .page-mockups .mk-rect.is-ghost:focus-visible {
   opacity: 0.8;
 }
-/* While a rectangle is being drawn it is empty and glows (only its size shows); the
-   design comes after. */
-.page-mockups .mk-art.drag-draw .mk-rect-label {
+/* The "Baskı alanı" pill only once the rectangle is big enough for it (has-label is set
+   by the page from the on-screen size), also while it is being drawn, like the video's. */
+.page-mockups .mk-rect:not(.has-label) .mk-rect-label {
   display: none;
 }
+/* While a rectangle is being drawn it is empty and glows; the design comes after. */
 .page-mockups .mk-art.drag-draw .mk-rect {
   background: rgba(123, 108, 255, 0.12);
   box-shadow: 0 0 24px rgba(123, 108, 255, 0.5), inset 0 0 14px rgba(123, 108, 255, 0.28);
@@ -1168,7 +1187,7 @@
   top: 8px;
   left: 8px;
   padding: 3px 9px;
-  border-radius: 7px;
+  border-radius: 999px;
   background: var(--accent);
   color: #fff;
   font-size: 11.5px;
@@ -1374,6 +1393,8 @@
 .page-mockups .mk-side-title {
   flex: 1;
   min-width: 0;
+  font-family: var(--font-display);
+  word-spacing: var(--display-word-spacing);
   font-size: 21px;
   font-weight: 700;
   letter-spacing: -0.015em;
@@ -1390,17 +1411,25 @@
   gap: 8px;
   margin-top: 10px;
 }
+/* The size and the state are the video's small borderless Badges (radius 999, a faint
+   white fill, 13px text: 11.5 here); the size one is mono and regular. */
 .page-mockups .mk-size-chip {
   display: inline-flex;
   align-items: center;
-  height: 26px;
-  padding: 0 10px;
-  border-radius: 7px;
-  background: var(--panel-3);
-  border: 1px solid var(--border-2);
+  height: auto;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 0;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.15;
   color: var(--text-2);
+}
+.page-mockups .mk-side-chips .badge {
+  height: 21px;
+  font-size: 11.5px;
 }
 .page-mockups .mk-helper {
   margin-top: 14px;
@@ -1527,14 +1556,20 @@
   flex: 1;
   min-height: 16px;
 }
+/* MockuplarEkrani.tsx: a raised dark card with a mint border and a faint mint ring. It is
+   the side column's last child and that column scrolls, so the margin keeps the 4 px ring
+   inside it (the video's 18/40 px drop shadow would be cut to a hard edge: left out). */
 .page-mockups .mk-applied {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 13px 14px;
+  flex: none;
+  margin: 0 4px 4px;
+  padding: 12px 14px;
   border-radius: 12px;
-  border: 1px solid rgba(52, 211, 153, 0.35);
-  background: rgba(52, 211, 153, 0.07);
+  border: 1px solid rgba(47, 214, 163, 0.4);
+  background: var(--panel-3);
+  box-shadow: 0 0 0 4px rgba(47, 214, 163, 0.07);
   animation: mk-pop 0.25s var(--ease);
 }
 .page-mockups .mk-applied-icon {
@@ -1591,10 +1626,38 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The video's switch: 46 x 28 (40 x 24 here) with a violet ring when on. */
+.page-mockups .mk-same .toggle-track {
+  height: 24px;
+}
+.page-mockups .mk-same .toggle-thumb {
+  width: 18px;
+  height: 18px;
+}
+.page-mockups .mk-same .toggle.is-on .toggle-track {
+  box-shadow: 0 0 0 4px rgba(123, 108, 255, 0.12);
+}
+.page-mockups .mk-same .toggle.is-on .toggle-thumb {
+  transform: translateX(16px);
+}
 .page-mockups .mk-main-foot .btn {
   flex: none;
 }
-.page-mockups .mk-main-foot .btn.is-waiting {
+/* Vazgeç is the video's ghost button: dimmed text, a hairline, no fill. */
+.page-mockups .mk-main-foot .btn-secondary {
+  color: var(--text-2);
+  background: transparent;
+  border-color: var(--border);
+}
+.page-mockups .mk-main-foot .btn-secondary:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--hover);
+  border-color: var(--border-2);
+}
+/* Kaydet waits while a drag is on, and stays dimmed until a never-set area is drawn
+   (is-unset; still clickable: it then keeps the default area). */
+.page-mockups .mk-main-foot .btn.is-waiting,
+.page-mockups .mk-main-foot .btn.is-unset {
   opacity: 0.55;
 }
 

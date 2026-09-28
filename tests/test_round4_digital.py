@@ -158,13 +158,15 @@ def test_the_pending_estimate_counts_mockups_for_a_digital_jpg(web):
     from test_web_designs import _jpg, _put, _setup_shop
 
     _fake, ws = _setup_shop(web)
+    (ws.mockups / "poster-oak-frame.jpg").write_bytes(_jpg())
     _put(web, "boho-sunset-wall-art.jpg", _jpg())
     physical = web.client.get("/api/designs/pending").json()
     _template(ws)
     digital = web.client.get("/api/designs/pending").json()
-    # Physical: the JPG is a finished photo (1 image). Digital: 2 mockups + the preview,
-    # plus its download file, and no inventory update is needed on either side here.
-    assert digital["estimate_requests"] - physical["estimate_requests"] == (3 - 1) + 1
+    # Physical: the JPG is a finished photo (1 image). Digital: the poster mockup (the
+    # T-shirt and mug show a physical product, so a download leaves them out) + the
+    # preview, plus its download file; no inventory update is needed on either side here.
+    assert digital["estimate_requests"] - physical["estimate_requests"] == (2 - 1) + 1
 
 
 # --- etsy-2 / pipe-4: subfolders of dosyalar are refused, never silently left out ----------------
@@ -339,7 +341,7 @@ def test_the_stream_names_a_missing_download_even_when_a_photo_failed(studio):
     client = Client(ws)
     real_image = client.upload_listing_image
 
-    def fail_image(listing_id, image, *, rank):
+    def fail_image(listing_id, image, *, rank, alt_text=""):
         if rank == 1:
             raise listings.EtsyApiError(400, "image refused", method="POST", path="/images")
         return real_image(listing_id, image, rank=rank)

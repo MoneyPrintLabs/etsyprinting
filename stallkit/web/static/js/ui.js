@@ -1232,29 +1232,34 @@ export function confirm({ title, message, confirmLabel, cancelLabel, danger = fa
   });
 }
 
-let toastHost = null;
-function ensureToastHost() {
-  if (toastHost && toastHost.isConnected) return toastHost;
-  toastHost = h("div", { class: "toasts", role: "region", "aria-live": "polite", "aria-label": ct("toast.region") });
-  document.body.appendChild(toastHost);
-  return toastHost;
+const toastHosts = {};
+/** The toasts' corner: "bottom" (bottom right) or "top" (top right, under the header). */
+function ensureToastHost(place = "bottom") {
+  const known = toastHosts[place];
+  if (known && known.isConnected) return known;
+  const host = h("div", { class: cx("toasts", place === "top" && "is-top"), role: "region", "aria-live": "polite", "aria-label": ct("toast.region") });
+  document.body.appendChild(host);
+  toastHosts[place] = host;
+  return host;
 }
 
 const TOAST_ICON = { success: "check", danger: "x", warning: "alert", info: "info", accent: "sparkles" };
 
 /**
- * toast({title, message, tone="info", timeout=5000, action}) -> {close}
+ * toast({title, message, tone="info", timeout=5000, action, icon, place}) -> {close, el}
  * tone: success | danger | warning | info | accent. timeout 0 = stays until closed.
+ * icon: another icon than the tone's. place: "top" puts it top right, under the header
+ * (the video's "Kontrol tamam"); every other toast stays bottom right.
  */
-export function toast({ title, message, tone = "info", timeout = 5000, action } = {}) {
-  const host = ensureToastHost();
+export function toast({ title, message, tone = "info", timeout = 5000, action, icon: ic, place } = {}) {
+  const host = ensureToastHost(place === "top" ? "top" : "bottom");
   let timer = null;
   let left = timeout;
   let started = 0;
   const el = h(
     "div",
     { class: cx("toast", `tone-${tone}`), role: tone === "danger" ? "alert" : "status" },
-    h("span", { class: "toast-icon" }, icon(TOAST_ICON[tone] || "info", { size: 18, strokeWidth: tone === "success" ? 3 : 2.4 })),
+    h("span", { class: "toast-icon" }, icon(ic || TOAST_ICON[tone] || "info", { size: 18, strokeWidth: tone === "success" ? 3 : 2.4 })),
     h(
       "div",
       { class: "toast-text" },
@@ -1378,8 +1383,10 @@ export function closePopovers() {
 }
 
 /**
- * menu(anchorEl, items:[{label, icon, onClick, danger, divider, checked, disabled, hint, header}],
+ * menu(anchorEl, items:[{label, icon, onClick, danger, divider, checked, checkbox, disabled, hint, header}],
  *      {placement, width}) -> {el, close()}
+ * checked: a choice among the items (menuitemradio); with checkbox: true, an on/off switch
+ * of its own (menuitemcheckbox).
  * Keyboard: ↑/↓/Home/End move, Enter/Space run, Esc closes and refocuses the anchor.
  */
 export function menu(anchor, items = [], opts = {}) {
@@ -1403,8 +1410,8 @@ export function menu(anchor, items = [], opts = {}) {
       "button",
       {
         type: "button",
-        role: it.checked !== undefined ? "menuitemradio" : "menuitem",
-        "aria-checked": it.checked !== undefined ? (it.checked ? "true" : "false") : undefined,
+        role: it.checkbox ? "menuitemcheckbox" : it.checked !== undefined ? "menuitemradio" : "menuitem",
+        "aria-checked": it.checked !== undefined || it.checkbox ? (it.checked ? "true" : "false") : undefined,
         class: cx("menu-item", it.danger && "is-danger", it.checked && "is-checked"),
         disabled: !!it.disabled,
         tabindex: "-1",

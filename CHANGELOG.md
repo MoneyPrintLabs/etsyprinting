@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The video's fonts are bundled**: Inter, Plus Jakarta Sans and JetBrains Mono (SIL
+  Open Font License 1.1, see NOTICE.md) ship with the app, so every computer draws the
+  same text. On Windows a medium weight no longer looks as bold as a semibold one (the
+  active menu item stands out again), and headings and numbers use the display face.
+- **Tasarım Yükle**: a design saved without transparency is no longer uploaded silently
+  as a finished photo. Its row warns, and when it sits on a solid background the start
+  card offers to place it on the mockups instead (the background joined to the edges is
+  removed; white inside the design stays).
+- The Kontrol step warns about pictures that would look soft on Etsy: a short side under
+  1000 px, or a design enlarged more than twice onto a mockup.
+- Every picture a draft gets carries an alt text with the design, the product and its
+  colour ("Retro Mountain Sunset t-shirt, white").
+- The start card says when the template's product differs from the main mockup (a mug
+  template with a T-shirt as the first mockup).
+- **Siparişler**: for a shop that ships from Türkiye, a note before the first send says
+  that Etsy may refuse tracking numbers from newer API keys, with the CSV download and
+  Etsy's orders page. It goes for good once Etsy has accepted a number.
+
+### Changed
+
+- **Şablon İlan** shows how many of each listing sold, best sellers first, counted from
+  the months **Kâr-Zarar** has already read (no extra Etsy calls; the tooltip names the
+  months). Without those months it shows the favourites in Etsy's order, as before.
+- **Şablon İlan** names the category by its first and last level in your language
+  ("Giyim › Tişörtler"), shows only whole listing rows until "daha göster" is pressed,
+  and keeps each field's grey bar until its value has faded in.
+- **Mockuplar**: Kaydet stays dimmed until a new mockup's print area is drawn (it can
+  still save the default area), the "Baskı alanı" label shows while drawing once the
+  rectangle is big enough, and the chips, notices and buttons match the video.
+- A download-only template's drafts use only the mockups that show no physical product
+  (posters, canvases, frames) plus the flat preview; the start card names them and the
+  ones left out.
+- **İlanlar**: "N yeni taslak" counts only the drafts of stallkit's latest run; older
+  drafts read "N taslak".
+- **SEO → Düzelt** offers a title change only when removing whole repeated phrases ends
+  the repetition.
+- **Taslak İlan** names each picture's product and colour from the file the run sent,
+  counts the pictures the run uploaded ("7/7 görsel"), and shows a transparent design on
+  a checkerboard. The Kontrol step's toast sits top right, as in the video.
+- The bell's badge stays clear after a connect the page itself already announced.
+- Font weights are the video's 400/500/600/700/800 only; table column heads are 11.4 px,
+  and a few labels were tightened so Inter fits a 1280 px window.
+
 ## [0.3.1] — 2026-09-28
 
 ### Fixed

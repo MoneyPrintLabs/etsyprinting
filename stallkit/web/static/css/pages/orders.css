@@ -221,7 +221,7 @@
 .page-orders .o-no {
   color: var(--text);
   font-family: var(--mono);
-  font-size: 13.5px;
+  font-size: 13.2px;
   font-weight: 600;
   letter-spacing: -0.2px;
 }
@@ -684,10 +684,10 @@
   }
   /* Narrower fixed columns so the product keeps some room (inline widths need !important). */
   .page-orders .o-table .tbl colgroup col:nth-child(2) {
-    width: 132px !important;
+    width: 136px !important; /* "Sep 28 · 09:23 PM" under the order number */
   }
   .page-orders .o-table .tbl colgroup col:nth-child(3) {
-    width: 118px !important;
+    width: 126px !important; /* Inter: "Ava P." and its "Hediye" badge */
   }
   .page-orders .o-table .tbl colgroup col:nth-child(5) {
     width: 84px !important;
@@ -696,10 +696,10 @@
     width: 108px !important;
   }
   .page-orders .o-table .tbl colgroup col:nth-child(7) {
-    width: 166px !important;
+    width: 158px !important;
   }
   .page-orders .o-table .tbl colgroup col:nth-child(8) {
-    width: 154px !important;
+    width: 140px !important; /* the widest status pill is ~108 px */
   }
   /* An empty carrier select keeps its chevron; the truck icon goes so "Seçin" / "Choose" fit. */
   .page-orders .o-carrier.is-empty > .icon {

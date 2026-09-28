@@ -166,6 +166,7 @@ def test_listings_are_mapped_for_the_page(web):
     data = web.client.get("/api/template/listings").json()
     assert data["count"] == 2 and data["truncated"] is False
     assert data["template_listing_id"] is None
+    assert data["sales"] is None
     first, second = data["items"]
     assert first == {
         "listing_id": 1000001,
@@ -175,6 +176,7 @@ def test_listings_are_mapped_for_the_page(web):
         "thumb_url": "https://i.example.com/1.jpg",  # the rank-1 image
         "state": "active",
         "num_favorers": 48,
+        "sold": None,  # Kâr-Zarar has read no month yet
         "product_type": "T-shirts",  # the taxonomy leaf
         "product_type_key": "tshirt",  # the page says it in the seller's language
         "has_variations": False,

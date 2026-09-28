@@ -17,11 +17,17 @@ Endpoints:
     POST /api/template {"listing_id": int}
          -> {"template": <summary>}  (writes product.json)
 
-    <row> = {listing_id, title, price, currency, thumb_url, state, num_favorers,
+    <row> = {listing_id, title, price, currency, thumb_url, state, num_favorers, sold,
              product_type, product_type_key, has_variations, listing_type}
 
 `product_type` is Etsy's taxonomy leaf (English); `product_type_key` names the product
 for the page's own words (tshirt, mug, poster, ...), or is null.
+
+`sold` is the units sold per listing in the months Kâr-Zarar has already read from Etsy
+(its per-month caches on disk, paid and not cancelled orders; the last SALES_MONTHS
+months): the rows then come best sellers first, and `sales` is {"months": ["YYYY-MM",
+...]} (the months counted). With no such month on disk, `sold` is null, `sales` is null
+and the rows keep Etsy's order. This page makes no Etsy call of its own for it.
     <summary> = {listing_id, title, state, thumb_url, currency, has_variations,
                  listing_type, is_current, saved_at, ok_count, total, resolved,
                  fields: [{key, ok, required, value}]}
@@ -60,6 +66,7 @@ from ...drop import cache as disk_cache
 from ...drop import template as template_mod
 from ...errors import EtsyApiError, StallKitError, ValidationError
 from ..router import ApiError, Request
+from . import profit as profit_api
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..context import AppContext
@@ -74,6 +81,8 @@ TAXONOMY_TTL = 7 * 24 * 3600
 TAXONOMY_KEY = "seller-taxonomy-nodes-v1"
 TAXONOMY_NAMESPACE = "taxonomy"
 MAX_LISTING_ID = 10**12
+# Units sold are counted over Kâr-Zarar's chart window (its months cached on disk).
+SALES_MONTHS = profit_api.CHART_MONTHS
 
 FIELD_KEYS = (
     "price",
@@ -205,6 +214,21 @@ def _flatten_taxonomy(nodes: list[dict[str, Any]]) -> dict[int, list[str]]:
     return out
 
 
+def _units_sold(products: Any) -> dict[int, int]:
+    """{listing id: units} from a Kâr-Zarar month's `products` ({key: {listing_id, qty}})."""
+    sold: dict[int, int] = {}
+    if not isinstance(products, dict):
+        return sold
+    for item in products.values():
+        if not isinstance(item, dict):
+            continue
+        listing_id = _int(item.get("listing_id"))
+        qty = _int(item.get("qty"))
+        if listing_id and listing_id > 0 and qty and qty > 0:
+            sold[listing_id] = sold.get(listing_id, 0) + qty
+    return sold
+
+
 def _lookup_refused(exc: EtsyApiError) -> bool:
     """A lookup failure that should leave names unresolved rather than fail the answer.
 
@@ -239,6 +263,8 @@ class TemplateApi:
         self._caches: weakref.WeakKeyDictionary[Any, _ClientCache] = weakref.WeakKeyDictionary()
         self._taxonomy: dict[int, list[str]] | None = None
         self._taxonomy_at = 0.0
+        # Kâr-Zarar month file -> ((mtime_ns, size), {listing id: units sold})
+        self._sold_memo: dict[str, tuple[tuple[int, int], dict[int, int]]] = {}
 
     # --- caches -----------------------------------------------------------------
 
@@ -311,6 +337,46 @@ class TemplateApi:
                     mapping[record_id] = record
         cache.lookups[name] = (now, mapping)
         return mapping
+
+    def _month_sold(self, shop_key: str, ym: str) -> dict[int, int] | None:
+        """{listing id: units sold} from one Kâr-Zarar month file; None when not cached."""
+        path = profit_api.raw_path(shop_key, ym)
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        stamp = (stat.st_mtime_ns, stat.st_size)
+        memo_key = str(path)
+        with self._lock:
+            found = self._sold_memo.get(memo_key)
+        if found is not None and found[0] == stamp:
+            return found[1]
+        raw = profit_api.load_raw(shop_key, ym)
+        if raw is None:
+            return None
+        sold = _units_sold(raw.get("products"))
+        with self._lock:
+            self._sold_memo[memo_key] = (stamp, sold)
+        return sold
+
+    def _sales(self, client: Any) -> dict[str, Any] | None:
+        """Units sold per listing over the last SALES_MONTHS months that Kâr-Zarar has on
+        disk: {"months": [...], "sold": {id: n}}, or None when it has none of them."""
+        try:
+            shop_key = profit_api._shop_key(self.ctx, client)
+        except StallKitError as exc:
+            log.info("template: no sales counts (%s)", exc)
+            return None
+        months: list[str] = []
+        sold: dict[int, int] = {}
+        for ym in profit_api.recent_months(profit_api.current_month(), SALES_MONTHS):
+            counts = self._month_sold(shop_key, ym)
+            if counts is None:
+                continue
+            months.append(ym)
+            for listing_id, qty in counts.items():
+                sold[listing_id] = sold.get(listing_id, 0) + qty
+        return {"months": months, "sold": sold} if months else None
 
     # --- Etsy reads -------------------------------------------------------------
 
@@ -514,25 +580,33 @@ class TemplateApi:
                 raise
             log.warning("template: taxonomy unavailable (%s)", exc)
             paths = {}
+        sales = self._sales(client)
+        sold = sales["sold"] if sales else None
         items = []
         for listing in cache.items or []:
             price = listing.get("price")
             taxonomy = paths.get(_int(listing.get("taxonomy_id")) or 0) or []
+            listing_id = int(listing["listing_id"])
             items.append({
-                "listing_id": int(listing["listing_id"]),
+                "listing_id": listing_id,
                 "title": _title(listing),
                 "price": template_mod.money(price),
                 "currency": _currency(listing),
                 "thumb_url": _thumb_url(listing),
                 "state": listing.get("state") or "active",
                 "num_favorers": _int(listing.get("num_favorers")) or 0,
+                "sold": sold.get(listing_id, 0) if sold is not None else None,
                 "product_type": taxonomy[-1] if taxonomy else None,
                 "product_type_key": _product_key(taxonomy),
                 "has_variations": bool(listing.get("has_variations")),
                 "listing_type": _listing_type(listing.get("listing_type")),
             })
+        if sold is not None:
+            # Best sellers first (the video's order); a tie keeps Etsy's order.
+            items.sort(key=lambda item: -item["sold"])
         return {
             "items": items,
+            "sales": {"months": sales["months"]} if sales else None,
             "count": max(cache.count, len(items)),
             "truncated": cache.count > len(items),
             "currency": self._shop_currency(),
