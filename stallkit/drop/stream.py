@@ -923,6 +923,8 @@ class _Run:
                 code = "no_shipping_profile"
             elif message.startswith("type is download, so nothing is shipped"):
                 code = "not_shipped"  # a digital template with parcel values left in it
+            elif message.startswith(("item_weight", "item_length", "item_width", "item_height")):
+                code = "measure_not_sent"  # a weight or size Etsy refuses (0, or no unit)
             else:
                 code = "check_warning"
             self._warn(item, code, message, "check")

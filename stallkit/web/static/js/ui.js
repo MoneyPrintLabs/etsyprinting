@@ -171,7 +171,8 @@ export function spinner({ size = 16, tone, label } = {}) {
 /**
  * button({label, icon, iconRight, variant, size, onClick, disabled, loading, title, type,
  *         count, block, class, ariaLabel, autoLoading})
- * variant: primary | secondary | ghost | danger | success ; size: sm | md | lg.
+ * variant: primary | secondary | ghost | soft | danger | success ; size: sm | md | lg.
+ * soft: the video's violet-tinted button (accent-soft fill, lavender text, no border).
  * autoLoading: when onClick returns a promise, show the spinner until it settles.
  * The node gets .setLoading(bool), .setLabel(text), .setDisabled(bool), .setCount(n).
  */
@@ -1253,7 +1254,7 @@ export function toast({ title, message, tone = "info", timeout = 5000, action } 
   const el = h(
     "div",
     { class: cx("toast", `tone-${tone}`), role: tone === "danger" ? "alert" : "status" },
-    h("span", { class: "toast-icon" }, icon(TOAST_ICON[tone] || "info", { size: 15, strokeWidth: 2.4 })),
+    h("span", { class: "toast-icon" }, icon(TOAST_ICON[tone] || "info", { size: 18, strokeWidth: tone === "success" ? 3 : 2.4 })),
     h(
       "div",
       { class: "toast-text" },
@@ -1807,7 +1808,9 @@ export async function filesFromDrop(dataTransfer) {
  * dropzone({title, subtitle, accept, multiple=true, directory=false, onFiles([{file, path}]),
  *           onReject([{file, path}]), icon="upload", content, disabled, compact})
  * Drag & drop (folders included) plus click / Enter / Space to pick. `content` replaces the
- * default inner layout. Node gets .setDisabled(bool) and .open().
+ * default inner layout. Node gets .setDisabled(bool), .open() and .deliver(list): files
+ * handed over from elsewhere ([{file, path}], e.g. takePendingDrop()) go through the same
+ * accept / onReject / onFiles path as a drop.
  */
 export function dropzone(opts = {}) {
   const {
@@ -1919,7 +1922,26 @@ export function dropzone(opts = {}) {
   };
   el.setDisabled(disabled);
   el.open = open;
+  el.deliver = (list) => {
+    if (!disabled && Array.isArray(list) && list.length) deliver(list);
+  };
   return el;
+}
+
+// Files dropped on one page for another (the Panel's "Tasarım yükle" card hands them to
+// Tasarım Yükle): kept here for one navigation, taken once, dropped after a minute.
+let pendingDrop = null;
+
+/** Keep dropped files ([{file, path}]) for the next page, which calls takePendingDrop(). */
+export function setPendingDrop(list, { ttl = 60000 } = {}) {
+  pendingDrop = Array.isArray(list) && list.length ? { list, until: Date.now() + ttl } : null;
+}
+
+/** The files another page left for this one ([{file, path}]), or null. Taken once. */
+export function takePendingDrop() {
+  const p = pendingDrop;
+  pendingDrop = null;
+  return p && Date.now() <= p.until ? p.list : null;
 }
 
 function hasFiles(e) {
@@ -2034,7 +2056,7 @@ export function barChart({ data = [], format = (v) => String(v), highlightLast =
       svg(
         "defs",
         null,
-        svg("linearGradient", { id: `${gid}-hi`, x1: "0", y1: "0", x2: "0", y2: "1" }, svg("stop", { offset: "0", "stop-color": "#a193ff" }), svg("stop", { offset: "1", "stop-color": "#7c6cf6" })),
+        svg("linearGradient", { id: `${gid}-hi`, x1: "0", y1: "0", x2: "0", y2: "1" }, svg("stop", { offset: "0", "stop-color": "#a89cff" }), svg("stop", { offset: "1", "stop-color": "#7b6cff" })),
         svg("linearGradient", { id: `${gid}-lo`, x1: "0", y1: "0", x2: "0", y2: "1" }, svg("stop", { offset: "0", "stop-color": "#35325f" }), svg("stop", { offset: "1", "stop-color": "#23213d" })),
       ),
     );

@@ -381,7 +381,8 @@ def test_links_between_pages_use_the_query_the_target_reads():
 
 def test_the_panel_links_to_the_listings_tabs():
     text = (PAGES_DIR / "panel.js").read_text(encoding="utf-8")
-    assert '"/ilanlar?tab=active"' in text and '"/ilanlar?tab=draft"' in text
+    # The drafts card (the video's "Bu ay oluşturulan taslak") opens the drafts tab.
+    assert '"/ilanlar?tab=draft"' in text
     assert "?state=" not in text
 
 

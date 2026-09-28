@@ -348,7 +348,9 @@ def test_ship_job_sends_and_reports_each_row(web):
     assert [q["receipt_id"] for q in job["state"]["queue"]] == [3000001, 3000002, 3000003]
     assert web.ctx.shop_prefs()["last_carrier"]["TR"] in ("UPS", "USPS")
     notes = web.client.get("/api/notifications").json()["items"]
-    assert notes[0]["key"] == "notify.shipped" and notes[0]["params"] == {"n": 2}
+    # The Panel's sub-line names the carriers the send used, most used first.
+    assert notes[0]["key"] == "notify.shipped"
+    assert notes[0]["params"] == {"n": 2, "carriers": ["UPS", "USPS"]}
 
 
 def test_a_ship_job_waiting_behind_another_write_job_can_be_found_again(web):

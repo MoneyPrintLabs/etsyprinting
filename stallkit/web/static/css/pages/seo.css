@@ -23,13 +23,33 @@
   flex: none;
   margin-bottom: 18px;
 }
+/* SeoEkrani CardHead: a 40 canvas px tile (35 CSS px), a 20 px title at 700 */
+.seo-card > .card-head .icon-tile {
+  width: 35px;
+  height: 35px;
+  border-radius: 10px;
+}
 .seo-card .card-title {
-  font-size: 16.5px;
-  font-weight: 650;
+  font-size: 17.5px;
+  font-weight: 700;
 }
 .seo-card .card-sub {
   font-size: 12.5px;
   min-height: 1.45em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* "Yeniden tara": the video's ghost button (primitives.tsx: transparent, textDim,
+   C.border). It sits in the shell's header, outside .page-seo. */
+.seo-rescan:not(.is-active) {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text-2);
+}
+.seo-rescan:hover:not(:disabled) {
+  color: var(--text);
 }
 
 /* ------------------------------------------------------------------ audit card */
@@ -48,40 +68,118 @@
   gap: 6px;
   white-space: nowrap;
 }
+/* SeoEkrani Legend: 8 canvas px dots */
 .seo-legend .dot {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
 }
 
-.seo-toolbar {
+/* The card head's right side: the legend, near the card's edge as in the video, and
+   one small button for the list's controls (seo.js openTools). */
+.seo-head-tools {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex: none;
-  margin: -4px 0 14px;
+  min-width: 0;
+  margin-right: -6px;
 }
-.seo-toolbar .tabs {
+.seo-head-btn.btn-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  color: var(--muted);
+}
+.seo-head-btn.btn-icon:hover:not(:disabled),
+.seo-head-btn.btn-icon[aria-expanded="true"] {
+  background: var(--hover);
+  color: var(--text);
+}
+/* a draft list or a search is on */
+.seo-head-btn.btn-icon.is-active {
+  color: var(--accent-2);
+}
+/* shop-wide notes are waiting in the popover */
+.seo-head-dot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tone, var(--warning));
+  box-shadow: 0 0 0 2px var(--panel);
+}
+.seo-head-dot[hidden] {
+  display: none;
+}
+
+/* the tools popover */
+.seo-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.seo-tools > .seo-pop-label:first-child {
+  margin-top: 0;
+  margin-bottom: -2px;
+}
+.seo-tools .seo-tabs {
+  display: flex;
   padding: 3px;
   border-radius: 10px;
 }
-.seo-toolbar .search {
-  height: 34px;
-  min-width: 150px;
-  width: 230px;
-  border-radius: 10px;
+.seo-tools .seo-tabs .tab {
+  flex: 1;
+  justify-content: center;
 }
-.seo-shop-slot:empty {
+.seo-tools .search {
+  width: 100%;
+  height: 34px;
+  border-radius: 9px;
+}
+.seo-tools-shop:empty {
   display: none;
 }
-.seo-shop-btn.tone-warning {
-  color: var(--warning);
+.seo-tools-shop {
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
 }
-.seo-shop-btn.tone-danger {
-  color: var(--danger);
+.seo-tools-data {
+  display: flex;
+  flex-direction: column;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
 }
-.seo-shop-btn .btn-count {
-  background: color-mix(in srgb, var(--tone) 18%, transparent);
-  color: var(--tone);
+.seo-tools-btn {
+  justify-content: flex-start;
+  width: 100%;
+  font-weight: 500;
+}
+
+/* A filtered list says so: the search field is in the popover. */
+.seo-query {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 4px 0 12px;
+  border-radius: 9px;
+  background: var(--accent-soft);
+  color: var(--accent-2);
+  font-size: 12.5px;
+}
+.seo-query > span {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-2);
+}
+.seo-query-clear {
+  flex: none;
+  height: 26px;
+}
+.seo-list-note > * + * {
+  margin-top: 8px;
 }
 
 .seo-list-note:empty {
@@ -103,42 +201,63 @@
   margin: -4px -8px 0;
   padding: 4px 8px 8px;
   overscroll-behavior: contain;
+  /* the rows size themselves from the list's height (cqh) */
+  container-type: size;
 }
 
+/* Four whole rows fill the card, as in the video (its rows are flex: 1): each row is a
+   quarter of the list's height less the gaps, within 118-150 px; the rest scroll.
+   The video's rows: radius R.md (12 canvas px) and a barely visible borderSoft edge. */
 .seo-item {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 18px;
   flex: none;
   min-height: 134px;
-  padding: 30px 18px 30px 18px;
-  border-radius: 14px;
+  min-height: clamp(118px, calc((100cqh - 36px) / 4), 150px);
+  padding: 16px 18px;
+  border-radius: 10.5px;
   background: var(--panel-2);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-soft);
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
 }
 .seo-item:hover:not(.is-selected):not(.is-skeleton) {
-  border-color: var(--border-2);
+  border-color: var(--border);
 }
 .seo-item:focus-visible {
   outline: 2px solid var(--accent-2);
   outline-offset: 2px;
 }
+/* SeoEkrani highlight: a violet tint in place of panel-2, a 0.7 edge, an even 4 px halo */
 .seo-item.is-selected {
-  border-color: rgba(124, 108, 246, 0.72);
-  background: linear-gradient(0deg, rgba(124, 108, 246, 0.1), rgba(124, 108, 246, 0.1)), var(--panel-2);
-  box-shadow: 0 0 0 1px rgba(124, 108, 246, 0.18), 0 10px 34px -16px rgba(124, 108, 246, 0.55);
+  border-color: rgba(123, 108, 255, 0.7);
+  background: rgba(123, 108, 255, 0.12);
+  box-shadow: 0 0 0 4px rgba(123, 108, 255, 0.12);
 }
 .seo-item.is-skeleton {
   cursor: default;
 }
 
+/* The video's ring: a tinted disc 3 px inside the ring, the number at 800. */
+.seo-ring .score-fill {
+  fill: var(--tone-soft);
+  r: 26px;
+}
 .seo-ring .score-num {
-  font-weight: 750;
+  font-weight: 800;
 }
 .seo-ring.is-counting .score-arc {
   transition: stroke 0.3s;
+}
+/* While a ring counts up, its disc fills in from 30 % (seo.js itemView). */
+.seo-ring.is-revealing .score-fill {
+  animation: seo-disc var(--rdur, 0.75s) cubic-bezier(0.33, 1, 0.68, 1) var(--rd, 0ms) both;
+}
+@keyframes seo-disc {
+  from {
+    fill-opacity: 0.3;
+  }
 }
 
 .seo-item-main {
@@ -158,7 +277,7 @@
   flex: 1;
   min-width: 0;
   font-size: 17px;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: -0.01em;
   line-height: 1.3;
   color: var(--text);
@@ -166,6 +285,15 @@
 .seo-item-action {
   flex: none;
   display: flex;
+}
+.seo-item-action.is-entering {
+  animation: seo-fade var(--dur, 0.32s) var(--ease) both;
+  animation-delay: var(--d, 0ms);
+}
+@keyframes seo-fade {
+  from {
+    opacity: 0.35;
+  }
 }
 .seo-skel-title {
   display: block;
@@ -198,12 +326,12 @@
   color: var(--muted);
 }
 .seo-fix-btn.is-selected {
-  background: rgba(124, 108, 246, 0.2);
-  border-color: rgba(124, 108, 246, 0.16);
-  color: #aea2ff;
+  background: rgba(123, 108, 255, 0.2);
+  border-color: rgba(123, 108, 255, 0.16);
+  color: var(--accent-2);
 }
 .seo-fix-btn.is-selected:hover:not(:disabled) {
-  background: rgba(124, 108, 246, 0.28);
+  background: rgba(123, 108, 255, 0.28);
   color: #c4bbff;
 }
 .seo-fix-btn .btn-count {
@@ -232,7 +360,7 @@
   overflow: hidden;
 }
 .seo-chips.is-entering {
-  animation: seo-rise 0.32s var(--ease) both;
+  animation: seo-rise var(--dur, 0.32s) var(--ease) both;
   animation-delay: var(--d, 0ms);
 }
 @keyframes seo-rise {
@@ -290,7 +418,7 @@
 }
 .seo-pop-title {
   font-size: 14px;
-  font-weight: 650;
+  font-weight: 600;
 }
 .seo-pop-sub {
   margin-top: 2px;
@@ -313,7 +441,7 @@
 .seo-pop-label {
   margin: 14px 0 8px;
   font-size: 10.5px;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: 0.09em;
   text-transform: uppercase;
   color: var(--muted);
@@ -337,7 +465,7 @@
   flex: none;
   height: 41px;
   border-radius: 10px;
-  background: #16171d;
+  background: var(--panel-2);
 }
 .seo-kw .input {
   font-size: 15px;
@@ -359,19 +487,28 @@
   flex: 1;
   min-width: 0;
 }
+/* the cached answer's "search again" button, at the end of the keyword field */
+.seo-kw-tail:empty {
+  display: none;
+}
+.seo-kw-tail {
+  display: inline-flex;
+  flex: none;
+  margin-right: -6px;
+}
 .seo-cached {
   display: inline-grid;
   place-items: center;
   flex: none;
-  width: 26px;
-  height: 26px;
-  margin: -4px -4px -4px 0;
+  width: 28px;
+  height: 28px;
   border-radius: 7px;
   color: var(--muted);
+  cursor: pointer;
 }
 .seo-cached:hover {
   color: var(--text-2);
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .seo-hint:empty {
@@ -386,9 +523,12 @@
   font-size: 12.5px;
 }
 
+/* The top 5 suggestions share the card's height evenly, as in the video. */
 .seo-tags {
   flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -401,9 +541,22 @@
 .seo-tag-row {
   display: flex;
   align-items: center;
+  flex: 1 1 0;
   gap: 16px;
-  padding: 21px 0 23px;
-  border-top: 1px solid var(--border);
+  min-height: 56px;
+  padding: 0;
+  border-top: 1px solid var(--border-soft);
+}
+/* A new answer's rows arrive one by one (seo.js tagRow). */
+.seo-tag-row.is-entering {
+  animation: seo-rise-row 0.35s var(--ease) both;
+  animation-delay: var(--d, 0ms);
+}
+@keyframes seo-rise-row {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
 }
 .seo-tag-main {
   flex: 1;
@@ -431,18 +584,23 @@
   flex: 1;
   min-width: 0;
   font-size: 15px;
-  font-weight: 650;
+  font-weight: 600;
   color: var(--text);
 }
+/* SeoEkrani: the share in the display face, 700 */
 .seo-tag-share {
   flex: none;
+  font-family: var(--font-display);
   font-size: 15px;
   font-weight: 700;
   color: var(--accent-2);
 }
 .seo-tag-main .progress {
   height: 7px;
-  background: #22242c;
+  background: rgba(255, 255, 255, 0.07);
+}
+.seo-tag-main .progress-fill {
+  transition-duration: 0.8s;
 }
 .seo-add {
   flex: none;
@@ -450,12 +608,12 @@
   padding: 0 13px;
   gap: 7px;
   border-color: transparent;
-  background: rgba(124, 108, 246, 0.14);
-  color: #aea2ff;
+  background: var(--accent-soft);
+  color: var(--accent-2);
   font-size: 13.5px;
 }
 .seo-add:hover:not(:disabled) {
-  background: rgba(124, 108, 246, 0.24);
+  background: rgba(123, 108, 255, 0.24);
   border-color: transparent;
   color: #c4bbff;
 }
@@ -464,7 +622,7 @@
   color: var(--success);
 }
 .seo-add.is-added:hover:not(:disabled) {
-  background: rgba(52, 211, 153, 0.2);
+  background: rgba(47, 214, 163, 0.2);
   color: var(--success);
 }
 .seo-add:disabled {
@@ -477,19 +635,27 @@
   flex-direction: column;
   gap: 12px;
   padding-top: 16px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--border-soft);
 }
+/* The honesty note: brighter text and a 19 canvas px violet info icon, edged with
+   borderSoft, padding 14 x 16 canvas px (SeoEkrani.tsx) */
 .seo-foot .note {
-  padding: 10px 14px;
+  padding: 12px 14px;
   border-radius: 10px;
-  color: var(--muted);
+  background: var(--panel-2);
+  border-color: var(--border-soft);
+  color: var(--text-2);
   font-size: 12.5px;
 }
 .seo-foot .note .note-icon {
   width: 20px;
   height: 20px;
   background: none;
-  color: var(--muted);
+  color: var(--accent-2);
+}
+.seo-foot .note .note-icon svg {
+  width: 17px;
+  height: 17px;
 }
 .seo-pending:empty {
   display: none;
@@ -542,7 +708,7 @@
 }
 .seo-fix-name {
   font-size: 14.5px;
-  font-weight: 650;
+  font-weight: 600;
   color: var(--text);
   line-height: 1.35;
   display: -webkit-box;
@@ -567,14 +733,14 @@
 }
 .seo-fix-h {
   font-size: 10.5px;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: 0.09em;
   text-transform: uppercase;
   color: var(--muted);
 }
 .seo-fix-count {
   font-size: 12.5px;
-  font-weight: 650;
+  font-weight: 600;
   color: var(--accent-2);
 }
 .seo-fix-label {
@@ -652,11 +818,15 @@
   font-size: 12.5px;
   color: var(--muted);
 }
+/* "Ürününüzü anlatanları işaretleyin" over the unticked suggestions */
+.seo-fix-pick {
+  padding-top: 0;
+}
 .seo-inline-spin {
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  border: 2px solid rgba(155, 140, 255, 0.25);
+  border: 2px solid rgba(168, 156, 255, 0.25);
   border-top-color: var(--accent-2);
   animation: sk-spin 0.75s linear infinite;
 }
@@ -712,7 +882,7 @@
   flex: none;
   width: 48px;
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--muted);
@@ -738,14 +908,8 @@
   .seo-legend {
     gap: 10px;
   }
-  .seo-legend-word,
-  .seo-shop-btn .btn-label {
+  .seo-legend-word {
     display: none;
-  }
-  .seo-toolbar .search {
-    flex: 0 1 200px;
-    width: auto;
-    min-width: 110px;
   }
   /* Too narrow for three chips on one line: let them wrap instead of shortening. */
   .seo-chips {
@@ -759,15 +923,17 @@
   .seo-card > .card-head {
     flex-wrap: wrap;
   }
-  .seo-legend {
+  .seo-head-tools {
     order: 3;
     width: 100%;
-    padding-left: 46px;
+    padding-left: 47px;
+  }
+  .seo-head-tools .seo-legend {
+    margin-right: auto;
   }
   .seo-item {
     gap: 14px;
-    padding: 22px 16px;
-    min-height: 118px;
+    padding: 16px;
   }
   .seo-item-title {
     font-size: 15.5px;
@@ -781,15 +947,13 @@
   .seo-list {
     flex: none;
     max-height: min(640px, 75vh);
+    container-type: normal;
+  }
+  .seo-item {
+    min-height: 118px;
   }
   .seo-tags {
     overflow: visible;
     flex: none;
-  }
-  .seo-toolbar {
-    flex-wrap: wrap;
-  }
-  .seo-toolbar .search {
-    width: 100%;
   }
 }

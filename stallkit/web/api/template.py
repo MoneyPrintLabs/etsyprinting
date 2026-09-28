@@ -18,7 +18,10 @@ Endpoints:
          -> {"template": <summary>}  (writes product.json)
 
     <row> = {listing_id, title, price, currency, thumb_url, state, num_favorers,
-             product_type, has_variations, listing_type}
+             product_type, product_type_key, has_variations, listing_type}
+
+`product_type` is Etsy's taxonomy leaf (English); `product_type_key` names the product
+for the page's own words (tshirt, mug, poster, ...), or is null.
     <summary> = {listing_id, title, state, thumb_url, currency, has_variations,
                  listing_type, is_current, saved_at, ok_count, total, resolved,
                  fields: [{key, ok, required, value}]}
@@ -47,6 +50,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 import weakref
@@ -140,6 +144,38 @@ def _thumb_url(listing: dict[str, Any]) -> str | None:
 def _listing_type(value: Any) -> str:
     """physical | download | both; physical for anything else (Etsy's default)."""
     return value if value in ("physical", "download", "both") else "physical"
+
+
+# Etsy's taxonomy names are English ("T-shirts", "Mugs"). The page says the product in the
+# seller's language, with the words the Mockuplar page already uses for its types.
+# Checked in order on the leaf; a leaf under "Prints" ("Digital Prints") is a poster too.
+_PRODUCT_WORDS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("hoodie", re.compile(r"\bhood(?:ie|y)s?\b", re.I)),
+    ("sweatshirt", re.compile(r"\bsweatshirts?\b", re.I)),
+    ("tshirt", re.compile(r"\bt-?shirts?\b|\btees?\b", re.I)),
+    ("mug", re.compile(r"\bmugs?\b", re.I)),
+    ("phone_case", re.compile(r"\bphone cases?\b", re.I)),
+    ("tote", re.compile(r"\btotes?\b", re.I)),
+    ("pillow", re.compile(r"\bpillows?\b|\bcushions?\b", re.I)),
+    ("sticker", re.compile(r"\bstickers?\b", re.I)),
+    ("canvas", re.compile(r"\bcanvas\b", re.I)),
+    ("poster", re.compile(r"\bposters?\b|\bprints?\b", re.I)),
+)
+_PRINTS = re.compile(r"\bprints?\b|\bposters?\b", re.I)
+
+
+def _product_key(path: list[str]) -> str | None:
+    """tshirt | sweatshirt | hoodie | mug | poster | canvas | phone_case | tote | pillow |
+    sticker for a taxonomy path (root first), None when the leaf is none of them."""
+    if not path:
+        return None
+    leaf = path[-1]
+    for key, pattern in _PRODUCT_WORDS:
+        if pattern.search(leaf):
+            return key
+    if len(path) > 1 and _PRINTS.search(path[-2]):
+        return "poster"
+    return None
 
 
 def _int(value: Any) -> int | None:
@@ -491,6 +527,7 @@ class TemplateApi:
                 "state": listing.get("state") or "active",
                 "num_favorers": _int(listing.get("num_favorers")) or 0,
                 "product_type": taxonomy[-1] if taxonomy else None,
+                "product_type_key": _product_key(taxonomy),
                 "has_variations": bool(listing.get("has_variations")),
                 "listing_type": _listing_type(listing.get("listing_type")),
             })

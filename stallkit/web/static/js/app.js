@@ -36,6 +36,9 @@ export const ROUTES = [
   { path: "/tasarim-yukle", page: "designs" },
   { path: "/ilanlar", page: "listings" },
   { path: "/ilanlar/:id", page: "listing-detail", nav: "listings" },
+  // A draft's own address (the video's /ilanlar/taslak/<id>); the page puts the right
+  // one in the address bar once it knows the listing's state.
+  { path: "/ilanlar/taslak/:id", page: "listing-detail", nav: "listings" },
   { path: "/seo", page: "seo" },
   { path: "/siparisler", page: "orders" },
   { path: "/kar-zarar", page: "profit" },
@@ -63,7 +66,9 @@ const NAV = [
       { page: "seo", path: "/seo", icon: "search" },
       { page: "orders", path: "/siparisler", icon: "truck" },
       { page: "profit", path: "/kar-zarar", icon: "chart" },
-      { page: "pinterest", path: "/pinterest", icon: "pin" },
+      // Shown only while Pinterest is in use (session.pinterest) or its page is open;
+      // Ayarlar always links to it. The video's workflow group ends at Kâr-Zarar.
+      { page: "pinterest", path: "/pinterest", icon: "pin", optional: true },
     ],
   },
   {
@@ -106,6 +111,7 @@ const state = {
   guarding: null, // the Promise of a leave-guard question in progress
   histIdx: 0, // the position of the shown page in this tab's history (history.state.idx)
   unloading: false, // the app itself reloads the tab: the leave was already agreed
+  pinterestSeen: false, // a Pinterest notification came in this session: it is in use
 };
 const statusListeners = new Set();
 const els = { nav: new Map() };
@@ -405,8 +411,8 @@ async function mountPage(routeDef, params, query) {
   const page = routeDef.page;
   const seq = ++state.mountSeq;
   unmountCurrent();
-  setActiveNav(routeDef.nav || page);
   state.currentPage = page;
+  setActiveNav(routeDef.nav || page);
   renderBanner();
   setHeader({ actions: [] });
 
@@ -570,6 +576,10 @@ function makeCtx(cur) {
       return off;
     },
     session: () => state.session,
+    /** Open the bell's notification list (the Panel's "Tümünü gör"). */
+    openNotifications: () => {
+      if (els.bell && !els.bell.__popover) toggleNotifications();
+    },
     showReleaseNotes,
     refreshStatus,
     setLanguage,
@@ -585,7 +595,8 @@ function setHeader(opts) {
   if ("title" in opts) {
     mount(els.title, opts.title ?? "");
     const plain = typeof opts.title === "string" ? opts.title : els.title.textContent;
-    document.title = plain ? `${plain} · stallkit` : "stallkit";
+    // The tab shows the page's name only, as in the video; the favicon names the app.
+    document.title = plain || "stallkit";
   }
   if ("subtitle" in opts) {
     mount(els.subtitle, opts.subtitle ?? "");
@@ -602,6 +613,15 @@ function setActiveNav(page) {
     if (p === page) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
   }
+  updateOptionalNav();
+}
+
+/** Pinterest's nav item: shown while Pinterest is in use, or while its page is open. */
+function updateOptionalNav() {
+  const a = els.nav.get("pinterest");
+  if (!a) return;
+  const inUse = !!(state.session && state.session.pinterest) || state.pinterestSeen;
+  a.hidden = !(inUse || state.currentPage === "pinterest");
 }
 
 // ------------------------------------------------------------------ status, shop card, banner
@@ -715,6 +735,7 @@ async function refreshSession() {
     return false;
   }
   state.session = s;
+  updateOptionalNav();
   return true;
 }
 
@@ -791,6 +812,9 @@ function openShopMenu() {
   items.push({ label: t("shop.add"), icon: "plus", onClick: addShop });
   items.push({ divider: true });
   items.push({ label: t("shop.settings"), icon: "settings", onClick: () => navigate("/ayarlar") });
+  // Pinterest's nav item is hidden while Pinterest is not in use: this keeps a way in.
+  const pinNav = els.nav.get("pinterest");
+  if (pinNav && pinNav.hidden) items.push({ label: t("nav.pinterest"), icon: "pin", onClick: () => navigate("/pinterest") });
   items.push({ label: t("shop.quit"), icon: "power", danger: true, onClick: quitApp });
   menu(els.shopCard, items, { placement: "top-start", width: Math.max(230, els.shopCard.offsetWidth) });
 }
@@ -947,7 +971,18 @@ async function toggleNotifications() {
 
 async function onNotification(n) {
   if (!n || typeof n !== "object") return;
-  state.notifications = [n, ...state.notifications.filter((x) => x.id !== n.id)].slice(0, 50);
+  if (n.ns === "pinterest" && !state.pinterestSeen) {
+    state.pinterestSeen = true;
+    updateOptionalNav();
+  }
+  // A notification that supersedes older ones (the server's notify(replace=True)).
+  const gone = new Set(Array.isArray(n.replaces) ? n.replaces : []);
+  if (gone.size) {
+    state.unread = Math.max(0, state.unread - state.notifications.filter((x) => gone.has(x.id) && !x.read).length);
+    if (notifPop) for (const id of gone) notifPop.unreadIds.delete(id);
+    delete n.replaces;
+  }
+  state.notifications = [n, ...state.notifications.filter((x) => x.id !== n.id && !gone.has(x.id))].slice(0, 50);
   if (!n.read) state.unread += 1;
   updateBell();
   if (n.ns && n.ns !== "common") await i18n.loadNamespace(n.ns);
@@ -1133,7 +1168,7 @@ function renderShell() {
   els.shopCard = h(
     "button",
     { type: "button", class: "shop-card", title: t("shop.menu_label"), "aria-haspopup": "menu", "aria-expanded": "false", onClick: openShopMenu },
-    h("span", { class: "shop-icon" }, icon("box", { size: 15 })),
+    h("span", { class: "shop-icon" }, icon("box", { size: 16 })),
     h("span", { class: "shop-text" }, els.shopName, els.shopState),
     h("span", { class: "shop-chev" }, icon("chevrons-up-down", { size: 14 })),
   );
@@ -1144,7 +1179,7 @@ function renderShell() {
     h(
       "a",
       { class: "brand", href: "/panel" },
-      logoMark({ size: 28 }),
+      logoMark({ size: 26 }),
       h("span", { class: "brand-text" }, h("span", { class: "brand-name" }, t("app.name")), h("span", { class: "brand-tag" }, t("app.tagline"))),
     ),
     groups,
@@ -1154,7 +1189,7 @@ function renderShell() {
   els.title = h("h1", { class: "page-title" });
   els.subtitle = h("p", { class: "page-subtitle" });
   els.pageActions = h("div", { class: "page-actions" });
-  els.bell = iconButton({ icon: "bell", iconSize: 15, title: t("notifications.open"), onClick: toggleNotifications });
+  els.bell = iconButton({ icon: "bell", iconSize: 16, class: "topbar-bell", title: t("notifications.open"), onClick: toggleNotifications });
   els.bell.setAttribute("aria-haspopup", "dialog");
   els.bell.setAttribute("aria-expanded", "false");
   els.updateSlot = h("div", { class: "update-slot", role: "status", hidden: true });
@@ -1176,6 +1211,7 @@ function renderShell() {
   updateBell();
   renderShop();
   renderUpdatePill();
+  updateOptionalNav();
   watchTitleWidth();
 }
 

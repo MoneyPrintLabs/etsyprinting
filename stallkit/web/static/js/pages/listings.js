@@ -14,7 +14,6 @@ import {
   h,
   iconButton,
   infoNote,
-  menu,
   mount,
   pagination,
   popover,
@@ -29,6 +28,7 @@ import {
 } from "../ui.js";
 import { icon } from "../icons.js";
 import { money, relative } from "../format.js";
+import { ROUTES } from "../app.js";
 
 const TABS = ["draft", "active", "all"];
 const SORTS = ["updated", "seo", "title", "price"];
@@ -36,7 +36,20 @@ const SEO_BANDS = ["high", "mid", "low"];
 const STATE_TONE = { draft: "warning", active: "success", inactive: "muted", expired: "danger", sold_out: "neutral" };
 const NAV_KEY = "stallkit.listings.nav";
 const MAX_TAGS = 13;
-const ROW_HEIGHT = 65;
+const ROW_HEIGHT = 65; // one table row (listings.css), as in the video (74 canvas px)
+const FOOT_HEIGHT = 46; // the card's footer: selection, range, pagination
+const CONTENT_PAD = 24; // .content's bottom padding
+const ENTER_ROWS = 8; // rows that slide in one by one on the first load
+const ENTER_GAP = 110; // ms between them (video: 8 rows over 26 frames)
+// The video opens a draft at /ilanlar/taslak/<id>. Used once the shell has that route
+// (app.js ROUTES); until then every listing opens at /ilanlar/<id>.
+const DRAFT_ROUTE = ROUTES.some((r) => r.path === "/ilanlar/taslak/:id");
+const REDUCED_MOTION = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/** The detail page's address: drafts under /ilanlar/taslak/ as in the video. */
+function detailPath(r) {
+  return DRAFT_ROUTE && r.state === "draft" ? `/ilanlar/taslak/${r.id}` : `/ilanlar/${r.id}`;
+}
 
 function storeNav(value) {
   try {
@@ -46,10 +59,15 @@ function storeNav(value) {
   }
 }
 
-/** Rows that fit the window without scrolling (the video shows 8), at least 8. */
-function fittingRows() {
-  const free = (window.innerHeight || 790) - 290;
-  return Math.max(8, Math.min(50, Math.floor(free / ROW_HEIGHT)));
+/**
+ * Rows that fit the window with the footer in view and no page scroll: 8 at 1545x790
+ * as in the video, 7 at 1280x720. Measured from the table's body once it is on screen
+ * (a running job's panel above it takes room too); before that, from the plain layout.
+ */
+function fittingRows(tbody) {
+  const top = (tbody && tbody.isConnected && tbody.getBoundingClientRect().top) || 189;
+  const free = (window.innerHeight || 790) - top - FOOT_HEIGHT - 1 - CONTENT_PAD;
+  return Math.max(5, Math.min(50, Math.floor(free / ROW_HEIGHT)));
 }
 
 export default {
@@ -70,13 +88,17 @@ export default {
       seq: 0,
       mode: "table", // table | setup | error
       jobs: new Map(), // job id -> live panel of a running publish / import
+      // The drafts tab opens with its page ticked, ready for "Seçilileri yayınla" (the
+      // video); once the person ticks or unticks anything, their choice is kept.
+      selTouched: false,
+      animated: false, // the rows' entrance plays on the first load only
     };
     const timers = [];
 
     const typeLabel = (kind, name) => (kind && kind !== "other" ? t(`type.${kind}`) : name || t("type.other"));
 
     // ------------------------------------------------------------ header
-    const filterBtn = button({ label: t("filter.button"), icon: "filter", variant: "secondary", onClick: () => openFilter() });
+    const filterBtn = button({ label: t("filter.button"), icon: "list", variant: "secondary", class: "lst-filter-btn", onClick: () => openFilter() });
     const publishBtn = button({
       label: t("publish.button"),
       icon: "upload",
@@ -84,8 +106,9 @@ export default {
       disabled: true,
       onClick: () => publishSelected(),
     });
-    const moreBtn = iconButton({ icon: "more", title: t("more.title"), onClick: () => openMore() });
-    ctx.setHeader({ actions: [filterBtn, publishBtn, moreBtn] });
+    // The header holds Filtrele and Seçilileri yayınla only (the video); the CSV and
+    // reload actions live at the bottom of the Filtrele popover.
+    ctx.setHeader({ actions: [filterBtn, publishBtn] });
 
     // ------------------------------------------------------------ toolbar
     const tabsCtl = tabs({
@@ -126,19 +149,26 @@ export default {
         load();
       },
     });
+    // The video's sort box ends in a down arrow.
+    const chev = sortSel.querySelector(".select-chev");
+    if (chev) mount(chev, icon("arrow-down", { size: 14 }));
     const toolbar = h("div", { class: "lst-toolbar" }, tabsCtl.el, h("div", { class: "spacer" }), search, sortSel);
 
     // ------------------------------------------------------------ table
+    // Column widths follow the video's row (IlanlarEkrani COL, GAP, padding): each is the
+    // content width plus 9.6 px on either side; the check column also takes the row's
+    // 21 px start and the last one its 21 px end (listings.css).
     const tbl = table({
       rowKey: "id",
       selectable: true,
+      checkWidth: 50,
       skeletonRows: st.perPage,
       class: "lst-table",
       columns: [
         {
           key: "img",
           label: t("col.product"),
-          width: 76,
+          width: 72,
           render: (r) => thumb({ src: r.thumb, size: 52, radius: 9, icon: "image" }),
         },
         {
@@ -148,7 +178,7 @@ export default {
             h(
               "div",
               { class: "lst-title" },
-              h("a", { class: "cell-title", href: `/ilanlar/${r.id}`, title: r.title, onClick: (e) => openRow(r, e) }, r.title || t("untitled")),
+              h("a", { class: "cell-title", href: detailPath(r), title: r.title, onClick: (e) => openRow(r, e) }, r.title || t("untitled")),
               h(
                 "div",
                 { class: "cell-sub" },
@@ -160,33 +190,38 @@ export default {
         {
           key: "state",
           label: t("col.state"),
-          width: 122,
+          width: 121,
           render: (r) => badge({ text: t(`state.${r.state}`), tone: STATE_TONE[r.state] || "neutral", dot: true }),
         },
         { key: "tags", label: t("col.tags"), width: 128, render: (r) => tagMeter(r.tags) },
-        { key: "seo", label: t("col.seo"), width: 100, render: (r) => seoPill(r) },
+        { key: "seo", label: t("col.seo"), width: 110, render: (r) => seoPill(r) },
         {
           key: "price",
           label: t("col.price"),
-          width: 104,
+          width: 103,
           align: "right",
           render: (r) => h("span", { class: "lst-price num" }, r.price === null || r.price === undefined ? "–" : money(r.price, r.currency || "USD")),
         },
         {
           key: "updated",
           label: t("col.updated"),
-          width: 132,
+          width: 134,
           align: "right",
           render: (r) => h("span", { class: "lst-updated", title: r.updated ? new Date(r.updated * 1000).toLocaleString() : "" }, icon("clock", { size: 13 }), relative(r.updated)),
         },
       ],
       rows: null,
-      onSelectionChange: () => updateSelection(),
+      onSelectionChange: () => {
+        // Only a click or a key calls this: the pre-ticked page is now the person's own choice.
+        st.selTouched = true;
+        updateSelection();
+      },
       onRowClick: (r, e) => openRow(r, e),
       empty: "",
     });
 
     const selInfo = h("span", { class: "lst-selinfo", hidden: true });
+    const selSep = h("span", { class: "lst-sep", "aria-hidden": "true", hidden: true }, "·");
     const rangeInfo = h("span", { class: "lst-range" });
     const pager = pagination({
       page: st.page,
@@ -197,11 +232,24 @@ export default {
         load();
       },
     });
-    const foot = h("div", { class: "lst-foot" }, selInfo, rangeInfo, h("div", { class: "spacer" }), pager);
+    // The video's pager has arrows; the shared one draws chevrons.
+    function pagerArrows() {
+      const [prev, next] = pager.querySelectorAll(".page-arrow");
+      if (prev) mount(prev, icon("arrow-left", { size: 15 }));
+      if (next) mount(next, icon("arrow-right", { size: 15 }));
+    }
+    function updatePager(page, pages) {
+      pager.update(page, pages);
+      pagerArrows();
+    }
+    pagerArrows();
+    const foot = h("div", { class: "lst-foot" }, selInfo, selSep, rangeInfo, h("div", { class: "spacer" }), pager);
     const tableCard = card({ pad: false, class: "lst-card", body: [tbl.el, foot] });
     const jobSlot = h("div", { class: "lst-jobs" });
     const body = h("div", { class: "lst-body" }, tableCard);
     el.append(jobSlot, toolbar, body);
+    // The page is on screen now: count the rows from where the table really starts.
+    st.perPage = fittingRows(tbl.el.querySelector("tbody"));
 
     // ------------------------------------------------------------ helpers
     function tabItems(counts) {
@@ -260,6 +308,7 @@ export default {
       publishBtn.title = drafts ? "" : t("publish.hint");
       mount(selInfo, icon("check", { size: 14, strokeWidth: 2.4 }), t("foot.selected", { n }));
       selInfo.hidden = n === 0;
+      selSep.hidden = n === 0 || !rangeInfo.textContent;
     }
 
     function filterCount() {
@@ -276,7 +325,7 @@ export default {
       storeNav({ ids, tab: st.tab, back: location.pathname + location.search });
       if (e && (e.ctrlKey || e.metaKey || e.shiftKey) && e.currentTarget && e.currentTarget.tagName === "A") return; // new tab
       if (e) e.preventDefault();
-      ctx.navigate(`/ilanlar/${r.id}`);
+      ctx.navigate(detailPath(r));
     }
 
     function emptyNode() {
@@ -315,7 +364,6 @@ export default {
       st.mode = mode;
       toolbar.hidden = mode === "setup";
       filterBtn.hidden = mode === "setup";
-      moreBtn.hidden = mode === "setup";
       publishBtn.hidden = mode === "setup";
       if (mode === "table") mount(body, tableCard);
       else mount(body, node);
@@ -363,6 +411,7 @@ export default {
       tbl.update(null);
       pager.hidden = true;
       rangeInfo.textContent = "";
+      selSep.hidden = true;
       let data;
       try {
         data = await ctx.api.get(
@@ -406,12 +455,22 @@ export default {
       const parts = [t("count.listings", { n: all })];
       if (drafts) parts.push(t("count.new_drafts", { n: drafts }));
       ctx.setHeader({ subtitle: parts.join(" · ") });
-      tbl.update(data.items);
+      if (!st.selTouched) {
+        // Untouched: the drafts tab ticks its page (the video's "8 ilan seçili"); the
+        // other tabs start with nothing ticked.
+        const ids = st.tab === "draft" ? data.items.filter((r) => r.state === "draft").map((r) => r.id) : [];
+        tbl.update(data.items, new Set(ids));
+      } else {
+        tbl.update(data.items);
+      }
       if (!data.items.length) {
         const tr = tbl.el.querySelector(".tbl-empty td");
         if (tr) mount(tr, emptyNode());
+      } else if (!st.animated) {
+        st.animated = true;
+        enterRows();
       }
-      pager.update(data.page, data.pages);
+      updatePager(data.page, data.pages);
       pager.hidden = data.pages <= 1;
       foot.hidden = !data.total && !tbl.selected.size;
       rangeInfo.textContent = data.total
@@ -420,6 +479,26 @@ export default {
       updateFilterBtn();
       updateSelection();
       if (data.truncated) ctx.toast({ tone: "warning", title: t("truncated") });
+    }
+
+    /** The first load's rows fade in and rise one after another (the video). */
+    function enterRows() {
+      if (REDUCED_MOTION) return;
+      const trs = [...tbl.el.querySelectorAll("tbody tr")].slice(0, ENTER_ROWS);
+      trs.forEach((tr, i) => {
+        tr.style.setProperty("--i", String(i));
+        tr.style.setProperty("--gap", `${ENTER_GAP}ms`);
+        tr.classList.add("is-entering");
+        tr.addEventListener(
+          "animationend",
+          () => {
+            tr.classList.remove("is-entering");
+            tr.style.removeProperty("--i");
+            tr.style.removeProperty("--gap");
+          },
+          { once: true },
+        );
+      });
     }
 
     // ------------------------------------------------------------ filter popover
@@ -477,10 +556,36 @@ export default {
         ),
         { placement: "bottom-end", width: 340, class: "lst-filter-pop", role: "dialog" },
       );
-      if (pop) pop.el.setAttribute("aria-label", t("filter.button"));
+      if (!pop) return;
+      pop.el.setAttribute("aria-label", t("filter.button"));
+      // CSV and reload: below the filters; each one closes the popover first.
+      const act = (label, ic, fn) =>
+        button({
+          label,
+          icon: ic,
+          variant: "ghost",
+          size: "sm",
+          class: "lst-data-btn",
+          onClick: () => {
+            pop.close();
+            fn();
+          },
+        });
+      pop.el.firstElementChild.append(
+        h(
+          "div",
+          { class: "lst-data", role: "group", "aria-label": t("filter.data") },
+          h("p", { class: "lst-filter-label" }, t("filter.data")),
+          act(t("more.export", { tab: t(`tab.${st.tab}`) }), "download", exportCsv),
+          act(t("more.import"), "upload", () => fileInput.click()),
+          act(t("more.template"), "file", downloadTemplate),
+          act(t("more.refresh"), "refresh", () => load({ refresh: true })),
+        ),
+      );
+      pop.reposition();
     }
 
-    // ------------------------------------------------------------ ⋯ menu
+    // ------------------------------------------------------------ CSV import file picker
     const fileInput = h("input", { type: "file", accept: ".csv,text/csv", class: "sr-only", tabindex: "-1", "aria-hidden": "true" });
     fileInput.addEventListener("change", () => {
       const file = fileInput.files && fileInput.files[0];
@@ -489,28 +594,12 @@ export default {
     });
     el.append(fileInput);
 
-    function openMore() {
-      menu(
-        moreBtn,
-        [
-          {
-            label: t("more.export", { tab: t(`tab.${st.tab}`) }),
-            icon: "download",
-            onClick: () =>
-              ctx.api.download("/api/listings/export.csv", { params: { tab: st.tab }, filename: "listings.csv" }).catch((err) => ctx.toast({ tone: "danger", title: ctx.api.errorText(err, t) })),
-          },
-          { label: t("more.import"), icon: "upload", onClick: () => fileInput.click() },
-          {
-            label: t("more.template"),
-            icon: "file",
-            onClick: () =>
-              ctx.api.download("/api/listings/template.csv", { filename: "listings-template.csv" }).catch((err) => ctx.toast({ tone: "danger", title: ctx.api.errorText(err, t) })),
-          },
-          { divider: true },
-          { label: t("more.refresh"), icon: "refresh", onClick: () => load({ refresh: true }) },
-        ],
-        { placement: "bottom-end", width: 250 },
-      );
+    function exportCsv() {
+      ctx.api.download("/api/listings/export.csv", { params: { tab: st.tab }, filename: "listings.csv" }).catch((err) => ctx.toast({ tone: "danger", title: ctx.api.errorText(err, t) }));
+    }
+
+    function downloadTemplate() {
+      ctx.api.download("/api/listings/template.csv", { filename: "listings-template.csv" }).catch((err) => ctx.toast({ tone: "danger", title: ctx.api.errorText(err, t) }));
     }
 
     // ------------------------------------------------------------ jobs (publish / import)
@@ -549,6 +638,28 @@ export default {
       return panel;
     }
 
+    // A note or refusal from the CSV check: in the seller's language when the server gave
+    // it a code this page has words for (import.warn.* / import.err.*), else as it came.
+    function importText(note, group) {
+      if (!note) return "";
+      if (typeof note === "string") return note;
+      const key = note.code ? `import.${group}.${note.code}` : "";
+      return key && t.has(key) ? t(key, note.params || {}) : note.text || "";
+    }
+    function importProblems(r) {
+      let list = r.problems || [];
+      // "Nothing left to send" only follows from the row's other refusals: say those.
+      if (list.length > 1) list = list.filter((p) => p.code !== "nothing_to_update");
+      const parts = list.map((p) => importText(p, "err")).filter(Boolean);
+      return parts.length ? parts : [r.message].filter(Boolean);
+    }
+    function lineText(panel, item) {
+      // The server's "already active" is English; a skipped publish is "zaten yayında".
+      if (panel.kind === "publish" && item.status === "skipped") return t("result.skipped");
+      if (item.problems && item.problems.length) return importProblems(item).join("; ");
+      return item.message || t(`result.${item.status}`);
+    }
+
     function addLine(panel, item) {
       if (item.status === "ok" || item.status === "dry-run") return;
       const key = String(item.id ?? item.row ?? item.title);
@@ -562,7 +673,7 @@ export default {
           { class: cx("lst-job-line", `tone-${tone}`) },
           icon(tone === "danger" ? "x-circle" : "alert", { size: 14 }),
           h("span", { class: "lst-job-name" }, name),
-          h("span", { class: "lst-job-msg", title: item.hint || undefined }, item.message || t(`result.${item.status}`)),
+          h("span", { class: "lst-job-msg", title: item.hint || undefined }, lineText(panel, item)),
         ),
       );
     }
@@ -664,6 +775,8 @@ export default {
 
     // ------------------------------------------------------------ publish
     async function publishSelected() {
+      // From here on the selection is the person's: the next drafts are not ticked for them.
+      st.selTouched = true;
       const ids = selectedDrafts();
       if (!ids.length) return;
       const ok = await ctx.confirm({
@@ -744,9 +857,9 @@ export default {
             "td",
             { class: "lst-import-msg" },
             r.status === "error"
-              ? h("span", { class: "tone-danger lst-import-err" }, icon("x-circle", { size: 13 }), r.message)
+              ? importProblems(r).map((text) => h("span", { class: "tone-danger lst-import-err" }, icon("x-circle", { size: 13 }), text))
               : h("span", { class: "tone-success lst-import-ok" }, icon("check", { size: 13 }), t("import.ready")),
-            (r.warnings || []).map((w) => h("span", { class: "lst-import-warn" }, icon("alert", { size: 12 }), w)),
+            (r.warnings || []).map((w) => h("span", { class: "lst-import-warn" }, icon("alert", { size: 12 }), importText(w, "warn"))),
           ),
         ),
       );
@@ -775,11 +888,20 @@ export default {
       else if ((s.state === "keys" || s.state === "disconnected") && st.mode !== "setup") load();
     });
 
+    // A taller or shorter window changes how many rows fit; the page then starts at the
+    // listing that was first on screen.
+    let resizeTimer = null;
     const onResize = () => {
-      const rows = fittingRows();
-      if (rows !== st.perPage) {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        if (st.mode !== "table") return;
+        const rows = fittingRows(tbl.el.querySelector("tbody"));
+        if (rows === st.perPage) return;
         st.perPage = rows;
-      }
+        st.page = st.data && st.data.start ? Math.floor((st.data.start - 1) / rows) + 1 : 1;
+        syncQuery();
+        load();
+      }, 250);
     };
     window.addEventListener("resize", onResize);
 
@@ -787,6 +909,7 @@ export default {
     await Promise.all([load(), resumeJobs()]);
     return () => {
       window.removeEventListener("resize", onResize);
+      clearTimeout(resizeTimer);
       timers.forEach(clearTimeout);
     };
   },

@@ -1,62 +1,30 @@
-/* Panel (/panel): greeting, setup tiles (slide t150), stat tiles, recent + quick actions. */
+/* Panel (/panel), as the video draws it: the setup tiles while the setup is incomplete
+   (slide t150), four KPI cards, "Son işlemler" and the "Tasarım yükle" drop card. The page
+   fills the window exactly (the bottom cards stretch to its foot); a shorter window
+   scrolls instead of squeezing them. */
 
+.page-host:has(> .page-panel) {
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+}
+.content:has(> .page-host > .page-panel) {
+  display: flex;
+  flex-direction: column;
+}
 .page-panel {
-  gap: 18px;
+  flex: 1 0 auto;
+  gap: 19px;
 }
 .page-panel .dash-setup-slot:empty,
 .page-panel .dash-note-slot:empty {
   display: none;
 }
 
-/* ---------------------------------------------------------------- greeting */
-
-.dash-hello {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-  min-height: 48px;
-}
-.dash-hello-title {
-  font-size: 22px;
-  font-weight: 650;
-  letter-spacing: -0.02em;
-  line-height: 1.2;
-}
-.dash-hello-sub {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px 14px;
-  margin-top: 5px;
-  font-size: 13px;
-  color: var(--muted);
-}
-.dash-today::first-letter {
-  text-transform: uppercase;
-}
-.dash-state {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--tone, var(--muted));
-}
-.dash-state .dot {
-  width: 6px;
-  height: 6px;
-}
-.dash-updated {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  white-space: nowrap;
-}
-
 /* ---------------------------------------------------------------- setup tiles */
 
 .dash-setup {
-  background: radial-gradient(ellipse 60% 120% at 85% 0%, rgba(124, 108, 246, 0.1), transparent 70%), var(--panel);
+  background: radial-gradient(ellipse 60% 120% at 85% 0%, rgba(123, 108, 255, 0.1), transparent 70%), var(--panel);
 }
 .setup-flow {
   display: flex;
@@ -98,6 +66,7 @@
 }
 .setup-bracket.is-every {
   color: var(--accent-2);
+  font-weight: 700;
 }
 .setup-tiles {
   display: grid;
@@ -124,9 +93,9 @@
   background: var(--panel-3);
 }
 .setup-tile.is-current {
-  border-color: rgba(124, 108, 246, 0.75);
-  background: linear-gradient(160deg, rgba(124, 108, 246, 0.22), rgba(124, 108, 246, 0.05) 70%), var(--panel-2);
-  box-shadow: 0 0 36px -14px rgba(124, 108, 246, 0.7);
+  border-color: rgba(123, 108, 255, 0.75);
+  background: linear-gradient(160deg, rgba(123, 108, 255, 0.22), rgba(123, 108, 255, 0.05) 70%), var(--panel-2);
+  box-shadow: 0 0 36px -14px rgba(123, 108, 255, 0.7);
 }
 .setup-tile.is-done {
   background: var(--panel-2);
@@ -150,9 +119,12 @@
 .setup-tile.is-done .setup-num {
   color: #2b2e39;
 }
+/* The step's phrase is the tile's big text, in the display face (StepsScenes' DISPLAY 700). */
 .setup-tile-title {
+  font-family: var(--font-display);
+  word-spacing: var(--display-word-spacing);
   font-size: 15.5px;
-  font-weight: 650;
+  font-weight: 700;
   letter-spacing: -0.01em;
 }
 .setup-tile-sub {
@@ -201,229 +173,463 @@
   transition: transform 0.15s;
 }
 
-/* ---------------------------------------------------------------- stat tiles */
+
+/* ---------------------------------------------------------------- the four KPI cards */
+/* The video's Stat: an icon tile and a muted label, a big display-font value, a line in
+   the card's tone, and a small picture in the bottom-right corner. Each card is its own
+   size container: when its inside is narrower than 230 px (1280 px windows: 198 px) the
+   picture goes and the label may wrap, so nothing overlaps. */
 
 .dash-stats {
+  flex: none;
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 17.6px;
 }
-.dash-stat {
+.kpi {
+  container-type: inline-size;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8.8px;
+  min-width: 0;
+  padding: 17.6px;
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
   color: var(--text);
-  text-decoration: none;
   transition: border-color 0.15s, background 0.15s;
-  min-height: 132px;
 }
-.dash-stat:hover {
+.kpi:hover {
   text-decoration: none;
   border-color: var(--border-2);
-  background: var(--panel-2);
 }
-.dash-stat .stat-head {
-  margin-bottom: 8px;
+.kpi-head {
+  display: flex;
+  align-items: center;
+  gap: 8.8px;
+  min-width: 0;
 }
-.dash-stat .stat-label {
+.kpi-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 8.8px;
+  background: var(--tone-soft);
+  color: var(--tone);
+}
+.kpi-label {
+  min-width: 0;
+  font-size: 12.3px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.dash-stat-go {
-  color: var(--muted-2);
-  opacity: 0;
-  transition: opacity 0.15s, transform 0.15s;
+.kpi-value {
+  font-family: var(--font-display);
+  word-spacing: var(--display-word-spacing);
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.44px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.dash-stat:hover .dash-stat-go,
-.dash-stat:focus-visible .dash-stat-go {
-  opacity: 1;
-  transform: translateX(2px);
+.kpi-sub {
+  font-size: 11.4px;
+  line-height: 1.35;
+  color: var(--tone);
 }
-.dash-stat-row {
+.kpi.is-empty .kpi-sub {
+  color: var(--muted);
+}
+.kpi-viz {
+  position: absolute;
+  right: 19.3px;
+  bottom: 19.3px;
+  pointer-events: none;
+  color: var(--tone);
+}
+.kpi-viz:empty {
+  display: none;
+}
+.kpi-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 4.4px;
+  height: 40px;
+}
+.kpi-bar {
+  width: 7px;
+  border-radius: 2.6px;
+  background: rgba(123, 108, 255, 0.38);
+}
+.kpi-bar.is-last {
+  background: var(--accent-2);
+}
+.kpi-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5.3px;
+  margin-bottom: 3.5px;
+  padding: 4.4px 8.8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-soft);
+  font-size: 11.4px;
+  line-height: 1.2;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.kpi-pill s {
+  color: var(--text-2);
+}
+.kpi-line,
+.kpi-ring {
+  display: block;
+}
+@container (max-width: 230px) {
+  .kpi-viz {
+    display: none;
+  }
+  .kpi-label {
+    white-space: normal;
+    overflow: visible;
+  }
+}
+
+/* ---------------------------------------------------------------- the two bottom cards */
+
+.dash-bottom {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
+  gap: 19px;
+  align-items: stretch;
+}
+.dash-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+}
+.dash-card-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  min-height: 38px;
-}
-.dash-stat .stat-value {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dash-stat .stat-sub {
-  font-weight: 500;
-  font-size: 12px;
-  line-height: 1.35;
-}
-.dash-stat.is-alert .stat-value {
-  color: var(--warning);
-}
-.dash-stat.has-error .stat-value,
-.dash-stat.is-idle .stat-value {
-  color: var(--muted-2);
-}
-.dash-stat.is-idle .icon-tile {
-  opacity: 0.6;
-}
-.dash-stat-error {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--danger);
-}
-.dash-stat-warn {
-  color: var(--warning);
-}
-.dash-stat .score-ring {
+  gap: 12px;
   flex: none;
 }
-/* The number is already the tile's value; the ring only shows the colour and arc. */
-.dash-stat .score-num {
-  display: none;
+.dash-card-title {
+  font-family: var(--font-display);
+  word-spacing: var(--display-word-spacing);
+  font-size: 17.6px;
+  font-weight: 700;
+  letter-spacing: -0.18px;
+  line-height: 1.3;
 }
 
-/* ---------------------------------------------------------------- recent + quick */
-
-.dash-bottom {
-  display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
-  gap: 16px;
-  align-items: start;
+/* Son işlemler */
+.dash-feed {
+  padding: 21px 24.6px 8.8px;
 }
-.recent-list {
+.dash-feed .dash-card-head {
+  margin-bottom: 7px;
+}
+.feed-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 5.3px;
+  margin-right: -4px;
+  padding: 2px 4px;
+  border-radius: 6px;
+  font-size: 12.3px;
+  font-weight: 600;
+  color: var(--accent-2);
+}
+.feed-all:hover {
+  color: var(--text);
+}
+.feed-all:hover svg {
+  transform: translateX(2px);
+}
+.feed-all svg {
+  transition: transform 0.15s;
+}
+.feed {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  margin: -6px 0;
 }
-.recent-item {
+.feed-list {
+  flex: 1 1 auto;
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 0;
-  border-top: 1px solid var(--border);
+  flex-direction: column;
 }
-.recent-item:first-child {
-  border-top: 0;
-}
-.recent-link {
+.feed-row {
+  flex: 1 1 0;
   display: flex;
-  align-items: center;
-  gap: 12px;
+  min-height: 56px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.feed-row:last-child {
+  border-bottom: 0;
+}
+.feed-link {
   flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 14px;
   min-width: 0;
-  margin: -6px -8px;
-  padding: 6px 8px;
-  border-radius: var(--radius-sm);
+  padding: 0 3.5px;
+  border-radius: 10px;
   color: inherit;
 }
-.recent-link:hover {
+a.feed-link:hover {
   text-decoration: none;
   background: var(--hover);
 }
-.recent-text {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
+.feed-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 38.7px;
+  height: 38.7px;
+  border-radius: 10.5px;
+  background: var(--tone-soft);
+  color: var(--tone);
+}
+.feed-text {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3.5px;
 }
-.recent-title {
-  font-size: 13.5px;
-  font-weight: 550;
+.feed-title {
+  font-size: 14.9px;
+  font-weight: 600;
+  line-height: 1.3;
   color: var(--text);
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
-.recent-meta {
-  font-size: 12px;
+.feed-sub {
+  font-size: 12.3px;
+  line-height: 1.3;
   color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.recent-item .progress {
-  margin-top: 4px;
-  max-width: 320px;
-}
-.recent-time {
+/* The video's feed Badge (13.5 px text, 10 px sides) at the Panel's 0.879 scale; the
+   upload card's "Tek adım" is its default 13 px Badge. The height stays .badge-sm's. */
+.feed-row .badge {
   flex: none;
-  font-size: 12px;
+  padding: 0 8.8px;
+  font-size: 11.9px;
+}
+.dash-upload .dash-card-head .badge {
+  gap: 4.4px;
+  padding: 0 8.8px;
+  font-size: 11.4px;
+}
+.feed-time {
+  flex: none;
+  width: 81px;
+  text-align: right;
+  font-size: 12.3px;
   color: var(--muted);
   white-space: nowrap;
+}
+.feed .progress {
+  max-width: 320px;
+  margin-top: 2px;
+}
+.feed-list.is-loading .feed-row {
+  align-items: center;
+}
+.feed-skel {
+  width: 60%;
+  height: 14px;
+}
+.feed .empty {
+  flex: 1;
+  justify-content: center;
 }
 
-.dash-quick {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+/* Tasarım yükle: a dashed drop area with a fan of designs, then the pipeline chips. */
+.dash-upload {
+  padding: 21px;
 }
-.quick-action {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
-  background: var(--panel-2);
-  color: var(--text);
-  text-decoration: none;
-  transition: border-color 0.15s, background 0.15s;
+.page-panel .up-drop {
+  flex: 1 1 auto;
+  min-height: 320px;
+  margin-top: 15.8px;
+  padding: 8.8px 17.6px;
+  gap: 0;
+  border-radius: var(--radius-lg);
+  border: 2px dashed rgba(168, 156, 255, 0.38);
+  background: radial-gradient(369px 229px at 50% 30%, rgba(123, 108, 255, 0.14), transparent 70%), var(--panel-2);
 }
-.quick-action > svg {
+.page-panel .up-drop:hover {
+  border-color: rgba(168, 156, 255, 0.6);
+}
+.page-panel .up-drop.is-over {
+  border-color: var(--accent);
+  background: radial-gradient(369px 229px at 50% 30%, rgba(123, 108, 255, 0.24), transparent 70%), var(--panel-2);
+  box-shadow: 0 0 0 4px rgba(123, 108, 255, 0.12);
+}
+.up-fan {
+  position: relative;
   flex: none;
-  color: var(--muted);
-  transition: transform 0.15s;
+  width: 290px;
+  max-width: 100%;
+  height: 167px;
 }
-.quick-action:hover {
-  text-decoration: none;
-  border-color: var(--border-2);
-  background: var(--panel-3);
+.up-fan.is-empty {
+  height: 49px;
 }
-.quick-action:hover > svg {
-  transform: translateX(2px);
-  color: var(--text-2);
+.up-cards {
+  position: absolute;
+  inset: 0;
 }
-.quick-action.is-primary {
-  border-color: rgba(124, 108, 246, 0.6);
-  background: linear-gradient(135deg, rgba(124, 108, 246, 0.28), rgba(124, 108, 246, 0.08)), var(--panel-2);
+.up-card {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  display: grid;
+  place-items: center;
+  width: 112.5px;
+  height: 112.5px;
+  margin-left: -56.25px;
+  overflow: hidden;
+  border-radius: 14px;
+  background: #f4f1ea;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.06);
 }
-.quick-action.is-primary .icon-tile {
-  background: var(--accent);
+.up-card img {
+  width: 98px;
+  height: 98px;
+  object-fit: contain;
+}
+.up-card.is-left {
+  transform: translate(-84.4px, 10.5px) rotate(-11deg);
+}
+.up-card.is-right {
+  transform: translate(84.4px, 10.5px) rotate(10deg);
+}
+.up-badge {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  display: grid;
+  place-items: center;
+  width: 49px;
+  height: 49px;
+  margin-left: -24.5px;
+  border-radius: 50%;
+  background: linear-gradient(145deg, var(--accent-2), var(--accent));
+  border: 3.5px solid var(--panel-2);
+  box-shadow: 0 9px 23px rgba(123, 108, 255, 0.5);
   color: #fff;
 }
-.quick-action.is-primary:hover {
-  border-color: var(--accent);
+.up-title {
+  margin-top: 15.8px;
+  font-size: 18.5px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--text);
 }
-.quick-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex: 1;
-  min-width: 0;
-}
-.quick-label {
-  font-size: 14px;
-  font-weight: 600;
-}
-.quick-sub {
-  font-size: 12px;
+.up-sub {
+  margin-top: 7px;
+  font-size: 13.2px;
   color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
+}
+.page-panel .up-btn {
+  margin-top: 19.3px;
+  height: 47.5px;
+  padding: 0 22.9px;
+  gap: 7px;
+  border-radius: 10.5px;
+  font-size: 15.8px;
+  box-shadow: 0 6px 20px rgba(123, 108, 255, 0.35);
+}
+.up-pipe {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 15.8px;
+}
+.up-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.up-chip span {
+  padding: 4.4px 9.7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-2);
+  font-size: 11.9px;
+  font-weight: 600;
+  line-height: 1.25;
   white-space: nowrap;
 }
-.quick-action.is-alert .quick-sub {
-  color: var(--warning);
+.up-chip.is-last span {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.up-arrow {
+  color: var(--muted-2);
+}
+
+/* The header pill: "● Mağaza senkronize · 2 dk önce"; a click reads the shop again. */
+.topbar .sync-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6.2px 12.3px;
+  border-radius: 999px;
+  background: var(--tone-soft);
+  color: var(--tone);
+  font-size: 12.3px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  transition: background 0.15s, box-shadow 0.15s;
+}
+.topbar .sync-pill:hover {
+  background: color-mix(in srgb, var(--tone) 22%, transparent);
+}
+.topbar .sync-pill.is-busy {
+  cursor: progress;
+}
+.sync-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+}
+.topbar .sync-pill .spinner {
+  border-color: color-mix(in srgb, currentColor 25%, transparent);
+  border-top-color: currentColor;
 }
 
 /* ---------------------------------------------------------------- narrower windows */
 
-@media (max-width: 1400px) {
-  .dash-stats {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-  .dash-stat {
-    min-height: 118px;
-  }
-}
 @media (max-width: 1100px) {
   .setup-tiles {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -431,16 +637,22 @@
   .setup-brackets {
     display: none;
   }
-  .dash-bottom {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-@media (max-width: 760px) {
   .dash-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .dash-hello {
-    flex-direction: column;
-    align-items: flex-start;
+  .dash-bottom {
+    flex: none;
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 560px) {
+  .dash-stats {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .feed-time {
+    width: auto;
+  }
+  .feed-row .badge {
+    display: none;
   }
 }

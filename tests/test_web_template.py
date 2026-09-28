@@ -176,11 +176,13 @@ def test_listings_are_mapped_for_the_page(web):
         "state": "active",
         "num_favorers": 48,
         "product_type": "T-shirts",  # the taxonomy leaf
+        "product_type_key": "tshirt",  # the page says it in the seller's language
         "has_variations": False,
         "listing_type": "physical",
     }
     assert second["title"] == "But First Coffee Mug & Gift"  # entities decoded
     assert second["product_type"] == "Mugs" and second["price"] == 18.5
+    assert second["product_type_key"] == "mug"
     assert second["has_variations"] is True
     request = next(r for r in fake.requests if r.url.path.endswith(f"{SHOP}/listings"))
     assert request.url.params["state"] == "active"

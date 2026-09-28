@@ -8,6 +8,8 @@
                           country?, confirm: true}
     GET  /api/orders/export.csv?tab=         (POST {tab, edits} adds the numbers typed so far)
     POST /api/orders/import-tracking         raw CSV body -> parsed rows (no Etsy call)
+    GET  /api/orders/drafts                  carriers and numbers not sent yet (this computer)
+    POST /api/orders/drafts {rows:[{receipt_id, carrier_name, tracking_code, note_to_buyer?}]}
 
 Etsy facts (checked against the OpenAPI spec, 3.0.0): getShopReceipts filters
 was_paid / was_shipped / was_delivered / was_canceled (booleans), sort_on
@@ -37,11 +39,12 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from ... import orders as orders_lib
-from ...config import base_home
+from ...config import base_home, home_dir
 from ...csvio import as_int
 from ...errors import AuthError, AuthUnreachable, EtsyApiError, StallKitError
 from ..errors import to_api_error
 from ..router import ApiError, Request, Response
+from .profit import product_type
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..context import AppContext
@@ -72,6 +75,10 @@ COUNTRY_TTL = 86400.0
 FALLBACK_COUNTRY = "US"
 OTHER_CARRIER = "other"   # "If the carrier is not supported, you may use `other`" (OAS)
 CARRIER_CACHE = "shipping-carriers.json"
+DRAFTS_FILE = "orders-drafts.json"  # in the open shop's home
+TRACKING_MAX = 64         # the page's input takes 64 characters
+CARRIER_MAX = 100
+NOTE_MAX = 1000
 SOLD_ORDERS_URL = "https://www.etsy.com/your/orders/sold"
 _COUNT_KEY = {"ok": "sent", "error": "failed", "skipped": "skipped"}
 
@@ -110,6 +117,8 @@ def register(r: Router, ctx: AppContext) -> None:
     r.get("/api/orders/export.csv", api.export_csv)
     r.post("/api/orders/export.csv", api.export_csv)
     r.post("/api/orders/import-tracking", api.import_tracking)
+    r.get("/api/orders/drafts", api.get_drafts)
+    r.post("/api/orders/drafts", api.save_drafts)
 
 
 # --- pure helpers (tested directly) -----------------------------------------------------
@@ -163,9 +172,13 @@ def flatten(receipt: dict[str, Any], tab: str | None = None) -> dict[str, Any]:
             for v in txn.get("variations") or []
             if isinstance(v, dict) and (v.get("formatted_value") or v.get("formatted_name"))
         ]
+        title = str(txn.get("title") or "")
         items.append({
             "transaction_id": txn.get("transaction_id"),
-            "title": str(txn.get("title") or ""),
+            "title": title,
+            # The kind of product ("Kupa · 11oz" under the title), read from the title
+            # the way Kâr-Zarar and the mockups read it.
+            "type": product_type(title),
             "quantity": quantity,
             "variations": variations,
             "listing_id": txn.get("listing_id"),
@@ -392,6 +405,46 @@ def still_waiting(receipt: Any) -> bool:
     )
 
 
+def draft_rows(rows: Any) -> list[dict[str, Any]]:
+    """The page's unsent carriers and numbers, checked like an imported CSV: a positive
+    order number each, text of a sane length; a row with neither a carrier nor a number
+    is dropped, and a later row for the same order wins."""
+    if not isinstance(rows, list):
+        raise ApiError(422, "invalid", "rows must be a list", field="rows")
+    if len(rows) > SHIP_MAX_ROWS:
+        raise ApiError(422, "invalid", f"at most {SHIP_MAX_ROWS} rows", field="rows")
+    out: dict[int, dict[str, Any]] = {}
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise ApiError(422, "invalid", "not an object", field="rows", index=index)
+        raw_id = str(row.get("receipt_id") if row.get("receipt_id") is not None else "")
+        try:
+            receipt_id = as_int(raw_id.lstrip("#"), "receipt_id", required=True)
+        except StallKitError as exc:
+            raise ApiError(422, "invalid", str(exc), field="rows", index=index) from exc
+        if receipt_id is None or receipt_id <= 0:
+            raise ApiError(422, "invalid", "receipt_id must be a positive number",
+                           field="rows", index=index)
+        texts = {}
+        for name, limit in (("tracking_code", TRACKING_MAX), ("carrier_name", CARRIER_MAX),
+                            ("note_to_buyer", NOTE_MAX)):
+            value = row.get(name)
+            if value is None:
+                value = ""
+            if not isinstance(value, str):
+                raise ApiError(422, "invalid", f"{name} must be text", field="rows", index=index)
+            value = value.strip()
+            if len(value) > limit:
+                raise ApiError(422, "invalid", f"{name} is longer than {limit} characters",
+                               field="rows", index=index)
+            texts[name] = value
+        if not texts["tracking_code"] and not texts["carrier_name"]:
+            continue
+        out.pop(receipt_id, None)
+        out[receipt_id] = {"receipt_id": receipt_id, **texts}
+    return list(out.values())
+
+
 def _ship_queue(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """What a send holds, as its job state keeps it for a page that comes back."""
     return [{"receipt_id": int(row["receipt_id"]), "carrier_name": row["carrier_name"],
@@ -448,6 +501,7 @@ class OrdersApi:
         self.counts = _Cache()     # shop -> summary
         self.listings = _Cache()   # (shop, listing_id) -> thumbnails of one listing
         self.countries = _Cache()  # shop -> (country, source)
+        self._drafts_lock = threading.Lock()
 
     # --- helpers -----------------------------------------------------------------------
 
@@ -834,6 +888,7 @@ class OrdersApi:
         finally:
             # Also after a cancel: what was sent is sent, and the lists are stale now.
             self._after_ship(counts, stopped, used, country)
+            self._forget_drafts({r["receipt_id"] for r in results if r.get("status") == "ok"})
         return {**counts, "total": total, "stopped": stopped,
                 "restricted": stopped == "tracking_restricted", "rows": results}
 
@@ -878,13 +933,41 @@ class OrdersApi:
         if changes:
             ctx.update_shop_prefs(**changes)
         if counts["sent"]:
-            ctx.notify("orders", "notify.shipped", {"n": counts["sent"]}, tone="success",
-                       link="/siparisler")
+            # The Panel's sub-line names the carriers ("UPS · USPS"), most used first.
+            ctx.notify("orders", "notify.shipped",
+                       {"n": counts["sent"], "carriers": self._carrier_labels(used, country)},
+                       tone="success", link="/siparisler")
         if stopped == "tracking_restricted":
             ctx.notify("orders", "notify.restricted", {}, tone="warning", link="/siparisler")
         elif counts["failed"]:
             ctx.notify("orders", "notify.failed", {"n": counts["failed"]}, tone="danger",
                        link="/siparisler")
+
+    def _carrier_labels(self, used: dict[str, int], country: str) -> list[str]:
+        """The carriers a send used, most used first, spelled as the Siparişler page shows
+        them (Etsy's own spelling from the cached carrier list: "usps" -> "USPS"). The
+        generic "other" is left out. Never asks Etsy: this runs after the send."""
+        spelled: dict[str, str] = {}
+        if country:
+            try:
+                stored = json.loads((base_home() / "cache" / CARRIER_CACHE).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                stored = {}
+            entry = stored.get(country) if isinstance(stored, dict) else None
+            carriers = entry.get("carriers") if isinstance(entry, dict) else None
+            for carrier in carriers if isinstance(carriers, list) else []:
+                name = str((carrier or {}).get("name") or "").strip() if isinstance(carrier, dict) else ""
+                if name:
+                    spelled.setdefault(name.casefold(), name)
+        out: list[str] = []
+        seen: set[str] = set()
+        for name in sorted(used, key=lambda n: (-used[n], n.casefold())):
+            folded = name.strip().casefold()
+            if not folded or folded == OTHER_CARRIER or folded in seen:
+                continue
+            seen.add(folded)
+            out.append(spelled.get(folded, name.strip()))
+        return out
 
     # --- CSV ---------------------------------------------------------------------------------
 
@@ -938,6 +1021,87 @@ class OrdersApi:
         if len(req.body) > IMPORT_MAX_BYTES:
             raise ApiError(413, "too_large", "A tracking CSV must be under 2 MB.")
         return parse_tracking_csv(req.body)
+
+    # --- drafts: carriers and numbers not sent yet ---------------------------------------
+    #
+    # Kept in a small file of their own in the open shop's home (never in the shop prefs,
+    # which /api/prefs returns whole), so the page opens again the way it was left. Local
+    # only: nothing here reaches Etsy until the seller confirms a send.
+
+    def _drafts_path(self) -> Any:
+        return home_dir() / DRAFTS_FILE
+
+    def _read_drafts(self) -> list[dict[str, Any]]:
+        try:
+            data = json.loads(self._drafts_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        rows = data.get("rows") if isinstance(data, dict) else None
+        try:
+            return draft_rows(rows if isinstance(rows, list) else [])
+        except ApiError:
+            return []  # a file edited by hand: start again rather than fail the page
+
+    def _write_drafts(self, rows: list[dict[str, Any]]) -> None:
+        path = self._drafts_path()
+        if not rows:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps({"rows": rows}, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+
+    def _forget_drafts(self, receipt_ids: set[int]) -> None:
+        """Drop the drafts of orders Etsy took (after a send, whoever started it)."""
+        if not receipt_ids:
+            return
+        with self._drafts_lock:
+            rows = self._read_drafts()
+            kept = [r for r in rows if r["receipt_id"] not in receipt_ids]
+            if len(kept) != len(rows):
+                try:
+                    self._write_drafts(kept)
+                except OSError:
+                    pass
+
+    def get_drafts(self, req: Request) -> dict[str, Any]:
+        """The saved drafts of orders that still wait for shipment. An order shipped
+        meanwhile (from this app or on etsy.com) is dropped; when Etsy cannot be asked,
+        or the waiting list is longer than one scan, the drafts are kept as they are."""
+        with self._drafts_lock:
+            rows = self._read_drafts()
+        if not rows:
+            return {"rows": [], "checked": True}
+        try:
+            client = self.ctx.client()
+            with client.attempts(QUICK_ATTEMPTS):
+                receipts, truncated = self._scan(client, "unshipped")
+        except StallKitError:  # not connected, offline, Etsy said no: keep them all
+            return {"rows": rows, "checked": False}
+        if truncated:
+            return {"rows": rows, "checked": False}
+        waiting = {r.get("receipt_id") for r in receipts}
+        gone = {r["receipt_id"] for r in rows if r["receipt_id"] not in waiting}
+        if gone:
+            with self._drafts_lock:
+                # Only what this answer dropped: a save that came in meanwhile stays.
+                current = self._read_drafts()
+                try:
+                    self._write_drafts([r for r in current if r["receipt_id"] not in gone])
+                except OSError:
+                    pass
+        return {"rows": [r for r in rows if r["receipt_id"] not in gone], "checked": True}
+
+    def save_drafts(self, req: Request) -> dict[str, Any]:
+        """Replace the drafts with the page's (an empty list clears them)."""
+        rows = draft_rows(req.json_object().get("rows"))
+        with self._drafts_lock:
+            self._write_drafts(rows)
+        return {"saved": len(rows)}
 
 
 def _ship_error(exc: BaseException) -> tuple[str, str, int | None]:

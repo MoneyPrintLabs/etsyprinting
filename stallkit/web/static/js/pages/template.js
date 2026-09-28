@@ -96,7 +96,10 @@ export default {
     const fieldsEl = h("div", { class: "tpl-fields-list" });
     const notesEl = h("div", { class: "tpl-notes" });
     const hintEl = h("div", { class: "tpl-hint" });
+    // Always "Şablon olarak kaydet", as in the video; the last save is in its tooltip.
     const saveBtn = button({ label: t("save"), icon: "file", variant: "primary", size: "lg", onClick: save });
+    // Rows revealed one by one after a pick (the video): the id they were last played for.
+    let revealedId = null;
     const rightCard = card({
       title: t("fields.title"),
       subtitle: sourceEl,
@@ -242,8 +245,15 @@ export default {
         state: s.state,
         num_favorers: null,
         product_type: null,
+        product_type_key: null,
         listing_type: s.listing_type,
       };
+    }
+
+    /** "Tişört" for Etsy's "T-shirts" when the server knows the product; else Etsy's name. */
+    function productType(row) {
+      const key = row.product_type_key ? `product.${row.product_type_key}` : null;
+      return key && t.has(key) ? t(key) : row.product_type;
     }
 
     function matches(row, q) {
@@ -267,7 +277,8 @@ export default {
       const sub = [];
       const kind = listingType(row.listing_type);
       if (kind !== "physical") sub.push(h("span", { class: "tpl-row-type" }, icon(TYPE_ICON[kind], { size: 12 }), t(`type.${kind}_short`)));
-      if (row.product_type) sub.push(h("span", null, row.product_type));
+      const product = productType(row);
+      if (product) sub.push(h("span", null, product));
       if (row.num_favorers !== null && row.num_favorers !== undefined) {
         sub.push(h("span", null, t("favorites", { n: row.num_favorers, count: number(row.num_favorers) })));
       }
@@ -289,8 +300,11 @@ export default {
           h(
             "span",
             { class: "tpl-row-head" },
+            // The saved template: a small accent dot, not a pill that cuts the title short.
+            isCurrent(id)
+              ? [h("span", { class: "tpl-current-dot", "aria-hidden": "true", title: t("current") }), h("span", { class: "sr-only" }, `${t("current")}: `)]
+              : null,
             h("span", { class: "tpl-row-title ellipsis", title: row.title }, row.title),
-            isCurrent(id) ? badge({ text: t("current"), tone: "accent", size: "sm" }) : null,
           ),
           h("span", { class: "tpl-row-sub" }, parts),
         ),
@@ -402,7 +416,7 @@ export default {
                 },
               },
               t("more", { n: left + hidden, count: number(left + hidden) }),
-              icon("chevron-down", { size: 14 }),
+              icon("arrow-down", { size: 14 }),
             )
           : hidden > 0
             ? h("p", { class: "tpl-more-note" }, t("truncated", { n: (st.items || []).length }))
@@ -490,7 +504,8 @@ export default {
         value = h("span", { class: "skeleton", style: { height: 13, width: 96 } });
         mark = h("span", { class: "tpl-check is-idle", "aria-hidden": "true" });
       } else if (mode === "blank") {
-        value = h("span", { class: "tpl-value muted" }, "–");
+        // Nothing picked yet: a grey bar where the value will come (the video's first state).
+        value = h("span", { class: "tpl-bar", "aria-hidden": "true" });
         mark = h("span", { class: "tpl-check is-idle", "aria-hidden": "true" });
       } else if (f.ok) {
         const d = describe(f);
@@ -522,31 +537,47 @@ export default {
       const current = p && isCurrent(p.listing_id);
       const known = p || (id !== null ? findItem(id) || st.extras.get(id) : null);
 
+      // The type goes first only when it is not the usual physical one (digital, both).
       const shownType = p ? p.listing_type : known && known.listing_type;
-      mount(
-        sourceEl,
-        shownType ? typeTag(shownType) : null,
-        h("span", { class: "tpl-source-label" }, t("source")),
-        " ",
-        known && known.title
-          ? h("span", { class: "tpl-source-title", title: known.title }, known.title)
-          : h("span", { class: "tpl-source-none" }, id !== null ? t("listing_number", { id }) : t("source_none")),
-      );
-
-      const badges = [];
-      if (current) badges.push(badge({ text: t("current"), tone: "accent" }));
-      if (p) {
-        badges.push(
-          p.ok_count === p.total
-            ? badge({ icon: "check", text: t("fields.count", { n: p.total }), tone: "success" })
-            : badge({ icon: "alert", text: t("fields.partial", { ok: p.ok_count, total: p.total }), tone: "warning" }),
+      if (id === null) {
+        mount(sourceEl, h("span", { class: "tpl-source-none" }, t("source_none")));
+      } else {
+        mount(
+          sourceEl,
+          shownType && listingType(shownType) !== "physical" ? typeTag(shownType) : null,
+          h("span", { class: "tpl-source-label" }, t("source")),
+          " ",
+          known && known.title
+            ? h("span", { class: "tpl-source-title", title: known.title }, known.title)
+            : h("span", { class: "tpl-source-none" }, t("listing_number", { id })),
         );
       }
-      mount(badgesEl, badges);
+
+      mount(
+        badgesEl,
+        !p
+          ? badge({ text: t("fields.count", { n: FIELDS.length }), tone: "neutral" })
+          : p.ok_count === p.total
+            ? badge({ icon: "check", text: t("fields.count", { n: p.total }), tone: "success" })
+            : badge({ icon: "alert", text: t("fields.partial", { ok: p.ok_count, total: p.total }), tone: "warning" }),
+      );
 
       if (p) {
-        mount(fieldsEl, p.fields.map((f) => fieldRow(f.key, f, "value")));
+        // Values fade in row by row the first time a listing's fields are shown after a pick;
+        // not again for the same listing, and not for the saved template shown at load.
+        const reveal = p.listing_id !== revealedId;
+        revealedId = p.listing_id;
+        mount(
+          fieldsEl,
+          p.fields.map((f, i) => {
+            const row = fieldRow(f.key, f, "value");
+            row.style.setProperty("--i", String(i));
+            return row;
+          }),
+        );
+        fieldsEl.classList.toggle("is-reveal", reveal);
       } else if (st.previewError && id !== null) {
+        fieldsEl.classList.remove("is-reveal");
         const err = st.previewError;
         mount(
           fieldsEl,
@@ -555,6 +586,7 @@ export default {
             : errorNote(err, () => loadPreview(id)),
         );
       } else {
+        fieldsEl.classList.remove("is-reveal");
         const mode = st.previewLoading || st.current === undefined ? "loading" : "blank";
         mount(fieldsEl, FIELDS.map((key) => fieldRow(key, null, mode)));
       }
@@ -565,8 +597,8 @@ export default {
       }
       mount(notesEl, notes);
 
-      // Small lines left of the save button (where the video has its footnote).
-      const hints = [];
+      // Left of the save button: the video's footnote, then what the page must still say.
+      const hints = [h("span", { class: "tpl-hint-line tpl-footnote" }, t("footnote"))];
       if (p && p.fields.some((f) => !f.ok && f.required)) {
         hints.push(h("span", { class: "tpl-hint-line is-warning" }, icon("alert", { size: 13 }), h("span", null, t("missing_hint"))));
       }
@@ -577,13 +609,8 @@ export default {
       if (kind !== "physical") {
         hints.push(h("span", { class: "tpl-hint-line is-strong" }, icon("download", { size: 13 }), t(`type.${kind}_note`)));
       }
-      if (current && st.current.saved_at) {
-        hints.push(h("span", { class: "tpl-hint-line" }, t("saved_ago", { when: relative(st.current.saved_at) })));
-      } else if (st.current === null) {
-        hints.push(h("span", { class: "tpl-hint-line" }, t("no_template")));
-      }
       mount(hintEl, hints);
-      saveBtn.setLabel(current ? t("save_again") : t("save"));
+      saveBtn.title = current && st.current.saved_at ? t("saved_ago", { when: relative(st.current.saved_at) }) : "";
       saveBtn.setDisabled(!p || !!st.setupStep);
       saveBtn.setLoading(st.saving);
     }
@@ -597,7 +624,10 @@ export default {
         st.currentProblem = r.problem || null;
         if (st.current) {
           st.previews.set(st.current.listing_id, st.current);
-          if (st.selectedId === null) st.selectedId = st.current.listing_id;
+          if (st.selectedId === null) {
+            st.selectedId = st.current.listing_id;
+            revealedId = st.current.listing_id; // shown at load: no row-by-row reveal
+          }
           pinCurrent();
         }
       } catch (err) {

@@ -63,7 +63,28 @@ def session(req: Request) -> dict[str, Any]:
         "port": ctx.port,
         "shop_id": ctx.shop_id,
         "shops": ctx.shops_list(),
+        # The sidebar shows the Pinterest item only while Pinterest is in use.
+        "pinterest": pinterest_in_use(),
     }
+
+
+def pinterest_in_use() -> bool:
+    """Pinterest is set up or was used: an app, a sign-in or Pins in the queue.
+
+    Local files only, no network. A file that cannot be read counts as in use: the
+    Pinterest page is where such a problem is explained.
+    """
+    from ... import pinterest
+
+    try:
+        if pinterest.token_path().is_file():
+            return True
+        config = pinterest.PinterestConfig.load()
+        if config.app_id or config.access_token:
+            return True
+        return bool(pinterest.Queue.load().entries)
+    except Exception:  # noqa: BLE001 — never let the session call fail over Pinterest
+        return True
 
 
 def status(req: Request) -> dict[str, Any]:

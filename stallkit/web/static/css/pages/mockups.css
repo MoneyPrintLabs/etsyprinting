@@ -22,6 +22,25 @@
   padding: 0 14px;
   font-size: 13.5px;
 }
+/* The video's counts are regular next to an inactive name and semibold on the active chip. */
+.page-mockups .mk-toolbar .chip-count {
+  font-weight: 400;
+}
+.page-mockups .mk-toolbar .chip.is-active .chip-count {
+  font-weight: 600;
+}
+.page-mockups .mk-select-start {
+  flex: none;
+  height: 33px;
+  padding: 0 12px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.page-mockups .mk-select-start .icon {
+  width: 14px;
+  height: 14px;
+  color: var(--accent-2);
+}
 .page-mockups .mk-autonote {
   display: inline-flex;
   align-items: center;
@@ -122,7 +141,7 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
-  padding: 12px 4px 4px 5px;
+  padding: 12px 4px 3px 5px;
   min-width: 0;
 }
 .page-mockups .mk-card-row {
@@ -191,6 +210,7 @@
   align-items: center;
   gap: 5px;
   min-width: 0;
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -201,7 +221,10 @@
   color: var(--accent-2);
 }
 .page-mockups .mk-state.is-default {
-  color: var(--muted);
+  color: var(--warning);
+}
+.page-mockups .mk-state .icon {
+  flex: none;
 }
 .page-mockups .mk-card.is-disabled .mk-card-media img {
   opacity: 0.45;
@@ -284,7 +307,7 @@
   color: var(--text);
 }
 .page-mockups .mk-usage-count strong {
-  font-weight: 650;
+  font-weight: 600;
 }
 .page-mockups .mk-usage-rule {
   color: var(--muted);
@@ -344,7 +367,7 @@
 .page-mockups .mk-qgroup-label {
   margin-right: 2px;
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted-2);
@@ -360,7 +383,7 @@
   background: var(--panel-2);
   color: var(--text-2);
   font-size: 12.5px;
-  font-weight: 550;
+  font-weight: 500;
   transition: border-color 0.15s, background 0.15s, color 0.15s;
 }
 .page-mockups .mk-qchip:hover {
@@ -418,7 +441,7 @@
   backdrop-filter: blur(6px);
   border: 1px solid rgba(255, 255, 255, 0.08);
   font-size: 11.5px;
-  font-weight: 650;
+  font-weight: 600;
   color: var(--text);
 }
 .page-mockups .mk-pos.num {
@@ -436,7 +459,7 @@
 }
 .page-mockups .mk-pos.is-off {
   color: var(--muted);
-  font-weight: 550;
+  font-weight: 500;
 }
 .page-mockups .mk-card-check {
   position: absolute;
@@ -590,42 +613,106 @@
   outline: 2px solid var(--accent-2);
   outline-offset: 2px;
 }
-.page-mockups .mk-banner-link {
-  text-decoration: none;
-  white-space: nowrap;
+
+/* ------------------------------------------------------------------ the "Yeni mockup" tile */
+
+/* The grid's last cell, two columns wide (the span is set by the page). Stretched to the
+   row, so it is as tall as the cards next to it. */
+.page-mockups .mk-grid-new-cell {
+  display: flex;
+  align-self: stretch;
+  min-width: 0;
+  min-height: 220px;
 }
-.page-mockups .mk-banner-link:hover {
-  text-decoration: none;
+.page-mockups .mk-grid-new.dropzone {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  gap: 8px;
+  padding: 24px;
+  border: 2px dashed var(--border-2);
+  border-radius: 14px;
+  background: radial-gradient(ellipse 60% 70% at 50% 45%, rgba(123, 108, 255, 0.08), rgba(123, 108, 255, 0) 70%),
+    rgba(255, 255, 255, 0.012);
+}
+.page-mockups .mk-grid-new.dropzone:hover {
+  border-color: var(--accent-line);
+}
+.page-mockups .mk-grid-new.dropzone.is-over {
+  border-color: var(--accent);
+  background: radial-gradient(ellipse 60% 70% at 50% 45%, rgba(123, 108, 255, 0.16), rgba(123, 108, 255, 0) 72%),
+    rgba(255, 255, 255, 0.02);
+}
+.page-mockups .mk-grid-new.dropzone:focus-visible {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 2px;
+}
+.page-mockups .mk-grid-new-icon {
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  margin-bottom: 5px;
+  border-radius: 16px;
+  background: var(--accent-soft);
+  border: 1px solid rgba(123, 108, 255, 0.35);
+  color: var(--accent-2);
+}
+.page-mockups .mk-grid-new-title {
+  font-size: 17.5px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.page-mockups .mk-grid-new-sub {
+  font-size: 13.5px;
+  color: var(--text-2);
+}
+.page-mockups .mk-grid-new-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 5px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.page-mockups .mk-grid-new-hint .icon {
+  flex: none;
+}
+.page-mockups .mk-grid-new-hint .mono {
+  font-size: 11.5px;
+  color: var(--text-2);
 }
 
-/* editor: same-size explanation and the next mockup to set */
-.page-mockups .mk-same-explain {
-  margin: 4px 0 0 52px;
-  font-size: 11.5px;
-  color: var(--muted);
-  max-width: 560px;
-}
-.page-mockups .mk-next-host:not(:empty) {
-  margin-top: 8px;
+/* editor: the next mockup to set, in the footer after a save */
+.page-mockups .mk-next-host {
+  display: flex;
+  min-width: 0;
+  /* in a narrow footer the link gives way before the same-size switch does */
+  flex: 0 4 auto;
 }
 .page-mockups .mk-next {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  max-width: 100%;
+  gap: 6px;
+  min-width: 0;
+  max-width: 260px;
+  margin-right: 2px;
   font-size: 12.5px;
   font-weight: 600;
   color: var(--accent-2);
-}
-.page-mockups .mk-next span:first-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
-.page-mockups .mk-next-count {
+.page-mockups .mk-next:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+.page-mockups .mk-next-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.page-mockups .mk-next .icon {
   flex: none;
-  font-weight: 500;
-  color: var(--muted);
 }
 
 /* ------------------------------------------------------------------ empty state */
@@ -654,7 +741,7 @@
 }
 .page-mockups .mk-empty-title {
   font-size: 18px;
-  font-weight: 650;
+  font-weight: 700;
   letter-spacing: -0.01em;
 }
 .page-mockups .mk-empty-sub {
@@ -734,7 +821,7 @@
 }
 .page-mockups .mk-drop-title {
   font-size: 17px;
-  font-weight: 650;
+  font-weight: 700;
 }
 .page-mockups .mk-drop-sub {
   font-size: 13px;
@@ -781,7 +868,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 17px;
-  font-weight: 650;
+  font-weight: 700;
   letter-spacing: -0.01em;
 }
 .page-mockups .mk-lib-count {
@@ -892,7 +979,12 @@
 }
 .page-mockups .mk-lib-applied {
   color: var(--success);
-  font-weight: 550;
+  font-weight: 600;
+}
+.page-mockups .mk-lib-twin {
+  color: var(--accent-2);
+  font-size: 12px;
+  font-weight: 600;
 }
 .page-mockups .mk-lib-mark {
   display: grid;
@@ -936,7 +1028,7 @@
   background: var(--accent-soft);
 }
 .page-mockups .mk-lib-new-sub {
-  font-weight: 500;
+  font-weight: 400;
   font-size: 12px;
   color: var(--muted);
 }
@@ -967,13 +1059,13 @@
   position: relative;
   flex: 1;
   min-height: 0;
-  border-radius: 14px;
-  border: 1px solid var(--border);
-  background-color: #0e0f13;
-  background-image: linear-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.022) 1px, transparent 1px);
-  background-size: 24px 24px;
-  background-position: -1px -1px;
+  border-radius: 12px;
+  /* the video's photo studio: panel grey, a soft light in the middle, fine dots */
+  border: 1px solid #1e2029;
+  background-color: var(--panel-2);
+  background-image: radial-gradient(ellipse 70% 60% at 50% 42%, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0) 72%),
+    radial-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1.4px);
+  background-size: 100% 100%, 18px 18px;
   overflow: hidden;
 }
 .page-mockups .mk-stage {
@@ -1030,6 +1122,29 @@
 .page-mockups .mk-rect:focus-visible {
   box-shadow: 0 0 0 3px rgba(155, 140, 255, 0.35);
 }
+/* A never-set area: a faint outline of the default area that takes no pointer, so a
+   press anywhere on the photo draws a new rectangle. */
+.page-mockups .mk-rect.is-ghost {
+  opacity: 0.35;
+  pointer-events: none;
+}
+.page-mockups .mk-rect.is-ghost .mk-handle,
+.page-mockups .mk-rect.is-ghost .mk-rect-size,
+.page-mockups .mk-rect.is-ghost .mk-rect-label {
+  display: none;
+}
+.page-mockups .mk-rect.is-ghost:focus-visible {
+  opacity: 0.8;
+}
+/* While a rectangle is being drawn it is empty and glows (only its size shows); the
+   design comes after. */
+.page-mockups .mk-art.drag-draw .mk-rect-label {
+  display: none;
+}
+.page-mockups .mk-art.drag-draw .mk-rect {
+  background: rgba(123, 108, 255, 0.12);
+  box-shadow: 0 0 24px rgba(123, 108, 255, 0.5), inset 0 0 14px rgba(123, 108, 255, 0.28);
+}
 .page-mockups .mk-rect-design {
   position: absolute;
   inset: 0;
@@ -1042,6 +1157,11 @@
 }
 .page-mockups .mk-art.show-design:not(.has-preview) .mk-rect-design {
   display: block;
+}
+/* ...but not in a never-set outline, nor while a rectangle is being drawn */
+.page-mockups .mk-art .mk-rect.is-ghost .mk-rect-design,
+.page-mockups .mk-art.drag-draw .mk-rect .mk-rect-design {
+  display: none;
 }
 .page-mockups .mk-rect-label {
   position: absolute;
@@ -1140,8 +1260,7 @@
 }
 
 /* floating stage controls */
-.page-mockups .mk-zoom,
-.page-mockups .mk-show {
+.page-mockups .mk-zoom {
   position: absolute;
   top: 12px;
   z-index: 2;
@@ -1155,55 +1274,64 @@
   border: 1px solid var(--border-2);
   color: var(--text-2);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 400;
   backdrop-filter: blur(6px);
 }
 .page-mockups .mk-zoom {
   left: 12px;
   font-family: var(--mono);
 }
-.page-mockups .mk-show {
-  right: 12px;
+.page-mockups .mk-zoom .icon {
+  color: var(--muted);
 }
-.page-mockups .mk-zoom:hover,
-.page-mockups .mk-show:hover {
+.page-mockups .mk-zoom:hover {
   color: var(--text);
   border-color: var(--muted-2);
 }
-.page-mockups .mk-show.is-on {
-  color: var(--accent-2);
-  border-color: var(--accent-line);
-}
 
+/* the pill at the bottom of the stage (the video's "Sürükleyerek baskı alanını çizin") */
 .page-mockups .mk-under {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  z-index: 2;
   display: flex;
-  justify-content: center;
-  min-height: 30px;
+  max-width: calc(100% - 24px);
+  transform: translateX(-50%);
+  pointer-events: none;
 }
-.page-mockups .mk-saved-chip {
+.page-mockups .mk-stage-pill {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  height: 30px;
-  padding: 0 14px;
+  min-width: 0;
+  max-width: 100%;
+  height: 28px;
+  padding: 0 12px;
   border-radius: 999px;
-  border: 1px solid rgba(52, 211, 153, 0.35);
-  background: rgba(52, 211, 153, 0.07);
+  border: 1px solid var(--border-2);
+  background: rgba(10, 12, 17, 0.78);
+  backdrop-filter: blur(6px);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.page-mockups .mk-stage-pill span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.page-mockups .mk-stage-pill .icon {
+  flex: none;
+  color: var(--accent-2);
+}
+.page-mockups .mk-stage-pill.is-done {
+  border-color: rgba(47, 214, 163, 0.35);
   color: var(--success);
-  font-size: 12.5px;
-  font-weight: 600;
   animation: mk-pop 0.25s var(--ease);
 }
-.page-mockups .mk-hint {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 12px;
-  color: var(--muted);
-  text-align: center;
-}
-.page-mockups .mk-hint .icon {
-  flex: none;
+.page-mockups .mk-stage-pill.is-done .icon {
+  color: var(--success);
 }
 @keyframes mk-pop {
   from {
@@ -1220,7 +1348,7 @@
 .page-mockups .mk-main.is-loading .mk-side > :not(.mk-side-skeleton),
 .page-mockups .mk-main.is-loading .mk-main-foot > *,
 .page-mockups .mk-main.is-loading .mk-zoom,
-.page-mockups .mk-main.is-loading .mk-show {
+.page-mockups .mk-main.is-loading .mk-under {
   visibility: hidden;
 }
 .page-mockups .mk-side-skeleton {
@@ -1247,7 +1375,7 @@
   flex: 1;
   min-width: 0;
   font-size: 21px;
-  font-weight: 650;
+  font-weight: 700;
   letter-spacing: -0.015em;
   line-height: 1.25;
 }
@@ -1290,11 +1418,7 @@
   flex: none;
 }
 .page-mockups .mk-side .section-title {
-  min-height: 26px;
-}
-.page-mockups .mk-side .section-title .btn {
-  height: 26px;
-  font-size: 12px;
+  margin-bottom: 12px;
 }
 .page-mockups .mk-fields {
   display: grid;
@@ -1308,7 +1432,7 @@
 }
 .page-mockups .mk-field .field-label {
   font-size: 13px;
-  font-weight: 550;
+  font-weight: 600;
   color: var(--text-2);
 }
 .page-mockups .mk-field .field-hint:empty,
@@ -1324,7 +1448,12 @@
   min-width: 0;
   font-family: var(--mono);
   font-size: 14px;
-  font-weight: 550;
+  font-weight: 400;
+}
+/* the fields a drag is changing (base.css has no .is-focus) */
+.page-mockups .mk-field .input-affix.is-focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(124, 108, 246, 0.18);
 }
 .page-mockups .mk-field-input .affix-suf {
   font-family: var(--mono);
@@ -1423,7 +1552,7 @@
 }
 .page-mockups .mk-applied-title {
   font-size: 13.5px;
-  font-weight: 650;
+  font-weight: 600;
 }
 .page-mockups .mk-applied-sub {
   margin-top: 1px;
@@ -1451,6 +1580,9 @@
   min-width: 0;
 }
 .page-mockups .mk-same .toggle-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 14px;
   font-weight: 600;
 }
@@ -1461,6 +1593,9 @@
 }
 .page-mockups .mk-main-foot .btn {
   flex: none;
+}
+.page-mockups .mk-main-foot .btn.is-waiting {
+  opacity: 0.55;
 }
 
 /* design picker (the modal lives outside .page-mockups) */
@@ -1580,13 +1715,26 @@
 }
 @media (max-height: 760px) {
   .page-mockups .mk-helper {
-    margin-top: 10px;
+    margin-top: 8px;
+  }
+  .page-mockups .mk-divider {
+    margin: 12px 0 14px;
   }
   .page-mockups .mk-fields {
     gap: 10px;
-    margin-bottom: 16px;
+    margin-bottom: 14px;
   }
   .page-mockups .mk-field-input {
     height: 36px;
+  }
+  .page-mockups .mk-side-fill {
+    min-height: 4px;
+  }
+  .page-mockups .mk-applied {
+    padding: 10px 12px;
+    gap: 10px;
+  }
+  .page-mockups .mk-applied-sub {
+    margin-top: 0;
   }
 }

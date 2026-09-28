@@ -27,8 +27,13 @@
   display: flex;
   flex-direction: column;
 }
-.tpl-card .card-sub {
-  font-size: 12.5px;
+.page-template .tpl-card .card-title {
+  font-size: 17.5px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.page-template .tpl-card .card-sub {
+  font-size: 12.8px;
 }
 
 /* ------------------------------------------------------------------ listings */
@@ -176,8 +181,13 @@
   letter-spacing: -0.005em;
   color: var(--text);
 }
-.tpl-row-head .badge {
+.tpl-current-dot {
   flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-2);
+  box-shadow: 0 0 0 3px rgba(124, 108, 246, 0.2);
 }
 .tpl-row-sub {
   display: flex;
@@ -206,7 +216,7 @@
   align-items: center;
   gap: 6px;
   color: var(--tone);
-  font-weight: 500;
+  font-weight: 400;
 }
 .tpl-state .dot {
   width: 6px;
@@ -215,9 +225,12 @@
 .tpl-row-price {
   flex: none;
   font-size: 15px;
-  font-weight: 700;
-  color: var(--text);
+  font-weight: 600;
+  color: var(--text-2);
   letter-spacing: 0.01em;
+}
+.tpl-row.is-selected .tpl-row-price {
+  color: var(--text);
 }
 
 .tpl-byid {
@@ -291,7 +304,7 @@
   border-radius: 8px;
   color: var(--accent-2);
   font-size: 12.5px;
-  font-weight: 500;
+  font-weight: 600;
 }
 .tpl-more-btn:hover {
   background: var(--accent-soft);
@@ -342,7 +355,7 @@
   color: var(--text-2);
 }
 .tpl-source-none {
-  color: var(--muted-2);
+  color: var(--muted);
 }
 .tpl-badges {
   display: flex;
@@ -418,7 +431,7 @@
 }
 .tpl-value.mono {
   font-size: 14.5px;
-  font-weight: 700;
+  font-weight: 600;
 }
 .tpl-code {
   flex: none;
@@ -441,7 +454,43 @@
   color: var(--success);
 }
 .tpl-check.is-idle {
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(47, 214, 163, 0.14);
+  opacity: 0.25;
+}
+/* Nothing picked yet: a grey bar where each value will come. */
+.tpl-bar {
+  display: block;
+  width: 132px;
+  max-width: 100%;
+  height: 12px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+}
+/* After a pick the values come in row by row, each check filling in. */
+.tpl-fields-list.is-reveal .tpl-field-value {
+  animation: tpl-in 0.35s var(--ease) both;
+  animation-delay: calc(var(--i, 0) * 70ms);
+}
+.tpl-fields-list.is-reveal .tpl-check {
+  animation: tpl-check-in 0.35s var(--ease) both;
+  animation-delay: calc(var(--i, 0) * 70ms);
+}
+@keyframes tpl-in {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+}
+@keyframes tpl-check-in {
+  from {
+    opacity: 0.25;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tpl-fields-list.is-reveal .tpl-field-value,
+  .tpl-fields-list.is-reveal .tpl-check {
+    animation: none;
+  }
 }
 .tpl-field.is-idle .tpl-field-icon {
   color: var(--muted);
@@ -469,6 +518,10 @@
 }
 .tpl-bottom .note {
   padding: 11px 14px;
+}
+/* "Bunlar ticari kararlar." is semibold in the video, not bold. */
+.tpl-bottom .note-text b {
+  font-weight: 600;
 }
 .tpl-bottom .note.tone-info {
   background: rgba(64, 132, 238, 0.13);
@@ -500,6 +553,10 @@
   align-items: center;
   gap: 6px;
   min-width: 0;
+}
+.tpl-footnote {
+  font-size: 13px;
+  color: var(--muted);
 }
 .tpl-hint-line.is-strong {
   color: var(--text-2);

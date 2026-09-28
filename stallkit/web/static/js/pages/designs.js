@@ -1,20 +1,64 @@
 // Tasarım Yükle: drop designs, then watch each one become an Etsy draft.
 //
-// Views: idle (dropzone + setup chips + the six steps, video t210), uploading (per-file
-// progress), running (pipeline table + "being prepared" card, t220) and done (success
-// banner + table + sample draft, t240). A run is a server job ("designs"); this page only
-// renders its state and live events, so navigating away and back restores the view.
+// Views: idle (dropzone + setup chips + the six steps, video t210; an upload shows as a
+// pill inside the drop zone, then the start card), running (pipeline table + "being
+// prepared" card, t220) and done (success banner + table + sample draft, t240). A run is
+// a server job ("designs"); this page only renders its state and live events, so
+// navigating away and back restores the view.
 
 import {
-  h, cx, mount, card, button, iconButton, badge, infoNote, thumb, dropzone, progressBar,
+  h, cx, mount, button, iconButton, badge, infoNote, thumb, dropzone, progressBar,
   stepDots, tagChip, spinner, skeleton,
 } from "../ui.js";
 import { icon } from "../icons.js";
 import { money, duration, relative, bytes, number } from "../format.js";
 
 const STEPS = ["mockup", "research", "title", "tags", "check", "draft"];
-const STEP_ICONS = { mockup: "image", research: "search", title: "sparkles", tags: "tag", check: "shield-check", draft: "upload" };
+// The video's step icons (YukleEkrani STAGE_ICON): "loader" is its 8-ray burst.
+const STEP_ICONS = { mockup: "image", research: "search", title: "loader", tags: "tag", check: "target", draft: "upload" };
 const FINAL = new Set(["ok", "partial", "error", "cancelled", "checked"]);
+const CHECK_SETTLED = new Set(["done", "warn", "error"]);
+// While a drag is over the zone the browser shows each item's kind and type, never the
+// files: a count is shown only when every item is one of the images the zone takes.
+const DRAG_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp", "image/tiff"]);
+// The floating sample tiles (YukleEkrani GHOSTS): centre (x, y), size, turn, opacity.
+const GHOSTS = [
+  { x: 0.1, y: 0.26, s: 91, r: -9, o: 0.2 },
+  { x: 0.21, y: 0.66, s: 74, r: 7, o: 0.15 },
+  { x: 0.07, y: 0.8, s: 58, r: -4, o: 0.1 },
+  { x: 0.9, y: 0.25, s: 86, r: 8, o: 0.2 },
+  { x: 0.79, y: 0.67, s: 72, r: -7, o: 0.15 },
+  { x: 0.94, y: 0.8, s: 54, r: 5, o: 0.1 },
+];
+const GHOST_ICONS = ["frame", "shirt", "mug", "image", "bag", "sun"];
+const REVEAL_MOCKUP_MS = 110;
+const REVEAL_TAG_MS = 70;
+const TYPE_TICK_MS = 24;
+// Thumbnail widths: a row's (and the side card's head) and a mockup tile's.
+const ROW_THUMB_W = 96;
+const TILE_THUMB_W = 320;
+// A mockup tile appears once its picture is there (the counter follows the tiles one can
+// see), but never waits longer than this for it; the side card stays on its product
+// while it fills in, at most REVEAL_MAX_MS.
+const TILE_WAIT_MS = 1500;
+const GATE_POLL_MS = 40;
+const REVEAL_MAX_MS = 5000;
+// The dashed tag slots before the tags are known: varied widths as in the video (each
+// row its own), as fractions of the row (its three 6 px gaps taken off), so a row holds
+// four at any card width.
+const SLOT_ROWS = [
+  [0.24, 0.19, 0.28, 0.21],
+  [0.2, 0.27, 0.18, 0.25],
+  [0.27, 0.22, 0.2, 0.2],
+];
+const SLOT_GAPS_PX = 18;
+// listings.build_payload leaves out a weight or size Etsy would refuse (0, or no unit)
+// and says so in English ("item_weight 0 not sent ...", "item_length, item_width not
+// sent: item_dimensions_unit is empty"); runs before its own code gave it check_warning.
+const MEASURE_NOTE = /^item_(weight|length|width|height)\b[^:]*\bnot sent\b/;
+// İlanlar keeps the list a detail page's arrows walk here; a draft opened from this
+// page gets the run's drafts, in run order.
+const NAV_KEY = "stallkit.listings.nav";
 // Problems whose translated line already says everything (the English detail is left out).
 const SELF_EXPLAINED = new Set([
   "junk_name", "too_many_pixels", "too_many_images", "no_images", "invalid_image", "stopped",
@@ -57,6 +101,26 @@ function storageSet(key, value) {
   } catch {
     /* private mode: the view simply is not remembered */
   }
+}
+
+/** The drafts a detail page's "← 1 / n →" walks (numbers, as listing-detail compares them). */
+function storeNav(ids) {
+  try {
+    sessionStorage.setItem(NAV_KEY, JSON.stringify({ ids: ids.map(Number).filter((x) => x > 0), back: "/tasarim-yukle" }));
+  } catch {
+    /* private mode: the detail page just has no arrows */
+  }
+}
+
+function reducedMotion() {
+  return typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+/** A plain design (a transparent PNG) as opposed to a photo: shown on a checkerboard. */
+function isDesign(item) {
+  if (!item) return false;
+  if (item.mode) return item.mode === "composited";
+  return item.kind !== "folder";
 }
 
 function randomId() {
@@ -142,6 +206,35 @@ export function planUploads(files, mode, digital) {
   return out;
 }
 
+/**
+ * How many files a drag over the zone brings: the browser shows each item's kind and
+ * type but not the files, and a folder is one item with no type. A number only when
+ * every item is an image the zone takes; null otherwise ("Yüklemeye hazır").
+ */
+export function dragCount(items) {
+  const list = [...(items || [])];
+  if (!list.length) return null;
+  return list.every((it) => it && it.kind === "file" && DRAG_TYPES.has(String(it.type || "").toLowerCase())) ? list.length : null;
+}
+
+/**
+ * The first of the seven rows shown while a run goes on: pages of seven (the video
+ * keeps its rows in place), the page of the first unfinished product, or of the row
+ * picked by a click while it stays picked.
+ */
+export function pageStart(total, firstUnfinished, selected) {
+  if (total <= VISIBLE_ROWS) return 0;
+  const first = firstUnfinished < 0 ? total - 1 : firstUnfinished;
+  const anchor = selected !== null && selected !== undefined && selected >= 0 && selected < total ? selected : first;
+  return Math.max(0, Math.min(Math.floor(anchor / VISIBLE_ROWS) * VISIBLE_ROWS, total - VISIBLE_ROWS));
+}
+
+/** "~2 dk kaldı" / "~50 sn kaldı" (video): [i18n key, n] for `rem` seconds left. */
+export function etaLabel(rem) {
+  if (rem >= 60) return ["run.eta_min", Math.round(rem / 60)];
+  return ["run.eta_sec", Math.max(10, Math.ceil(rem / 10) * 10)];
+}
+
 /** physical | download | both, from whatever the server sent (physical when unknown). */
 function listingType(value) {
   return value === "download" || value === "both" ? value : "physical";
@@ -154,6 +247,71 @@ function flatPath(item) {
   // Runs saved before the flat image was marked: the stream names it "<design>--flat".
   if (item.mode !== "composited") return null;
   return (item.images || []).find((p) => /--flat(-\d+)?\.jpg$/i.test(p)) || null;
+}
+
+/**
+ * The i18n key for a product's warning: warn.<code>; a weight or size Etsy was not sent
+ * reads warn.measure_not_sent, never the library's English, whichever code it came with.
+ */
+export function warnKey(w) {
+  if (!w) return "";
+  if (w.code === "check_warning" && MEASURE_NOTE.test(String(w.message || ""))) return "warn.measure_not_sent";
+  return `warn.${w.code}`;
+}
+
+/** How long typeTitle() takes to type `text` from character `from` on (ms). */
+function typeDuration(text, from) {
+  const len = String(text || "").length;
+  const step = Math.max(2, Math.ceil(len / 30));
+  return Math.ceil(Math.max(0, len - from) / step) * TYPE_TICK_MS;
+}
+
+/** The n-th dashed tag slot's width (four to a row): a fraction of the row. */
+export function slotWidth(n) {
+  const row = SLOT_ROWS[Math.floor(n / 4) % SLOT_ROWS.length];
+  return `calc((100% - ${SLOT_GAPS_PX}px) * ${row[n % 4]})`;
+}
+
+/**
+ * {done}: true once `img` has its picture, could not get it, or `cap` ms have passed
+ * (the side card's timeline waits on it; it must never stall).
+ */
+function imageGate(img, cap) {
+  const gate = { done: false };
+  const finish = () => {
+    gate.done = true;
+  };
+  if (!img) {
+    finish();
+    return gate;
+  }
+  const loaded = typeof img.decode === "function"
+    ? img.decode()
+    : new Promise((resolve, reject) => {
+      img.addEventListener("load", resolve, { once: true });
+      img.addEventListener("error", reject, { once: true });
+    });
+  loaded.then(finish, finish);
+  setTimeout(finish, cap);
+  return gate;
+}
+
+/**
+ * The side card's "n/max" counters (video Count: mono, muted at 0, accent while that
+ * step runs, green with a tick when done). {el, set(n, state)}; state idle | active | ok | warn.
+ */
+function counter(max) {
+  const el = h("span", { class: "dr-count is-idle" });
+  let shown = "";
+  const set = (n, state) => {
+    const key = `${n}|${state}`;
+    if (key === shown) return;
+    shown = key;
+    el.className = cx("dr-count", `is-${state}`);
+    const mark = state === "ok" ? icon("check", { size: 12, strokeWidth: 2.8 }) : state === "warn" ? icon("alert", { size: 12, strokeWidth: 2.4 }) : null;
+    mount(el, mark, h("span", { class: "num" }, `${n}/${max}`));
+  };
+  return { el, set };
 }
 
 class DesignsPage {
@@ -173,8 +331,14 @@ class DesignsPage {
     this.rafPending = false;
     this.dirtyRows = new Set();
     this.typing = null;
+    this.revealTimer = null;
     this.uploading = null;
     this.statusDebounce = null;
+    this.pendingModal = null;
+    this.pillStart = null;
+    this.checksAtLoad = true;
+    this.checkToasted = false;
+    this.eta = null;
     this.destroyed = false;
   }
 
@@ -228,8 +392,53 @@ class DesignsPage {
     for (const id of this.timers) clearInterval(id);
     this.timers.clear();
     clearTimeout(this.statusDebounce);
+    this.stopReveal();
+    if (this.uploading) {
+      if (this.uploading.controller) this.uploading.controller.abort();
+      this.revokePreviews(this.uploading);
+    }
+  }
+
+  /** The side card's animations (title typing, mockups and tags appearing one by one). */
+  stopReveal() {
     if (this.typing) clearInterval(this.typing.timer);
-    if (this.uploading && this.uploading.controller) this.uploading.controller.abort();
+    this.typing = null;
+    clearTimeout(this.revealTimer);
+    this.revealTimer = null;
+  }
+
+  /**
+   * Runs [{at: ms, fn, gate}] on one timer (this.revealTimer); stopReveal() cancels the
+   * rest. An event with a gate ({done}, see imageGate) waits for it, and everything after
+   * it moves back by the wait: a mockup tile shows only once its picture is there.
+   */
+  runTimeline(events) {
+    if (!events.length) return;
+    events.sort((a, b) => a.at - b.at);
+    let t0 = performance.now();
+    let waitingSince = 0;
+    let i = 0;
+    const next = () => {
+      this.revealTimer = null;
+      if (this.destroyed) return;
+      if (waitingSince) {
+        t0 += performance.now() - waitingSince;
+        waitingSince = 0;
+      }
+      while (i < events.length && events[i].at <= performance.now() - t0 + 4) {
+        const ev = events[i];
+        if (ev.gate && !ev.gate.done) {
+          waitingSince = performance.now();
+          this.revealTimer = setTimeout(next, GATE_POLL_MS);
+          return;
+        }
+        i += 1;
+        ev.fn();
+      }
+      if (i < events.length) this.revealTimer = setTimeout(next, Math.max(0, events[i].at - (performance.now() - t0)));
+      else this.revealEnded();
+    };
+    next();
   }
 
   every(ms, fn) {
@@ -252,9 +461,10 @@ class DesignsPage {
     this.ctx.toast({ tone: "danger", title: this.errorText(err) });
   }
 
-  thumbUrl(path, w, v) {
+  /** checker: a transparent design is drawn on a checkerboard instead of white. */
+  thumbUrl(path, w, v, checker) {
     if (!path) return null;
-    return this.api.url("/api/files/thumb", { path, w, v });
+    return this.api.url("/api/files/thumb", checker ? { path, w, v, bg: "checker" } : { path, w, v });
   }
 
   // ------------------------------------------------------------------ texts
@@ -286,7 +496,7 @@ class DesignsPage {
 
   warnText(w) {
     const { t } = this;
-    const key = `warn.${w.code}`;
+    const key = warnKey(w);
     if (t.has(key)) return t(key, { ...(w.params || {}), message: w.message || "" });
     return w.message || w.code;
   }
@@ -316,24 +526,34 @@ class DesignsPage {
     this.run = null;
     this.selected = null;
     this.expanded = false;
+    this.badgeKey = null;
     this.stopTimers();
-    this.ctx.setHeader({
-      subtitle: this.t("subtitle"),
-      actions: [
-        iconButton({
-          icon: "folder",
-          title: this.t("pending.open"),
-          variant: "ghost",
-          onClick: () => this.openFolder("products"),
-        }),
-      ],
-    });
+    this.stopReveal();
+    this.setIdleHeader();
     this.renderIdle();
     await Promise.all([this.loadPending(), this.loadLastRun()]);
   }
 
+  /**
+   * The video's idle page has no header action. After a run, "Son çalışma" (a ghost
+   * button, the only one) opens what it did.
+   */
+  setIdleHeader() {
+    const { t } = this;
+    const run = this.lastRun;
+    const s = run && run.summary;
+    const actions = [];
+    if (s) {
+      const hint = s.dry_run ? t("last.checked", { n: s.checked, when: relative(s.finished_at) }) : t("last.link", { n: s.created, when: relative(s.finished_at) });
+      actions.push(button({ label: t(s.dry_run ? "last.short_checked" : "last.short"), icon: "history", variant: "ghost", title: hint, class: "dz-last-btn", onClick: () => this.showSaved(run) }));
+    }
+    this.ctx.setHeader({ subtitle: t("subtitle"), actions });
+  }
+
   renderIdle() {
     const { t } = this;
+    this.pillStart = null;
+    this.dzDecorKey = null; // a fresh zone: its sample tiles are filled in again
     this.dz = dropzone({
       accept: ACCEPT,
       multiple: true,
@@ -344,40 +564,131 @@ class DesignsPage {
       onFiles: (list) => this.handleFiles(list),
       onReject: (list) => this.onRejected(list),
     });
+    // ui.js marks the zone .is-over; these run after its own handlers and add what the
+    // video shows while files hover ("Bırakın!", "50 dosya · yüklemeye hazır").
+    this.dz.addEventListener("dragenter", (e) => this.onDragEnter(e));
+    this.dz.addEventListener("dragleave", () => this.onDragEnd(false));
+    this.dz.addEventListener("drop", () => this.onDragEnd(true));
     this.uploadHost = h("div", { class: "dz-upload-host" });
     this.chipsHost = h("div", { class: "dz-status" }, this.statusRow(null));
-    this.pendingHost = h("div", { class: "dz-pending-host" });
     this.noteHost = h("div", { class: "dz-note-host" });
-    mount(this.el, this.uploadHost, this.dz, this.chipsHost, this.stepsCard(null), this.noteHost, this.pendingHost);
+    mount(this.el, this.uploadHost, this.dz, this.chipsHost, this.stepsCard(null), this.noteHost);
+  }
+
+  /** The floating sample tiles: the designs waiting in the folder, else the last run's. */
+  decorEl(images) {
+    const decor = h("div", { class: "dz-decor", "aria-hidden": "true" });
+    GHOSTS.forEach((g, i) => {
+      const src = images && images[i] ? images[i] : null;
+      decor.appendChild(
+        h(
+          "span",
+          {
+            class: cx("dz-float", !src && "is-icon"),
+            style: {
+              "--x": String(g.x),
+              "--y": String(g.y),
+              "--s": `${g.s}px`,
+              "--r": `${g.r}deg`,
+              "--o": String(g.o),
+              // Dragging pulls the tiles a little toward the middle (YukleEkrani DropZone).
+              "--ox": `${Math.round((0.5 - g.x) * 62)}px`,
+              "--oy": `${Math.round((0.5 - g.y) * 24)}px`,
+            },
+          },
+          src ? h("img", { src, alt: "", loading: "lazy" }) : icon(GHOST_ICONS[i], { size: Math.round(g.s * 0.34) }),
+        ),
+      );
+    });
+    this.dzDecor = decor;
+    return decor;
   }
 
   dropContent(images) {
     const { t } = this;
-    const decor = h("div", { class: "dz-decor", "aria-hidden": "true" });
-    const spots = ["a", "b", "c", "d", "e", "f", "g"];
-    const icons = ["frame", "shirt", "mug", "image", "bag", "phone", "sun"];
-    spots.forEach((spot, i) => {
-      const src = images && images[i] ? images[i] : null;
-      decor.appendChild(
-        h("span", { class: cx("dz-float", `dz-float-${spot}`) }, src ? h("img", { src, alt: "", loading: "lazy" }) : icon(icons[i], { size: 26 })),
-      );
-    });
-    this.dzDecor = decor;
-    return [
-      decor,
-      h("span", { class: "dz-icon" }, icon("upload", { size: 30 })),
-      h("p", { class: "dz-title" }, t("drop.title")),
-      h("p", { class: "dz-sub" }, t("drop.sub")),
+    // "PNG · şeffaf zemin önerilir · tek seferde 500'e kadar", with the video's dim dots.
+    const parts = t("drop.sub").split(" · ");
+    const sub = h(
+      "p",
+      { class: "dz-sub" },
+      parts.map((part, i) => [i ? h("span", { class: "dz-dot", "aria-hidden": "true" }, "·") : null, h("span", null, part)]),
+    );
+    const pickRow = h(
+      "div",
+      { class: "dz-pick-row" },
       button({
         label: t("drop.pick"),
-        variant: "ghost",
+        icon: "file",
+        variant: "secondary",
+        size: "lg",
         class: "dz-pick",
         onClick: (e) => {
           e.stopPropagation();
           this.dz.open();
         },
       }),
+      h("span", { class: "dz-pick-or" }, t("drop.pick_or")),
+    );
+    // Visual feedback only: the zone's own label already says what to do.
+    this.dragPill = h("div", { class: "dz-pill dz-pill-drag", "aria-hidden": "true" });
+    this.upHost = h("div", { class: "dz-up-host" });
+    this.dzPendingHost = h("div", { class: "dz-wait-host" });
+    return [
+      h("span", { class: "dz-grid", "aria-hidden": "true" }),
+      this.decorEl(images),
+      h(
+        "div",
+        { class: "dz-body" },
+        h(
+          "span",
+          { class: "dz-icon-wrap", "aria-hidden": "true" },
+          h("span", { class: "dz-ring dz-ring-a" }),
+          h("span", { class: "dz-ring dz-ring-b" }),
+          h("span", { class: "dz-icon" }, icon("upload", { size: 46, strokeWidth: 2 })),
+        ),
+        h(
+          "div",
+          { class: "dz-titles" },
+          h("p", { class: "dz-title" }, t("drop.title")),
+          h("p", { class: "dz-title-over", "aria-hidden": "true" }, t("drop.over")),
+        ),
+        sub,
+        h("div", { class: "dz-slot" }, pickRow, this.dragPill, this.upHost),
+        this.dzPendingHost,
+      ),
     ];
+  }
+
+  /**
+   * Files entered the zone. Chrome shows each dragged item's kind and type (a folder is
+   * one item with no type) but not the files: "8 dosya" only when all are images.
+   */
+  onDragEnter(e) {
+    if (!this.dz || !this.dz.classList.contains("is-over")) return;
+    const n = dragCount(e.dataTransfer && e.dataTransfer.items);
+    const key = n === null ? "any" : String(n);
+    if (this.dz.dataset.count === key) return;
+    this.dz.dataset.count = key;
+    const { t } = this;
+    const tiles = n === null ? 1 : Math.min(3, n);
+    const stack = h(
+      "span",
+      { class: "dz-pill-stack" },
+      Array.from({ length: tiles }, () => h("span", { class: "dz-pill-tile" }, icon(n === null ? "folder" : "image", { size: 15, strokeWidth: 2 }))),
+    );
+    mount(
+      this.dragPill,
+      stack,
+      n === null
+        ? h("strong", { class: "dz-pill-n" }, t("drop.ready_any"))
+        : [h("strong", { class: "dz-pill-n num" }, t("drop.ready_n", { n })), h("span", { class: "dz-pill-tail" }, t("drop.ready_tail"))],
+    );
+  }
+
+  /** ui.js has cleared .is-over (the drag left, or the files were dropped). */
+  onDragEnd(dropped) {
+    if (!this.dz) return;
+    if (dropped || !this.dz.classList.contains("is-over")) delete this.dz.dataset.count;
   }
 
   setupState(p) {
@@ -392,17 +703,18 @@ class DesignsPage {
       h(
         onClick ? "button" : "div",
         { class: cx("dz-chip", tone && `is-${tone}`), type: onClick ? "button" : undefined, onClick },
-        h("span", { class: "dz-chip-icon" }, icon(ic, { size: 15 })),
+        h("span", { class: "dz-chip-icon" }, icon(ic, { size: 16 })),
         label ? h("span", { class: "dz-chip-label" }, label) : null,
         value !== null ? h("strong", { class: "dz-chip-value ellipsis" }, value) : skeleton({ lines: 1, height: 10, widths: ["90px"] }),
         extra || null,
       );
-    // "n mockup kullanılacak": the Mockuplar rule (switched on, in order, at most 19), and
+    // "Mockup: 6 hazır": the Mockuplar rule (switched on, in order, at most 19), and
     // always a link there, where the seller chooses and orders them.
     const mockups = p ? p.mockups.enabled : null;
     const over = p && p.mockups.over_limit ? h("span", { class: "dz-chip-extra" }, t("chip.mockup_over", { n: p.mockups.switched_on })) : null;
-    const mockupChip = chip("image", null, p ? (mockups ? t("chip.mockup_value", { n: mockups }) : t(p.mockups.total ? "chip.mockup_none" : "chip.mockup_empty")) : null, [over, h("span", { class: "dz-chip-go", "aria-hidden": "true" }, icon("arrow-right", { size: 13 }))], p && !mockups ? "warn" : null, () => this.ctx.navigate("/kurulum/mockuplar"));
+    const mockupChip = chip("image", t("chip.mockup"), p ? (mockups ? t("chip.mockup_ready", { n: mockups }) : t(p.mockups.total ? "chip.mockup_none" : "chip.mockup_empty")) : null, over, p && !mockups ? "warn" : null, () => this.ctx.navigate("/kurulum/mockuplar"));
     mockupChip.title = t("chip.mockup_hint");
+    mockupChip.classList.add("dz-chip-mockup");
     // The template listing's full title is up to 140 characters; the chip shows its
     // first part, as the video does, and the whole title on hover.
     const fullTemplate = p && p.template && p.template.title ? p.template.title : null;
@@ -421,23 +733,20 @@ class DesignsPage {
       typeChip.title = t(`chip.type_${kind}_hint`);
       typeChip.classList.add("dz-chip-type");
     }
-    const row = [
-      mockupChip,
-      templateChip,
-      typeChip,
-      chip(
-        "link",
-        t("chip.shop"),
-        p ? (shop && shop.name) || (shopOk ? t("chip.shop_connected") : t("chip.shop_none")) : null,
-        shopOk ? h("span", { class: "dz-chip-ok" }, icon("check", { size: 11, strokeWidth: 3 })) : null,
-        p && !shopOk ? "warn" : null,
-        p && !shopOk ? () => this.ctx.navigate("/kurulum/magaza") : null,
-      ),
-    ];
+    const shopChip = chip(
+      "link",
+      t("chip.shop"),
+      p ? (shop && shop.name) || (shopOk ? t("chip.shop_connected") : t("chip.shop_none")) : null,
+      shopOk ? h("span", { class: "dz-chip-ok" }, icon("check", { size: 12, strokeWidth: 3 })) : null,
+      p && !shopOk ? "warn" : null,
+      p && !shopOk ? () => this.ctx.navigate("/kurulum/magaza") : null,
+    );
+    shopChip.classList.add("dz-chip-shop");
+    const row = [mockupChip, templateChip, typeChip, shopChip];
     const setup = this.setupState(p);
     let right = null;
     if (setup.ok === true) {
-      right = h("span", { class: "dz-setup is-ok" }, icon("check", { size: 13 }), t("setup.ok"));
+      right = h("span", { class: "dz-setup is-ok" }, icon("check", { size: 14, strokeWidth: 2.4 }), t("setup.ok"));
     } else if (setup.ok === false) {
       const link = SETUP_LINKS[setup.first];
       right = h(
@@ -464,16 +773,16 @@ class DesignsPage {
     };
     const items = [];
     STEPS.forEach((s, i) => {
-      if (i) items.push(h("span", { class: "dz-step-arrow", "aria-hidden": "true" }, icon("arrow-right", { size: 14 })));
+      if (i) items.push(h("span", { class: "dz-step-arrow", "aria-hidden": "true" }, icon("arrow-right", { size: 16 })));
       items.push(
         h(
           "li",
           { class: "dz-step" },
-          h("span", { class: "dz-step-icon" }, icon(STEP_ICONS[s], { size: 16 })),
+          h("span", { class: "dz-step-icon" }, icon(STEP_ICONS[s], { size: 18 })),
           h(
             "span",
             { class: "dz-step-text" },
-            h("span", { class: "dz-step-name" }, h("span", { class: "dz-step-num num" }, String(i + 1)), t(`step.${s}`)),
+            h("span", { class: "dz-step-name" }, h("span", { class: "dz-step-num" }, String(i + 1)), t(`step.${s}`)),
             h("span", { class: "dz-step-sub" }, subs[s]),
           ),
         ),
@@ -486,7 +795,7 @@ class DesignsPage {
         "div",
         { class: "dz-steps-head" },
         h("span", { class: "dz-steps-title" }, t("steps.title")),
-        h("span", { class: "dz-steps-note" }, icon("lock", { size: 13 }), t("steps.note")),
+        h("span", { class: "dz-steps-note" }, icon("lock", { size: 14 }), t("steps.note")),
       ),
       h("ol", { class: "dz-steps-row" }, items),
     );
@@ -512,7 +821,10 @@ class DesignsPage {
     try {
       const data = await this.api.get("/api/designs/last", null, { signal: this.ctx.signal });
       this.lastRun = data && data.run ? data.run : null;
-      if (this.view === "idle") this.renderPendingParts();
+      if (this.view === "idle" && !this.destroyed) {
+        this.setIdleHeader();
+        this.renderPendingParts();
+      }
     } catch (err) {
       if (!this.api.isAbort(err)) this.lastRun = null;
     }
@@ -527,13 +839,14 @@ class DesignsPage {
     const old = this.el.querySelector(".dz-steps");
     if (old) old.replaceWith(steps);
     // Floating decoration: the designs waiting in the folder, else the last run's.
-    let srcs = p.items.filter((x) => x.thumb_path).slice(0, 7).map((x) => this.thumbUrl(x.thumb_path, 160, x.mtime));
+    let srcs = p.items.filter((x) => x.thumb_path).slice(0, GHOSTS.length).map((x) => this.thumbUrl(x.thumb_path, 160, x.mtime, isDesign(x)));
     if (!srcs.length && this.lastRun && Array.isArray(this.lastRun.items)) {
       const v = (this.lastRun.summary && this.lastRun.summary.batch) || "last";
-      srcs = this.lastRun.items.filter((x) => x.thumb_path && x.status !== "error").slice(0, 7).map((x) => this.thumbUrl(x.thumb_path, 160, v));
+      srcs = this.lastRun.items.filter((x) => x.thumb_path && x.status !== "error").slice(0, GHOSTS.length).map((x) => this.thumbUrl(x.thumb_path, 160, v, isDesign(x)));
     }
-    if (this.dzDecor && srcs.length) {
-      const fresh = this.dropContent(srcs)[0];
+    if (this.dzDecor && srcs.length && this.dzDecorKey !== srcs.join("|")) {
+      this.dzDecorKey = srcs.join("|");
+      const fresh = this.decorEl(srcs);
       this.el.querySelector(".dz-decor")?.replaceWith(fresh);
     }
 
@@ -559,32 +872,133 @@ class DesignsPage {
       );
     }
     mount(this.noteHost, notes);
-    mount(this.pendingHost, p.count ? this.pendingCard(p) : null, this.lastRunLine());
+    this.renderWaitPill(p);
+    if (this.pendingModal) this.renderPendingModal();
   }
 
-  lastRunLine() {
-    const run = this.lastRun;
-    if (!run || !run.summary) return null;
-    const s = run.summary;
+  /** Whether a waiting design cannot go as it is (the tile says why, in the modal). */
+  pendingProblem(it, digital) {
+    return !!(it.junk_reason || it.too_many || it.no_photos || (digital && it.deliverable_problem));
+  }
+
+  /**
+   * Designs already waiting in the folder (a drop that was not started, or files put
+   * there by hand): one pill inside the drop zone, with the problems counted apart and
+   * the list in a modal, so the page keeps the video's three blocks.
+   */
+  renderWaitPill(p) {
+    const host = this.dzPendingHost;
+    if (!host) return;
     const { t } = this;
-    const text = s.dry_run ? t("last.checked", { n: s.checked, when: relative(s.finished_at) }) : t("last.link", { n: s.created, when: relative(s.finished_at) });
-    return h(
-      "div",
-      { class: "dz-last" },
-      icon("history", { size: 14 }),
-      h("span", null, text),
-      button({ label: t("last.view"), size: "sm", variant: "ghost", iconRight: "arrow-right", onClick: () => this.showSaved(run) }),
+    this.pillStart = null;
+    if (!p || !p.count) {
+      mount(host);
+      this.syncStartButtons();
+      return;
+    }
+    const digital = !!(p.template && p.template.digital);
+    const bad = p.items.filter((it) => this.pendingProblem(it, digital)).length;
+    const stack = h(
+      "span",
+      { class: "dz-wait-stack" },
+      p.items
+        .filter((x) => x.thumb_path)
+        .slice(0, 3)
+        .map((x) => thumb({ src: this.thumbUrl(x.thumb_path, 96, x.mtime, isDesign(x)), size: 26, radius: 7, fit: "contain", icon: x.kind === "folder" ? "folder" : "image" })),
     );
+    const open = (e) => {
+      e.stopPropagation();
+      this.openPending();
+    };
+    const show = h(
+      "button",
+      { type: "button", class: "dz-wait-show", "aria-haspopup": "dialog", title: t("pending.show_hint"), onClick: open },
+      stack,
+      h("span", { class: "dz-wait-text" }, t("pending.pill", { n: p.count })),
+    );
+    const warn = bad ? h("button", { type: "button", class: "dz-wait-bad", "aria-haspopup": "dialog", title: t("pending.show_hint"), onClick: open }, icon("alert", { size: 13 }), t("pending.problems", { n: bad })) : null;
+    this.pillStart = button({
+      label: t("ready.start"),
+      icon: "zap",
+      variant: "primary",
+      size: "sm",
+      class: "dz-wait-start",
+      onClick: (e) => {
+        e.stopPropagation();
+        this.openStart();
+      },
+    });
+    // The rest of the zone still opens the file picker; the pill itself does not.
+    mount(host, h("div", { class: "dz-wait", role: "group", "aria-label": t("pending.title"), onClick: (e) => e.stopPropagation() }, show, warn, this.pillStart));
+    this.syncStartButtons();
   }
 
-  pendingCard(p) {
+  /** The waiting designs, one tile each: remove one, open the folder, check or start. */
+  openPending() {
+    const { t } = this;
+    const p = this.pending;
+    if (!p || !p.count) return;
+    if (this.pendingModal) return;
+    const body = h("div", { class: "dz-pending-body" });
+    const startBtn = button({
+      label: t("ready.start"),
+      icon: "zap",
+      variant: "primary",
+      onClick: () => {
+        m.close();
+        this.openStart();
+      },
+    });
+    const m = this.ctx.modal({
+      title: t("pending.title"),
+      subtitle: t("pending.sub", { n: p.count }),
+      width: 760,
+      class: "dz-pending-modal",
+      body,
+      actions: [
+        button({ label: t("pending.open"), icon: "folder", variant: "ghost", class: "dz-open-folder", onClick: () => this.openFolder("products") }),
+        button({
+          label: t("ready.dry"),
+          variant: "ghost",
+          title: t("ready.dry_hint"),
+          onClick: () => {
+            m.close();
+            this.startDry();
+          },
+        }),
+        startBtn,
+      ],
+      onClose: () => {
+        if (this.pendingModal && this.pendingModal.m === m) this.pendingModal = null;
+        this.syncStartButtons();
+      },
+    });
+    this.pendingModal = { m, body, startBtn };
+    this.renderPendingModal();
+    this.syncStartButtons();
+  }
+
+  renderPendingModal() {
+    const pm = this.pendingModal;
+    const p = this.pending;
+    if (!pm) return;
+    if (!p || !p.count) {
+      pm.m.close();
+      return;
+    }
+    const sub = pm.m.el.querySelector(".modal-sub");
+    if (sub) sub.textContent = this.t("pending.sub", { n: p.count });
+    mount(pm.body, h("div", { class: "dz-tiles" }, this.pendingTiles(p)));
+  }
+
+  pendingTiles(p) {
     const { t } = this;
     const items = p.items;
     const shown = this.pendingExpanded ? items : items.slice(0, PENDING_TILES);
     const digital = !!(p.template && p.template.digital);
     const tiles = shown.map((it) => {
       const fileProblem = digital ? it.deliverable_problem : null;
-      const bad = it.junk_reason || it.too_many || it.no_photos || fileProblem;
+      const bad = this.pendingProblem(it, digital);
       const downloads = it.deliverables || [];
       let sub;
       if (bad) {
@@ -606,7 +1020,7 @@ class DesignsPage {
       return h(
         "div",
         { class: cx("dz-tile", bad && "is-bad"), title: tip.join("\n") },
-        thumb({ src: this.thumbUrl(it.thumb_path, 200, it.mtime), size: 64, radius: 10, fit: "contain" }),
+        thumb({ src: this.thumbUrl(it.thumb_path, 200, it.mtime, isDesign(it)), size: 64, radius: 10, fit: "contain" }),
         h("span", { class: "dz-tile-name ellipsis" }, it.name),
         h("span", { class: "dz-tile-sub" }, sub),
         iconButton({
@@ -632,31 +1046,21 @@ class DesignsPage {
             class: "dz-tile dz-tile-more",
             onClick: () => {
               this.pendingExpanded = !this.pendingExpanded;
-              this.renderPendingParts();
+              this.renderPendingModal();
             },
           },
           more > 0 ? t("pending.more", { n: more }) : t("pending.less"),
         ),
       );
     }
-    const startBtn = button({ label: t("ready.start"), icon: "zap", variant: "primary", size: "sm", onClick: () => this.openStart() });
-    this.startButtons = [startBtn];
-    this.syncStartButtons();
-    return card({
-      class: "dz-pending",
-      title: t("pending.title"),
-      subtitle: t("pending.sub", { n: p.count }),
-      icon: "layers",
-      iconTone: "accent",
-      actions: [button({ label: t("pending.open"), icon: "folder", variant: "ghost", size: "sm", onClick: () => this.openFolder("products") }), startBtn],
-      body: h("div", { class: "dz-tiles" }, tiles),
-    });
+    return tiles;
   }
 
   /** Başlat waits while files are still uploading: a run started now would miss them. */
   syncStartButtons() {
     const busy = !!this.uploading;
-    for (const b of this.startButtons || []) {
+    const list = [this.pillStart, this.pendingModal && this.pendingModal.startBtn].filter(Boolean);
+    for (const b of list) {
       b.setDisabled(busy);
       b.title = busy ? this.t("ready.wait_upload") : "";
     }
@@ -826,6 +1230,17 @@ class DesignsPage {
     });
   }
 
+  /** The object URLs of an upload's preview tiles, freed once they are off screen. */
+  revokePreviews(state) {
+    for (const url of state.previews || []) URL.revokeObjectURL(url);
+    state.previews = [];
+  }
+
+  /**
+   * The drop zone stays where it is (video t208): the upload shows as one pill in it,
+   * "[3 tiles] 3 / 8 dosya · yükleniyor", with its Durdur. The start card follows.
+   * Files that did not go in are listed afterwards, with the reason, above the zone.
+   */
   async upload(entries) {
     const { t } = this;
     const batch = randomId();
@@ -834,91 +1249,75 @@ class DesignsPage {
       controller,
       rows: entries.map((e) => ({ ...e, status: "queued", fraction: 0, message: "" })),
       done: 0,
+      previews: [],
     };
     this.uploading = state;
     this.ctx.setDirty(true); // a reload or a closed tab would cut the upload off: ask
     this.syncStartButtons();
+    mount(this.uploadHost); // an earlier upload's list of problems
+    const total = state.rows.length;
+    const pictures = state.rows.filter((r) => !r.deliverable && /^image\//.test(r.file.type || "")).slice(0, 3);
+    state.previews = pictures.map((r) => URL.createObjectURL(r.file));
+    const countEl = h("strong", { class: "dz-pill-n num" });
+    const fill = h("span", { class: "dz-pill-fill" });
+    const pill = h(
+      "div",
+      {
+        class: "dz-pill dz-pill-up",
+        role: "progressbar",
+        "aria-label": t("upload.title"),
+        "aria-valuemin": "0",
+        "aria-valuemax": String(total),
+        "aria-valuenow": "0",
+        "aria-valuetext": t("upload.progress", { done: 0, total }),
+      },
+      h(
+        "span",
+        { class: "dz-pill-stack" },
+        state.previews.length
+          ? state.previews.map((src) => h("span", { class: "dz-pill-tile is-image" }, h("img", { src, alt: "" })))
+          : h("span", { class: "dz-pill-tile" }, icon("file", { size: 15, strokeWidth: 2 })),
+      ),
+      countEl,
+      h("span", { class: "dz-pill-tail" }, t("upload.pill_tail")),
+      h("span", { class: "dz-pill-track", "aria-hidden": "true" }, fill),
+    );
+    const stopBtn = button({
+      label: t("upload.cancel"),
+      size: "sm",
+      variant: "ghost",
+      class: "dz-pill-stop",
+      onClick: (e) => {
+        e.stopPropagation();
+        controller.abort();
+      },
+    });
+    if (this.upHost) mount(this.upHost, h("div", { class: "dz-up-pill", onClick: (e) => e.stopPropagation() }, pill, stopBtn));
     if (this.dz) {
       this.dz.setDisabled(true);
-      this.dz.hidden = true; // the upload list takes the drop zone's place meanwhile
+      this.dz.classList.add("is-uploading");
     }
-    const total = state.rows.length;
-    const bar = progressBar({ value: 0, max: total, label: t("upload.title") });
-    const countEl = h("span", { class: "dz-up-count num" });
-    const listEl = h("div", { class: "dz-up-list" });
-    const stopBtn = button({ label: t("upload.cancel"), size: "sm", variant: "secondary", onClick: () => controller.abort() });
-    const panel = h(
-      "section",
-      { class: "card dz-up is-active" },
-      h("div", { class: "dz-up-head" }, spinner({ size: 16, tone: "accent" }), h("strong", null, t("upload.title")), countEl, h("span", { class: "spacer" }), stopBtn),
-      bar.el,
-      listEl,
-    );
-    mount(this.uploadHost, panel);
-    const rowEls = state.rows.map((r) => {
-      const fill = h("span", { class: "dz-up-fill" });
-      const status = h("span", { class: "dz-up-status" });
-      const el = h(
-        "div",
-        { class: "dz-up-row" },
-        icon(r.deliverable ? "download" : "file", { size: 14 }),
-        h("span", { class: "dz-up-name ellipsis", title: r.label }, r.label),
-        h("span", { class: "dz-up-size num" }, bytes(r.file.size)),
-        h("span", { class: "dz-up-bar" }, fill),
-        status,
-      );
-      r.el = el;
-      r.fill = fill;
-      r.statusEl = status;
-      return el;
-    });
-    // Only the first rows are drawn at once; the rest are appended as their turn comes.
-    const INITIAL = 60;
-    listEl.append(...rowEls.slice(0, INITIAL));
-    let appended = Math.min(INITIAL, rowEls.length);
-    const paint = (r) => {
-      r.fill.style.width = `${Math.round((r.status === "queued" ? 0 : r.status === "uploading" ? r.fraction : 1) * 100)}%`;
-      r.el.className = cx("dz-up-row", `is-${r.status}`);
-      const text = {
-        queued: "",
-        uploading: `${Math.round(r.fraction * 100)}%`,
-        done: "",
-        duplicate: t("upload.duplicate"),
-        replaced: t("upload.replaced"),
-        known: t("upload.known"),
-        ignored: t("upload.ignored"),
-        error: r.message,
-        skipped: t("upload.skipped"),
-      }[r.status];
-      mount(
-        r.statusEl,
-        r.status === "done" ? icon("check", { size: 13, strokeWidth: 2.6 }) : r.status === "error" ? [icon("alert", { size: 12 }), " ", text] : text,
-      );
-      r.statusEl.title = r.status === "error" ? r.message : "";
-    };
-    const refreshHead = () => {
+    const refresh = () => {
+      let parts = 0;
+      for (const r of state.rows) parts += r.status === "queued" ? 0 : r.status === "uploading" ? r.fraction : 1;
       countEl.textContent = t("upload.progress", { done: state.done, total });
-      bar.update(state.done, total);
+      fill.style.width = `${Math.round((parts / Math.max(total, 1)) * 100)}%`;
+      pill.setAttribute("aria-valuenow", String(state.done));
+      pill.setAttribute("aria-valuetext", countEl.textContent);
     };
-    refreshHead();
-    state.rows.forEach(paint);
+    refresh();
 
     let next = 0;
     const worker = async (limit) => {
       while (next < limit && !controller.signal.aborted && !this.destroyed) {
         const i = next;
         next += 1;
-        while (appended <= i + 10 && appended < rowEls.length) {
-          listEl.appendChild(rowEls[appended]);
-          appended += 1;
-        }
         const r = state.rows[i];
         if (r.file.size > MAX_BYTES) {
           r.status = "error";
           r.message = t("upload.too_large", { mb: 50 });
         } else {
           r.status = "uploading";
-          paint(r);
           try {
             const res = await this.api.upload("/api/designs/files", r.file, {
               // A download for a product already in the folder goes without the batch.
@@ -926,7 +1325,7 @@ class DesignsPage {
               signal: controller.signal,
               onProgress: ({ fraction }) => {
                 r.fraction = fraction;
-                paint(r);
+                refresh();
               },
             });
             r.result = res;
@@ -941,8 +1340,7 @@ class DesignsPage {
           }
         }
         state.done += 1;
-        paint(r);
-        refreshHead();
+        refresh();
       }
     };
     // Every photo is in before the first download file starts (planUploads puts them
@@ -952,47 +1350,70 @@ class DesignsPage {
     const firstDownload = state.rows.findIndex((r) => r.deliverable);
     if (firstDownload > 0) await pool(firstDownload);
     await pool(state.rows.length);
-    for (const r of state.rows) {
-      if (r.status === "queued") {
-        r.status = "skipped";
-        paint(r);
-      }
-    }
+    for (const r of state.rows) if (r.status === "queued") r.status = "skipped";
     this.uploading = null;
+    this.revokePreviews(state);
     if (this.destroyed) return;
     this.ctx.setDirty(false);
     this.syncStartButtons();
-    if (this.view !== "idle") return;
-    panel.classList.remove("is-active");
+    if (this.upHost) mount(this.upHost);
     if (this.dz) {
       this.dz.setDisabled(false);
-      this.dz.hidden = false;
+      this.dz.classList.remove("is-uploading");
     }
+    if (this.view !== "idle") return;
 
-    const count = (s) => state.rows.filter((r) => r.status === s).length;
+    const saved = state.rows.filter((r) => r.status === "done" || r.status === "duplicate" || r.status === "replaced").length;
+    const problems = state.rows.filter((r) => ["error", "known", "ignored", "skipped"].includes(r.status));
+    if (problems.length) mount(this.uploadHost, this.uploadProblems(state.rows, problems, saved));
+    const p = await this.loadPending();
+    if (p && saved > 0 && !controller.signal.aborted) this.openStart(p);
+  }
+
+  /** What did not go in, and why (a failed, known, preview-named or stopped file). */
+  uploadProblems(rows, problems, saved) {
+    const { t } = this;
+    const count = (s) => rows.filter((r) => r.status === s).length;
     const failed = count("error");
     const known = count("known");
     const skipped = count("skipped");
-    const saved = count("done") + count("duplicate") + count("replaced");
-    const head = panel.querySelector(".dz-up-head");
-    mount(
-      head,
-      h("span", { class: cx("dz-up-done", failed && "has-errors") }, icon(failed ? "alert" : "check", { size: 15 })),
-      h("strong", null, saved ? t("upload.done", { n: saved }) : t("upload.none")),
-      failed ? h("span", { class: "dz-up-failed" }, t("upload.failed", { n: failed })) : null,
-      known ? h("span", { class: "dz-up-known" }, t("upload.known_n", { n: known })) : null,
-      skipped ? h("span", { class: "dz-up-known" }, t("upload.skipped_n", { n: skipped })) : null,
-      h("span", { class: "spacer" }),
-      button({ label: t("common.close"), size: "sm", variant: "ghost", onClick: () => mount(this.uploadHost) }),
+    const text = {
+      known: t("upload.known"),
+      ignored: t("upload.ignored"),
+      skipped: t("upload.skipped"),
+    };
+    const list = h(
+      "div",
+      { class: "dz-up-list" },
+      problems.map((r) => {
+        const why = r.status === "error" ? r.message : text[r.status];
+        return h(
+          "div",
+          { class: cx("dz-up-row", `is-${r.status}`) },
+          icon(r.deliverable ? "download" : "file", { size: 14 }),
+          h("span", { class: "dz-up-name ellipsis", title: r.label }, r.label),
+          h("span", { class: "dz-up-size num" }, bytes(r.file.size)),
+          h("span", { class: "dz-up-status", title: why }, r.status === "error" ? icon("alert", { size: 12 }) : null, h("span", { class: "ellipsis" }, why)),
+        );
+      }),
     );
-    if (!failed && !known) {
-      // Everything went in: the list has done its job.
-      setTimeout(() => {
-        if (panel.isConnected) mount(this.uploadHost);
-      }, 900);
-    }
-    const p = await this.loadPending();
-    if (p && saved > 0 && !controller.signal.aborted) this.openStart(p);
+    const panel = h(
+      "section",
+      { class: "card dz-up", "aria-label": t("upload.problems_title") },
+      h(
+        "div",
+        { class: "dz-up-head" },
+        h("span", { class: cx("dz-up-done", failed ? "has-errors" : !saved && "is-none") }, icon(failed ? "alert" : saved ? "check" : "info", { size: 15 })),
+        h("strong", null, saved ? t("upload.done", { n: saved }) : t("upload.none")),
+        failed ? h("span", { class: "dz-up-failed" }, t("upload.failed", { n: failed })) : null,
+        known ? h("span", { class: "dz-up-known" }, t("upload.known_n", { n: known })) : null,
+        skipped ? h("span", { class: "dz-up-known" }, t("upload.skipped_n", { n: skipped })) : null,
+        h("span", { class: "spacer" }),
+        button({ label: t("common.close"), size: "sm", variant: "ghost", onClick: () => mount(this.uploadHost) }),
+      ),
+      list,
+    );
+    return panel;
   }
 
   // ------------------------------------------------------------------ starting a run
@@ -1042,64 +1463,33 @@ class DesignsPage {
     if (noFiles) notes.push(infoNote({ tone: "warning", icon: "download", text: t("ready.deliverables", { n: noFiles }) }));
     if (p.warnings.includes("no_mockups")) notes.push(infoNote({ tone: "warning", icon: "image", text: t("ready.no_mockups") }));
     if (p.warnings.includes("no_shipping_profile")) notes.push(infoNote({ tone: "warning", icon: "truck", text: t("ready.no_shipping") }));
-    if (p.warnings.includes("quota")) notes.push(infoNote({ tone: "warning", icon: "clock", text: t("ready.quota") }));
-    const estimate = h(
-      "p",
-      { class: "dz-modal-hint" },
-      typeof p.quota_remaining === "number"
-        ? t("ready.estimate", { n: number(p.estimate_requests), left: number(p.quota_remaining) })
-        : t("ready.estimate_nq", { n: number(p.estimate_requests) }),
-    );
-    const templateTitle = (p.template && p.template.title && shortTitle(p.template.title)) || t("chip.template_unnamed");
-    // Which mockups the drafts get: the same count as the chip, and the way to change it.
-    const mk = p.mockups;
-    if (mk.enabled) {
-      notes.push(
-        h(
-          "p",
-          { class: "dz-modal-mockups" },
-          icon("image", { size: 14 }),
-          h("span", { class: "dz-modal-mockups-text" }, mk.over_limit ? t("ready.mockups_over", { n: mk.enabled, on: mk.switched_on }) : t("ready.mockups_main", { name: mk.main || "" })),
-          h(
-            "a",
-            {
-              href: "/kurulum/mockuplar",
-              class: "dz-modal-link",
-              onClick: (e) => {
-                e.preventDefault();
-                m.close();
-                this.ctx.navigate("/kurulum/mockuplar");
-              },
-            },
-            t("ready.mockups_link"),
-            icon("arrow-right", { size: 12 }),
-          ),
-        ),
-      );
+    // The request estimate only matters when the day's Etsy allowance may run out.
+    if (p.warnings.includes("quota")) {
+      const estimate =
+        typeof p.quota_remaining === "number"
+          ? t("ready.estimate", { n: number(p.estimate_requests), left: number(p.quota_remaining) })
+          : t("ready.estimate_nq", { n: number(p.estimate_requests) });
+      notes.push(infoNote({ tone: "warning", icon: "clock", text: [t("ready.quota"), " ", h("span", { class: "dz-modal-hint" }, estimate)] }));
     }
+    const templateTitle = (p.template && p.template.title && shortTitle(p.template.title)) || t("chip.template_unnamed");
+    const mk = p.mockups;
+    // More mockups switched on than Etsy's 20 images leave room for: say which go.
+    if (mk.enabled && mk.over_limit) notes.push(infoNote({ tone: "warning", icon: "image", text: t("ready.mockups_over", { n: mk.enabled, on: mk.switched_on }) }));
+    // The video's start card (t210): a title, one line and Başlat. No ×: Escape or a
+    // click outside still closes it.
     const m = this.ctx.modal({
       title: t("ready.title", { n: p.runnable ?? p.count }),
       subtitle: t("ready.sub", { n: mk.enabled, mockups: mk.enabled, template: templateTitle }),
-      width: 470,
+      width: 456,
       class: "dz-ready",
-      body: [...notes, estimate],
+      body: notes.length ? notes : null,
       actions: [
-        button({
-          label: t("ready.dry"),
-          variant: "ghost",
-          size: "sm",
-          title: t("ready.dry_hint"),
-          class: "dz-dry",
-          onClick: () => {
-            m.close();
-            this.startRun(true);
-          },
-        }),
         button({
           label: t("ready.start"),
           icon: "zap",
           variant: "primary",
           size: "lg",
+          class: "dz-ready-start",
           onClick: () => {
             m.close();
             this.startRun(false);
@@ -1107,6 +1497,21 @@ class DesignsPage {
         }),
       ],
     });
+  }
+
+  /** "Yalnızca kontrol et" (the waiting designs' modal): every step but the draft. */
+  async startDry() {
+    if (this.uploading) {
+      this.ctx.toast({ tone: "info", title: this.t("ready.wait_upload") });
+      return;
+    }
+    const p = await this.loadPending();
+    if (!p) return;
+    if (p.blockers.length) {
+      this.openBlocked(p, p.blockers);
+      return;
+    }
+    await this.startRun(true);
   }
 
   openBlocked(p, blockers) {
@@ -1211,7 +1616,10 @@ class DesignsPage {
       const problem = r.problem || (r.status === "partial" ? "partial" : r.listing_id ? "drafted" : "uncertain");
       const open = () => {
         if (m) m.close();
-        this.ctx.navigate(`/ilanlar/${r.listing_id}`);
+        // The detail page's "← 1 / n →" walks these drafts.
+        storeNav(p.review.filter((x) => x.listing_id).map((x) => x.listing_id));
+        // A draft stallkit made: its own address (the page corrects it once published).
+        this.ctx.navigate(`/ilanlar/taslak/${r.listing_id}`);
       };
       // A design with a draft on Etsy is never offered for a retry: that would be a
       // second draft of it. The draft is opened instead, to finish it by hand.
@@ -1289,6 +1697,9 @@ class DesignsPage {
       return;
     }
     this.run = model;
+    // "Kontrol tamam" is a moment seen live: not when a run already past it is opened.
+    this.checksAtLoad = !this.isRunning() || this.checksSettled(model);
+    this.checkToasted = false;
     // Events that came while the state was on its way: the newer of the two wins, per
     // product (updated_at), so a product that finished meanwhile is not shown running.
     for (const ev of early) this.onJobEvent(ev);
@@ -1316,6 +1727,7 @@ class DesignsPage {
       concurrency: 3,
       error: null,
     };
+    this.checksAtLoad = true;
     this.enterRun();
   }
 
@@ -1363,9 +1775,15 @@ class DesignsPage {
     const { t } = this;
     this.view = "run";
     this.stopTimers();
+    this.stopReveal();
     this.selected = null;
     this.expanded = false;
     this.headKey = null;
+    this.badgeKey = null;
+    this.sideKey = null;
+    this.eta = null;
+    this.reveal = null;
+    this.markSeen();
     this.pipeEls = null;
     this.headEl = h("div", { class: "dr-head-host" });
     this.pipeHost = h("div", { class: "dr-pipe-host" });
@@ -1395,6 +1813,7 @@ class DesignsPage {
       this.run = model;
       if (this.pipeEls) this.pipeEls.order = ""; // redraw the rows from the fresh state
       if (wasRunning && !this.isRunning()) this.onFinished();
+      this.maybeCheckToast();
       this.renderRun();
     } catch (err) {
       if (!this.api.isAbort(err) && err.code === "not_found") {
@@ -1423,15 +1842,47 @@ class DesignsPage {
     if (JOB_FINAL.has(job.status) && !JOB_FINAL.has(was)) {
       this.run.finishedAt = job.finished_at;
       this.run.error = job.error;
+      // run.status is final now, so refreshJob() no longer sees the change: reset here.
+      this.onFinished();
       this.refreshJob();
     } else {
       this.scheduleRender();
     }
   }
 
+  /**
+   * The run ended: a row picked during it lets go, so the finished page shows the sample
+   * draft ("Örnek taslak") and no highlighted row, as the video does (t240).
+   */
   onFinished() {
     this.stopTimers();
     this.every(1000, () => this.tickElapsed());
+    this.selected = null;
+    this.eta = null;
+    if (this.pipeEls) this.pipeEls.order = "";
+  }
+
+  /** Every product is past Kontrol (or failed before it). */
+  checksSettled(run) {
+    const items = run && run.items ? run.items.filter(Boolean) : [];
+    if (!items.length || items.length < (run.counts && run.counts.total ? run.counts.total : 0)) return false;
+    return items.every((it) => it.status === "error" || CHECK_SETTLED.has(it.steps && it.steps.check));
+  }
+
+  /**
+   * "Kontrol tamam: 0 hata · gönderilmeden önce" (video t236): once, when the last
+   * product's check ends while this page watches. The number is every product that has
+   * failed so far, so "0 hata" never stands next to a failed one.
+   */
+  maybeCheckToast() {
+    const r = this.run;
+    if (!r || r.saved || r.dryRun || this.checkToasted || this.checksAtLoad || !this.isRunning()) return;
+    if (r.items.some((it) => it && it.status === "cancelled")) return;
+    if (!this.checksSettled(r)) return;
+    this.checkToasted = true;
+    const n = r.items.filter((it) => it && (it.status === "error" || (it.steps && it.steps.check === "error"))).length;
+    // The video's toast: violet, a tick, one line, top right under the header.
+    this.ctx.toast({ tone: "accent", icon: "check", place: "top", title: this.t("toast.check", { n }) });
   }
 
   onJobEvent(ev) {
@@ -1448,6 +1899,7 @@ class DesignsPage {
       if (this.run.items.length) return; // once per run: the loaded state already has it
       this.run.items = Array.isArray(data.items) ? data.items : [];
       if (data.state) this.run.counts = { ...this.run.counts, ...data.state };
+      this.markSeen();
       this.pipeEls = null;
       this.scheduleRender();
       return;
@@ -1462,6 +1914,7 @@ class DesignsPage {
       if (this.run.status === "queued") this.run.status = "running";
       this.dirtyRows.add(item.index);
       this.scheduleRender();
+      this.maybeCheckToast();
     }
   }
 
@@ -1507,21 +1960,24 @@ class DesignsPage {
     const key = `badge:${phase}`;
     if (this.badgeKey === key) return;
     this.badgeKey = key;
-    const res = this.run.result || {};
-    const folder =
-      phase !== "running" && res.csv && !this.run.saved
-        ? iconButton({ icon: "folder", title: t("done.open_drafts"), variant: "ghost", onClick: () => this.openFolder("drafts") })
-        : null;
+    if (phase === "running") {
+      // The video's header while it runs: its outlined ghost "Duraklat" (a box, a dim
+      // label: this app's secondary button), no badge. stopRun() turns it into
+      // "Duraklatılıyor…" (this.stopBtn).
+      this.stopBtn = button({ label: t("run.stop"), icon: "clock", variant: "secondary", class: "dr-pause", onClick: () => this.stopRun() });
+      this.ctx.setHeader({ actions: [this.stopBtn] });
+      return;
+    }
+    this.stopBtn = null;
     const spec = {
-      running: { text: t("badge.running"), tone: "accent", dot: true },
       done: { text: t("badge.done"), tone: "success", icon: "check" },
       checked: { text: t("badge.checked"), tone: "info", icon: "check" },
-      cancelled: { text: t("badge.stopped"), tone: "warning" },
+      cancelled: { text: t("badge.paused"), tone: "warning", icon: "pause" },
       stopped: { text: t("badge.stopped"), tone: "danger" },
       none: { text: t("badge.failed"), tone: "danger" },
       failed: { text: t("badge.failed"), tone: "danger" },
     }[phase];
-    this.ctx.setHeader({ actions: [folder, badge({ ...spec, size: "lg" })].filter(Boolean) });
+    this.ctx.setHeader({ actions: [badge({ ...spec, size: "lg" })] });
   }
 
   /**
@@ -1550,7 +2006,32 @@ class DesignsPage {
     return Math.max(0, end - start);
   }
 
+  /**
+   * "~2 dk kaldı" / "~50 sn kaldı" (video t213): the pace so far, carried forward. The
+   * guess is blended with the previous one counted down, so it does not jump each time
+   * a product finishes.
+   */
+  etaText() {
+    const { t } = this;
+    const frac = this.progressFraction();
+    const spent = this.elapsedSeconds();
+    if (frac >= 0.999) return t("run.eta_end");
+    if (frac < 0.02 || spent < 3) return t("run.eta_calc");
+    const raw = (spent * (1 - frac)) / frac;
+    const now = Date.now() / 1000;
+    let rem = raw;
+    if (this.eta) rem = Math.max(0, this.eta.rem - (now - this.eta.at)) * 0.75 + raw * 0.25;
+    this.eta = { rem, at: now };
+    const [key, n] = etaLabel(rem);
+    return t(key, { n });
+  }
+
+  /** Once a second: the time left while it runs; the finished banner's "Süre:" after. */
   tickElapsed() {
+    if (this.isRunning()) {
+      if (this.etaEl) this.etaEl.textContent = this.etaText();
+      return;
+    }
     if (this.elapsedEl) this.elapsedEl.textContent = duration(this.elapsedSeconds());
   }
 
@@ -1566,14 +2047,14 @@ class DesignsPage {
         this.headTotal = h("span", { class: "dr-total num" });
         this.headPct = h("span", { class: "dr-pct num" });
         this.headBar = progressBar({ value: 0, max: 100, size: "md" });
-        this.elapsedEl = h("strong", { class: "dr-elapsed-value num" });
-        this.stopBtn = button({ label: t("run.stop"), icon: "stop", variant: "secondary", onClick: () => this.stopRun() });
+        this.elapsedEl = null;
+        this.etaEl = h("strong", { class: "dr-eta-value" });
         mount(
           this.headEl,
           h(
             "section",
             { class: "card dr-head is-running" },
-            h("span", { class: "dr-tile" }, icon("zap", { size: 22 })),
+            h("span", { class: "dr-tile" }, icon("zap", { size: 23 })),
             h(
               "div",
               { class: "dr-head-text" },
@@ -1587,8 +2068,12 @@ class DesignsPage {
               this.headBar.el,
             ),
             h("span", { class: "dr-divider", "aria-hidden": "true" }),
-            h("div", { class: "dr-elapsed" }, icon("clock", { size: 16 }), h("div", null, h("span", { class: "dr-elapsed-label" }, t("run.elapsed")), this.elapsedEl)),
-            this.stopBtn,
+            h(
+              "div",
+              { class: "dr-eta" },
+              h("span", { class: "dr-eta-top" }, icon("clock", { size: 17, strokeWidth: 2 }), this.etaEl),
+              h("span", { class: "dr-eta-label" }, t("run.eta_label")),
+            ),
           ),
         );
       }
@@ -1599,9 +2084,10 @@ class DesignsPage {
       const shown = Math.floor(pct * 100);
       this.headPct.textContent = this.ctx.lang === "en" ? `${shown}%` : `%${shown}`;
       this.headBar.update(Math.round(pct * 1000) / 10, 100);
-      this.tickElapsed();
+      if (this.etaEl && !this.etaEl.textContent) this.etaEl.textContent = this.etaText();
       return;
     }
+    this.etaEl = null;
     const key = `final:${phase}:${c.created}:${c.errors}:${c.warnings}`;
     if (this.headKey === key) {
       this.tickElapsed();
@@ -1667,6 +2153,9 @@ class DesignsPage {
       chips.push(badge({ text: t("done.warnings", { n: c.warnings || 0 }), tone: c.warnings ? "warning" : "neutral", icon: "alert" }));
       chips.push(h("span", { class: "badge tone-neutral dr-duration" }, icon("clock", { size: 12 }), t("done.duration"), " ", this.elapsedEl));
     }
+    // The run's output folder (its CSV): an icon in the banner, not in the page header,
+    // which shows only the video's "Tamamlandı".
+    const folder = res.csv && !r.saved ? iconButton({ icon: "folder", title: t("done.open_drafts"), variant: "ghost", class: "dr-folder", onClick: () => this.openFolder("drafts") }) : null;
     mount(
       this.headEl,
       h(
@@ -1676,7 +2165,7 @@ class DesignsPage {
         h("div", { class: "dr-head-text" }, h("h2", { class: "dr-head-title" }, title), sub ? h("p", { class: "dr-head-sub" }, sub) : null),
         h("div", { class: "dr-chips" }, chips),
         h("span", { class: "spacer" }),
-        h("div", { class: "dr-actions" }, actions),
+        h("div", { class: "dr-actions" }, folder, actions),
       ),
     );
     this.tickElapsed();
@@ -1717,9 +2206,11 @@ class DesignsPage {
     const n = r.items.length;
     if (this.expanded || n <= VISIBLE_ROWS) return r.items.map((_, i) => i);
     if (this.isRunning()) {
-      let first = r.items.findIndex((it) => it && !FINAL.has(it.status));
-      if (first < 0) first = n - 1;
-      const start = Math.max(0, Math.min(first - 1, n - VISIBLE_ROWS));
+      // Pages of seven, as the video keeps its seven rows in place: the page turns when
+      // every product on it is done, never one row at a time under the pointer. A row
+      // picked by a click keeps its page until the pick is let go.
+      const first = r.items.findIndex((it) => it && !FINAL.has(it.status));
+      const start = pageStart(n, first, this.selected !== null && r.items[this.selected] ? this.selected : null);
       return Array.from({ length: VISIBLE_ROWS }, (_, i) => start + i);
     }
     // Finished: problems first, so a failed product is never hidden behind "+ 43 more".
@@ -1764,7 +2255,9 @@ class DesignsPage {
     const els = this.pipeEls;
     els.countEl.textContent = `· ${t("pipe.count", { n: r.counts.total || r.items.length })}`;
     const indices = this.visibleIndices().filter((i) => r.items[i]);
-    const selectedIndex = this.sideIndex();
+    // The row the side card follows is marked while the run goes on (or once picked);
+    // a finished run marks none (video t240), its sample draft is just the side card's.
+    const selectedIndex = this.isRunning() || this.selected !== null ? this.sideIndex() : null;
     if (!indices.length) {
       // The run is starting: the product list arrives with the first event.
       if (els.order !== "empty") {
@@ -1820,7 +2313,8 @@ class DesignsPage {
       case "partial":
         return { text: t("row.partial"), tone: "warning" };
       case "cancelled":
-        return { text: it.error ? this.problemText(it.error) : t("row.cancelled"), tone: "muted" };
+        // Paused by the seller ("Duraklat"), or cut off because the run stopped on an error.
+        return { text: it.error ? this.problemText(it.error) : this.runPhase() === "stopped" ? t("row.stopped") : t("row.cancelled"), tone: "muted" };
       case "error":
         return { text: it.error ? this.problemText(it.error) : t("row.error"), tone: "danger" };
       default:
@@ -1832,6 +2326,8 @@ class DesignsPage {
     const { t } = this;
     const st = this.rowStatus(it);
     const states = STEPS.map((s) => it.steps[s] || "todo");
+    // Waiting for its turn to be sent: Taslak has not begun (a grey dot, not a spinner).
+    if (it.status === "waiting" && states[5] === "running") states[5] = "todo";
     const dots = stepDots({ states, labels: STEPS.map((s) => t(`step.${s}`)) });
     [...dots.children].forEach((node, i) => {
       const s = STEPS[i];
@@ -1858,7 +2354,7 @@ class DesignsPage {
       h(
         "div",
         { class: "dr-file", role: "cell" },
-        thumb({ src: this.thumbUrl(it.thumb_path, 96, this.run.v), size: 36, radius: 8, fit: "contain" }),
+        thumb({ src: this.thumbUrl(it.thumb_path, ROW_THUMB_W, this.run.v, isDesign(it)), size: 37, radius: 9, fit: "contain", icon: it.kind === "folder" ? "folder" : "image" }),
         h(
           "div",
           { class: "dr-file-text" },
@@ -1892,7 +2388,7 @@ class DesignsPage {
     const stack = h(
       "span",
       { class: "dr-stack" },
-      hidden.slice(0, 3).map((it) => thumb({ src: this.thumbUrl(it.thumb_path, 64, this.run.v), size: 28, radius: 7, fit: "contain" })),
+      hidden.slice(0, 3).map((it) => thumb({ src: this.thumbUrl(it.thumb_path, 64, this.run.v, isDesign(it)), size: 30, radius: 8, fit: "contain" })),
     );
     const line = h("span", { class: cx("dr-foot-line", !running && (stopped ? "is-stopped" : "is-done")) }, h("span", { style: { width: `${Math.round(doneFrac * 100)}%` } }));
     mount(
@@ -1915,7 +2411,7 @@ class DesignsPage {
         this.expanded ? t("pipe.show_less") : t("pipe.more", { n: hidden.length }),
       ),
       line,
-      h("span", { class: cx("dr-foot-note", !running && !stopped && "is-done") }, running ? t("pipe.parallel") : stopped ? t("pipe.stopped") : t("pipe.all_done")),
+      h("span", { class: cx("dr-foot-note", !running && !stopped && "is-done") }, running ? t("pipe.parallel") : phase === "cancelled" ? t("pipe.paused") : stopped ? t("pipe.stopped") : t("pipe.all_done")),
     );
   }
 
@@ -1933,6 +2429,9 @@ class DesignsPage {
     if (!r || !r.items.length) return null;
     if (this.selected !== null && r.items[this.selected]) return this.selected;
     if (this.isRunning()) {
+      // Its title is still being typed (its tags still popping in): stay on it a moment,
+      // even though the run has moved on (a product's last steps take no time at all).
+      if (this.revealing() && r.items[this.reveal.index]) return this.reveal.index;
       const cur = r.counts.current;
       if (typeof cur === "number" && r.items[cur]) return cur;
       const running = r.items.find((it) => it && it.status === "running");
@@ -1945,37 +2444,58 @@ class DesignsPage {
     return any ? any.index : null;
   }
 
+  /** The step the side card's pill names ("Başlık yazılıyor", "Etsy'ye gönderiliyor"). */
+  stageKey(it) {
+    if (it.status === "waiting") return this.run.dryRun ? "check" : "waiting";
+    if (it.status === "running") {
+      const step = it.step || "mockup";
+      return this.t.has(`side.stage.${step}`) ? step : "mockup";
+    }
+    return "queued";
+  }
+
+  /** The run's drafts, in run order, for the detail page's "← 1 / n →". */
+  storeRunNav() {
+    const r = this.run;
+    if (!r) return;
+    storeNav(r.items.filter((x) => x && x.listing_id && (x.status === "ok" || x.status === "partial")).map((x) => x.listing_id));
+  }
+
   renderSide() {
     const { t } = this;
     const r = this.run;
     const index = this.sideIndex();
     const it = index === null ? null : r.items[index];
-    const live = this.isRunning() && this.selected === null;
-    const key = it ? `${index}|${it.updated_at}|${it.status}|${live}|${this.selected}` : "none";
+    const running = this.isRunning();
+    const live = running && this.selected === null;
+    // `running` too: a card picked during the run turns into the sample when it ends.
+    const key = it ? `${index}|${it.updated_at}|${it.status}|${live}|${this.selected}|${running}` : "none";
     if (this.sideKey === key) return;
-    const prevIndex = this.sideIndexShown;
-    const prevTitle = this.sideTitleShown;
     this.sideKey = key;
-    this.sideIndexShown = index;
+    this.stopReveal();
     if (!it) {
       mount(this.sideHost, h("section", { class: "card dr-side" }, h("p", { class: "dr-side-empty" }, t("side.empty"))));
       return;
     }
     const final = FINAL.has(it.status);
-    let headLabel;
-    if (live) headLabel = [h("span", { class: "dr-live-dot", "aria-hidden": "true" }), t("side.current")];
-    else if (this.selected !== null) headLabel = [t("side.selected")];
-    else headLabel = [icon("check", { size: 16, strokeWidth: 2.6 }), r.dryRun ? t("side.sample_dry") : t("side.sample")];
-    let statusBadge = null;
-    if (it.status === "ok") statusBadge = badge({ text: t("side.ready"), tone: "success", icon: "check" });
-    else if (it.status === "partial") statusBadge = badge({ text: t("side.partial"), tone: "warning", icon: "alert" });
-    else if (it.status === "error") statusBadge = badge({ text: t("side.failed"), tone: "danger", icon: "x" });
-    else if (it.status === "checked") statusBadge = badge({ text: t("side.checked"), tone: "info", icon: "check" });
-    else if (it.status === "cancelled") statusBadge = badge({ text: t("row.cancelled"), tone: "neutral" });
-    const follow =
-      this.isRunning() && this.selected !== null
-        ? button({ label: t("side.follow"), size: "sm", variant: "ghost", icon: "play", onClick: () => this.select(this.selected) })
-        : null;
+    // The video's card fills in as the product moves: the mockups one by one, then the
+    // title typed, then the tags popping in. Only for the product followed live, once
+    // per part. A part appears this way once, when it comes in while the page watches:
+    // what was already there when the run was opened (this.seen) is drawn whole.
+    const reduce = reducedMotion();
+    const animate = live && !reduce;
+    const seen = this.seenParts(index);
+    // The next step's event often comes a moment later and draws the card again: what
+    // was still appearing goes on from where it was (same product, same words), rather
+    // than jumping to the end or starting over.
+    const carry = animate && this.reveal && this.reveal.index === index ? this.reveal : null;
+    const rv = { index, started: carry ? carry.started : 0, title: "", typed: 0, tagsKey: "", tagsShown: 0, imagesKey: "", tiles: 0 };
+    this.reveal = rv;
+    const timeline = [];
+    this.preloadAhead(index);
+    const follow = running && this.selected !== null ? button({ label: t("side.follow"), size: "sm", variant: "ghost", icon: "play", onClick: () => this.select(this.selected) }) : null;
+    // Set once the head exists (below); the reveal's steps call it as the card fills in.
+    let paintHead = () => {};
 
     // Mockups: for a design, only the composites count and show here (the plain design
     // goes up too, but it is not a mockup: "6/6" with 6 mockups, as in the video t240);
@@ -1989,47 +2509,165 @@ class DesignsPage {
     // No mockup switched on: the plain design is all there is to show.
     const pictures = images.length || !flat ? images : [flat];
     const shown = pictures.slice(0, 4);
-    shown.forEach((path, i) => {
+    const tiles = shown.map((path, i) => {
       const extra = i === 3 && pictures.length > 4 ? pictures.length - 4 : 0;
-      grid.appendChild(
-        h(
-          "a",
-          { class: "dr-mockup", href: this.api.url("/api/files/workspace", { path, v: this.run.v }), target: "_blank", rel: "noopener", title: baseName(path) },
-          h("img", { src: this.thumbUrl(path, 320, this.run.v), alt: "", loading: "lazy" }),
-          extra ? h("span", { class: "dr-mockup-more num" }, `+${extra}`) : null,
-        ),
+      // Fetched at once (not lazily): a tile waits for its picture before it shows.
+      const img = h("img", { src: this.thumbUrl(path, TILE_THUMB_W, this.run.v), alt: "", loading: "eager", decoding: "async" });
+      img.addEventListener("error", () => img.remove(), { once: true });
+      return h(
+        "a",
+        { class: "dr-mockup", href: this.api.url("/api/files/workspace", { path, v: this.run.v }), target: "_blank", rel: "noopener", title: baseName(path) },
+        img,
+        extra ? h("span", { class: "dr-mockup-more num" }, `+${extra}`) : null,
+        h("span", { class: "dr-mockup-slot", "aria-hidden": "true" }, icon("image", { size: 20 })),
       );
     });
-    for (let i = shown.length; i < 4 && !mockupDone && !final; i += 1) grid.appendChild(h("span", { class: "dr-mockup is-empty" }, i === shown.length && it.steps.mockup === "running" ? spinner({ size: 18 }) : null));
+    grid.append(...tiles);
+    for (let i = shown.length; i < 4 && !mockupDone && !final; i += 1) grid.appendChild(h("span", { class: "dr-mockup is-empty" }, i === shown.length && it.steps.mockup === "running" ? spinner({ size: 18 }) : icon("image", { size: 20 })));
     const short = composited && images.length < expected;
-    const mockCount = mockupDone && (images.length || expected)
-      ? h("span", { class: cx("dr-count num", short ? "is-warn" : "is-ok") }, icon(short ? "alert" : "check", { size: 12, strokeWidth: 2.6 }), `${images.length}/${composited ? expected : images.length}`)
-      : images.length
-        ? h("span", { class: "dr-count num" }, `${images.length}/${expected}`)
-        : null;
-
-    // Title
-    const titleText = it.title || "";
-    const titleBox = h("div", { class: cx("dr-titlebox", live && it.steps.title === "running" && "is-live") });
-    if (titleText) {
-      const animate = live && prevIndex === index && !prevTitle && titleText;
-      if (animate) this.typeTitle(titleBox, titleText);
-      else titleBox.textContent = titleText;
-    } else if (!final) {
-      titleBox.appendChild(skeleton({ lines: 2, height: 11, widths: ["92%", "58%"] }));
-    } else {
-      titleBox.appendChild(h("span", { class: "muted" }, "–"));
+    const mockMax = composited ? expected : images.length;
+    const mockState = (n) => {
+      if (n < images.length) return "active";
+      if (mockupDone) return short ? "warn" : "ok";
+      if (it.steps.mockup === "error") return "warn";
+      return it.steps.mockup === "running" || n > 0 ? "active" : "idle";
+    };
+    const mockCount = mockMax > 0 ? counter(mockMax) : null;
+    const imagesKey = images.join("|");
+    let tilesFrom = tiles.length;
+    if (images.length) {
+      if (carry) {
+        // The same product with more mockups since (they come one by one): the tiles
+        // already showing stay, the new ones come in like the first.
+        const before = carry.imagesKey ? carry.imagesKey.split("|") : [];
+        let same = 0;
+        while (same < Math.min(carry.tiles, before.length, images.length) && before[same] === images[same]) same += 1;
+        tilesFrom = Math.min(same, tiles.length);
+      } else if (animate && !seen.images) tilesFrom = 0;
     }
-    this.sideTitleShown = titleText;
-    const titleCount = titleText ? h("span", { class: "dr-count is-ok num" }, icon("check", { size: 12, strokeWidth: 2.6 }), `${titleText.length}/140`) : null;
+    rv.imagesKey = imagesKey;
+    rv.tiles = tilesFrom;
+    // Four tiles show; the last one brings the count to all of them ("+2": 6/6). The
+    // count follows the tiles one can see: each waits for its picture (at most
+    // TILE_WAIT_MS), its dashed slot staying until then.
+    const countFor = (k) => (k >= tiles.length ? images.length : k);
+    if (mockCount) mockCount.set(countFor(tilesFrom), mockState(countFor(tilesFrom)));
+    tiles.forEach((tile, i) => {
+      if (i < tilesFrom) return;
+      tile.classList.add("is-pending");
+      timeline.push({
+        at: (i - tilesFrom) * REVEAL_MOCKUP_MS,
+        gate: imageGate(tile.querySelector("img"), TILE_WAIT_MS),
+        fn: () => {
+          tile.classList.remove("is-pending");
+          tile.classList.add("is-in");
+          rv.tiles = i + 1;
+          if (mockCount) mockCount.set(countFor(i + 1), mockState(countFor(i + 1)));
+          paintHead();
+        },
+      });
+    });
+    if (images.length) seen.images = true;
+    // The title and the tags come after the tiles (the video's order), so later steps
+    // of the reveal start at `cursor`; a tile still waiting for its picture moves them on.
+    let cursor = (tiles.length - tilesFrom) * REVEAL_MOCKUP_MS;
 
-    // Tags
+    // Title: typed out live, a fixed three-line box either way (no jump when it lands).
+    const titleText = it.title || "";
+    const titleCount = counter(140);
+    const titleBox = h("div", { class: cx("dr-titlebox", live && it.steps.title === "running" && "is-live") });
+    const placeholder = () => (final ? h("span", { class: "muted" }, "–") : skeleton({ lines: 3, height: 11, widths: ["92%", "74%", "40%"] }));
+    let typedFrom = titleText.length;
+    if (titleText) {
+      if (carry && carry.title === titleText) typedFrom = Math.min(carry.typed, titleText.length);
+      else if (animate && !seen.title) typedFrom = 0;
+    }
+    rv.title = titleText;
+    rv.typed = typedFrom;
+    if (titleText && typedFrom < titleText.length) {
+      const startTyping = () => {
+        mount(titleBox);
+        titleCount.set(typedFrom, "active");
+        this.typeTitle(titleBox, titleText, typedFrom, (n, done) => {
+          rv.typed = n;
+          titleCount.set(n, done ? "ok" : "active");
+          if (done) paintHead();
+        });
+      };
+      if (cursor) {
+        // Its turn comes after the tiles: until then the box waits as it is.
+        if (typedFrom) titleBox.textContent = titleText.slice(0, typedFrom);
+        else titleBox.appendChild(placeholder());
+        titleCount.set(typedFrom, typedFrom ? "active" : "idle");
+        timeline.push({ at: cursor, fn: startTyping });
+      } else {
+        startTyping();
+      }
+      cursor += typeDuration(titleText, typedFrom) + 150;
+    } else if (titleText) {
+      titleBox.textContent = titleText;
+      titleBox.classList.add("is-final");
+      titleCount.set(titleText.length, "ok");
+    } else {
+      titleCount.set(0, it.steps.title === "running" ? "active" : "idle");
+      titleBox.appendChild(placeholder());
+    }
+    if (titleText) seen.title = true;
+
+    // Tags: each one pops into the dashed slot it will fill, the newest lit up.
     const tags = it.tags || [];
-    const tagsEl = h("div", { class: "dr-tags" }, tags.map((tag) => tagChip({ text: tag })));
-    if (!final && tags.length < 13) for (let i = tags.length; i < 13; i += 1) tagsEl.appendChild(tagChip({ dashed: true }));
-    const tagsCount = tags.length
-      ? h("span", { class: cx("dr-count num", tags.length === 13 ? "is-ok" : "is-warn") }, icon(tags.length === 13 ? "check" : "alert", { size: 12, strokeWidth: 2.4 }), `${tags.length}/13`)
-      : null;
+    const tagsKey = tags.join("|");
+    let tagsFrom = tags.length;
+    if (tags.length) {
+      if (carry && carry.tagsKey === tagsKey) tagsFrom = Math.min(carry.tagsShown, tags.length);
+      else if (animate && !seen.tags) tagsFrom = 0;
+    }
+    rv.tagsKey = tagsKey;
+    rv.tagsShown = tagsFrom;
+    const settled = final || it.steps.tags === "done" || it.steps.tags === "warn";
+    const tagState = (n) => {
+      if (n >= 13) return "ok";
+      if (n < tags.length) return "active";
+      if (settled && n > 0) return "warn";
+      return it.steps.tags === "running" || n > 0 ? "active" : "idle";
+    };
+    const tagsCount = counter(13);
+    tagsCount.set(tagsFrom, tagState(tagsFrom));
+    const tagEls = tags.map((tag, i) => {
+      const chip = tagChip({ text: tag });
+      chip.classList.add("dr-tag");
+      if (i >= tagsFrom) chip.classList.add("is-pending");
+      else if (i === tagsFrom - 1 && tagsFrom < tags.length) chip.classList.add("is-hot");
+      return chip;
+    });
+    const tagsEl = h("div", { class: "dr-tags" }, tagEls);
+    // Before the tags are known: ragged dashed slots, four to a row (video t219).
+    if (!final && tags.length < 13) {
+      for (let i = tags.length; i < 13; i += 1) {
+        const slot = tagChip({ dashed: true });
+        slot.style.width = slotWidth(i);
+        tagsEl.appendChild(slot);
+      }
+    }
+    if (tagsFrom < tags.length) {
+      const start = cursor;
+      for (let i = tagsFrom; i < tagEls.length; i += 1) {
+        const chip = tagEls[i];
+        timeline.push({
+          at: start + (i - tagsFrom) * REVEAL_TAG_MS,
+          fn: () => {
+            if (i) tagEls[i - 1].classList.remove("is-hot");
+            chip.classList.remove("is-pending");
+            chip.classList.add("is-in", "is-hot");
+            rv.tagsShown = i + 1;
+            tagsCount.set(i + 1, tagState(i + 1));
+            paintHead();
+          },
+        });
+      }
+      timeline.push({ at: start + (tagEls.length - tagsFrom) * REVEAL_TAG_MS + 450, fn: () => tagEls[tagEls.length - 1].classList.remove("is-hot") });
+    }
+    if (tags.length) seen.tags = true;
 
     // Download files (digital templates): found at Kontrol, sent in the Taslak step after
     // the images. Before Kontrol only their number is known.
@@ -2043,9 +2681,9 @@ class DesignsPage {
       let filesCount = null;
       if (total && (draftDone || sending)) {
         const whole = sent >= total;
-        filesCount = h("span", { class: cx("dr-count num", draftDone && (whole ? "is-ok" : "is-warn")) }, draftDone ? icon(whole ? "check" : "alert", { size: 12, strokeWidth: 2.6 }) : null, `${sent}/${total}`);
+        filesCount = h("span", { class: cx("dr-count", draftDone ? (whole ? "is-ok" : "is-warn") : "is-active") }, draftDone ? icon(whole ? "check" : "alert", { size: 12, strokeWidth: 2.6 }) : null, `${sent}/${total}`);
       } else if (total) {
-        filesCount = h("span", { class: "dr-count num" }, t("side.files_n", { n: total }));
+        filesCount = h("span", { class: "dr-count is-idle" }, t("side.files_n", { n: total }));
       }
       const list = paths.length
         ? h(
@@ -2091,79 +2729,203 @@ class DesignsPage {
     if (this.run.listingType === "download") fromTpl.push(h("span", { class: "dr-tpl-chip" }, t("side.digital")));
     else fromTpl.push(tpl.shipping_profile ? h("span", { class: "dr-tpl-chip" }, t("side.shipping")) : h("span", { class: "dr-tpl-chip is-warn" }, t("side.no_shipping")));
 
-    const openDraft =
-      it.listing_id && (it.status === "ok" || it.status === "partial")
-        ? h("a", { class: "dr-open", href: `/ilanlar/${it.listing_id}` }, t("side.open_draft"), icon("arrow-right", { size: 13 }))
-        : null;
+    // The head. While the card still fills in it is the product being prepared, with the
+    // part appearing now as its step ("Başlık yazılıyor", "Etiketler seçiliyor"),
+    // whatever the run has done with it meanwhile: "✓ Son hazırlanan" and "Taslak hazır"
+    // come once all of it shows (video: those only when every stage is done).
+    const stagePill = (stage) => {
+      const text = t(`side.stage.${stage}`);
+      return badge({ text, tone: "accent", title: text });
+    };
+    const statusPill = () => {
+      if (!final) return stagePill(this.stageKey(it));
+      if (it.status === "ok") return badge({ text: t("side.ready"), tone: "success", icon: "check" });
+      if (it.status === "partial") return badge({ text: t("side.partial"), tone: "warning", icon: "alert" });
+      if (it.status === "error") return badge({ text: t("side.failed"), tone: "danger", icon: "x" });
+      if (it.status === "checked") return badge({ text: t("side.checked"), tone: "info", icon: "check" });
+      if (it.status === "cancelled") return badge({ text: this.runPhase() === "stopped" ? t("row.stopped") : t("row.cancelled"), tone: "neutral" });
+      return null;
+    };
+    const liveDot = () => h("span", { class: "dr-live-dot", "aria-hidden": "true" });
+    const tick = () => icon("check", { size: 16, strokeWidth: 2.6 });
+    const headFor = (stage) => {
+      if (stage) return { label: [liveDot(), t("side.current")], check: false, pill: stagePill(stage) };
+      if (live && !final) return { label: [liveDot(), t("side.current")], check: false, pill: statusPill() };
+      if (live) return { label: [tick(), t("side.last")], check: true, pill: statusPill() };
+      if (this.selected !== null) return { label: [t("side.selected")], check: false, pill: statusPill() };
+      return { label: [tick(), r.dryRun ? t("side.sample_dry") : t("side.sample")], check: true, pill: statusPill() };
+    };
+    // Which part is appearing now (null once everything shows).
+    const stageNow = () => {
+      if (!animate) return null;
+      if (rv.tiles < tiles.length) return "mockup";
+      if (rv.typed < titleText.length) return "title";
+      if (rv.tagsShown < tags.length) return "tags";
+      return null;
+    };
+
+    // The card's own head opens the draft once there is one (the video's card ends at
+    // "Kargo profili": no link in the footer). Its thumb is the rows' own size, so the
+    // picture the row already fetched serves here too (never a blank head).
+    const headThumb = thumb({ src: this.thumbUrl(it.thumb_path, ROW_THUMB_W, this.run.v, isDesign(it)), size: 39, radius: 9, fit: "contain", icon: it.kind === "folder" ? "folder" : "image" });
+    const titleEl = h("h2", { class: "dr-side-title" });
+    const titles = h(
+      "div",
+      { class: "dr-side-titles" },
+      titleEl,
+      h("p", { class: "dr-side-sub ellipsis", title: it.name }, `${it.name} · ${this.typeLabel(it)}`),
+    );
+    const canOpen = it.listing_id && (it.status === "ok" || it.status === "partial");
+    const headMain = canOpen
+      ? h(
+          "a",
+          { class: "dr-side-link", href: `/ilanlar/taslak/${it.listing_id}`, title: t("side.open_draft"), onClick: () => this.storeRunNav() },
+          headThumb,
+          titles,
+          h("span", { class: "sr-only" }, t("side.open_draft")),
+        )
+      : [headThumb, titles];
+    const header = h("header", { class: "dr-side-head" }, headMain);
+    let shownStage;
+    let pillEl = null;
+    paintHead = () => {
+      const stage = stageNow();
+      if (shownStage !== undefined && stage === shownStage) return;
+      shownStage = stage;
+      const head = headFor(stage);
+      mount(titleEl, head.label);
+      titleEl.classList.toggle("is-sample", head.check);
+      const next = follow || head.pill;
+      if (next === pillEl) return;
+      if (next && next !== follow) next.classList.add("dr-stage");
+      if (pillEl && next) pillEl.replaceWith(next);
+      else if (pillEl) pillEl.remove();
+      else if (next) header.appendChild(next);
+      pillEl = next;
+    };
+    paintHead();
 
     mount(
       this.sideHost,
       h(
         "section",
         { class: cx("card dr-side", live && "is-live") },
-        h(
-          "header",
-          { class: "dr-side-head" },
-          thumb({ src: this.thumbUrl(it.thumb_path, 120, this.run.v), size: 42, radius: 9, fit: "contain" }),
-          h(
-            "div",
-            { class: "dr-side-titles" },
-            h("h2", { class: cx("dr-side-title", !live && this.selected === null && "is-sample") }, headLabel),
-            h("p", { class: "dr-side-sub ellipsis", title: it.name }, `${it.name} · ${this.typeLabel(it)}`),
-          ),
-          follow || statusBadge,
-        ),
+        header,
         h(
           "div",
           { class: "dr-section" },
-          h("div", { class: "dr-section-head" }, icon("image", { size: 14 }), h("span", null, composited ? t("side.mockups") : t("side.images")), h("span", { class: "spacer" }), mockCount),
+          h("div", { class: "dr-section-head" }, icon("image", { size: 14 }), h("span", null, composited ? t("side.mockups") : t("side.images")), h("span", { class: "spacer" }), mockCount && mockCount.el),
           pictures.length || !final ? grid : h("p", { class: "muted dr-none" }, "–"),
         ),
         h(
           "div",
           { class: "dr-section" },
-          h("div", { class: "dr-section-head" }, icon("sparkles", { size: 14 }), h("span", null, t("side.title")), h("span", { class: "spacer" }), titleCount),
+          h("div", { class: "dr-section-head" }, icon("loader", { size: 14 }), h("span", null, t("side.title")), h("span", { class: "spacer" }), titleCount.el),
           titleBox,
         ),
         h(
           "div",
           { class: "dr-section" },
-          h("div", { class: "dr-section-head" }, icon("tag", { size: 14 }), h("span", null, t("side.tags")), h("span", { class: "spacer" }), tagsCount),
+          h("div", { class: "dr-section-head" }, icon("tag", { size: 14 }), h("span", null, t("side.tags")), h("span", { class: "spacer" }), tagsCount.el),
           tagsEl,
         ),
         filesSection,
         notes.length ? h("div", { class: "dr-section dr-notes" }, notes) : null,
-        h(
-          "footer",
-          { class: "dr-side-foot" },
-          icon("file", { size: 13 }),
-          h("span", { class: "dr-tpl-label" }, t("side.from_template")),
-          fromTpl,
-          h("span", { class: "spacer" }),
-          openDraft,
-        ),
+        h("footer", { class: "dr-side-foot" }, icon("file", { size: 13 }), h("span", { class: "dr-tpl-label" }, t("side.from_template")), fromTpl),
       ),
     );
+    if ((timeline.length || this.typing) && !rv.started) rv.started = performance.now();
+    this.runTimeline(timeline);
   }
 
-  typeTitle(box, text) {
-    if (this.typing) clearInterval(this.typing.timer);
+  /**
+   * The next products' pictures, asked for before the card gets to them: each one's
+   * head thumb (the rows' size, so one request serves both) and the first four tiles of
+   * the next one that has its mockups. The server makes a thumbnail on the first request
+   * for it; this way the card seldom has to wait for one.
+   */
+  preloadAhead(index) {
+    const r = this.run;
+    if (!r || !this.isRunning() || typeof Image !== "function") return;
+    if (!this.preloaded || this.preloaded.size > 400) this.preloaded = new Set();
+    const get = (url) => {
+      if (!url || this.preloaded.has(url)) return;
+      this.preloaded.add(url);
+      const img = new Image();
+      img.decoding = "async";
+      img.src = url;
+    };
+    let tilesLeft = 1;
+    const end = Math.min(r.items.length, index + 1 + (r.concurrency || 3));
+    for (let k = index + 1; k < end; k += 1) {
+      const it = r.items[k];
+      if (!it || FINAL.has(it.status)) continue;
+      get(this.thumbUrl(it.thumb_path, ROW_THUMB_W, r.v, isDesign(it)));
+      const flat = flatPath(it);
+      const imgs = (it.images || []).filter((p) => p !== flat);
+      if (tilesLeft && imgs.length) {
+        tilesLeft -= 1;
+        for (const path of imgs.slice(0, 4)) get(this.thumbUrl(path, TILE_THUMB_W, r.v));
+      }
+    }
+  }
+
+  /** Which parts of product `index` this page has shown ({title, tags, images}). */
+  seenParts(index) {
+    if (!this.seen) this.seen = new Map();
+    if (!this.seen.has(index)) this.seen.set(index, { title: false, tags: false, images: false });
+    return this.seen.get(index);
+  }
+
+  /** A run opened as it is: everything it already has counts as shown. */
+  markSeen() {
+    this.seen = new Map();
+    for (const it of (this.run && this.run.items) || []) {
+      if (!it) continue;
+      this.seen.set(it.index, { title: !!it.title, tags: (it.tags || []).length > 0, images: (it.images || []).length > 0 });
+    }
+  }
+
+  /** Whether the side card is still filling in (it stays on that product meanwhile). */
+  revealing() {
+    const rv = this.reveal;
+    return !!(rv && rv.started && (this.typing || this.revealTimer) && performance.now() - rv.started < REVEAL_MAX_MS);
+  }
+
+  /** The card has filled in: it may move on to the product the run is at now. */
+  revealEnded() {
+    if (this.typing || this.revealTimer || this.destroyed || this.view !== "run") return;
+    this.sideKey = null;
+    if (this.pipeEls) this.pipeEls.order = "";
+    this.scheduleRender();
+  }
+
+  /**
+   * Types `text` into `box` from character `from` on; onTick(n, done) follows it.
+   * Returns how long the rest takes (ms).
+   */
+  typeTitle(box, text, from, onTick) {
     const caret = h("span", { class: "dr-caret", "aria-hidden": "true" });
-    const textNode = document.createTextNode("");
+    const textNode = document.createTextNode(text.slice(0, from));
     box.append(textNode, caret);
     box.setAttribute("aria-label", text);
-    let i = 0;
+    let i = from;
     const step = Math.max(2, Math.ceil(text.length / 30));
     const timer = setInterval(() => {
       i = Math.min(text.length, i + step);
       textNode.data = text.slice(0, i);
-      if (i >= text.length) {
+      const done = i >= text.length;
+      if (onTick) onTick(i, done);
+      if (done) {
         clearInterval(timer);
-        this.typing = null;
+        if (this.typing && this.typing.timer === timer) this.typing = null;
+        box.classList.add("is-final");
         setTimeout(() => caret.remove(), 900);
+        this.revealEnded();
       }
-    }, 24);
+    }, TYPE_TICK_MS);
     this.typing = { timer };
+    return typeDuration(text, from);
   }
 }
 

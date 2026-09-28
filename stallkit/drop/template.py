@@ -65,6 +65,37 @@ INHERITED_FIELDS = (
     "item_dimensions_unit",
 )
 
+WEIGHT_FIELDS = ("item_weight",)
+DIMENSION_FIELDS = ("item_length", "item_width", "item_height")
+
+
+def clean_measures(fields: dict[str, Any]) -> None:
+    """Leave out, in place, a weight or size that cannot go on a draft.
+
+    Etsy reports 0 for a weight or size nobody entered and refuses 0 on a new listing
+    ("If set, the value must be greater than 0"). A value that is not a number above 0
+    is dropped, then a unit with no value left, and a value with no unit. A 0 means "not
+    entered", so nothing is said about it. A product.json captured before this rule
+    still holds such a 0: from_dict cleans it too, so it acts like a new capture.
+    """
+    for name in WEIGHT_FIELDS + DIMENSION_FIELDS:
+        if name not in fields:
+            continue
+        value = fields[name]
+        try:
+            usable = not isinstance(value, bool) and float(value) > 0
+        except (TypeError, ValueError):
+            usable = False
+        if not usable:
+            del fields[name]
+    for names, unit in ((WEIGHT_FIELDS, "item_weight_unit"),
+                        (DIMENSION_FIELDS, "item_dimensions_unit")):
+        present = [name for name in names if name in fields]
+        if not present or not fields.get(unit):
+            fields.pop(unit, None)
+            for name in present:
+                del fields[name]
+
 
 @dataclass
 class Template:
@@ -98,10 +129,12 @@ class Template:
             return value if plain else unescape_text(value)
 
         try:
+            fields = dict(data.get("fields") or {})
+            clean_measures(fields)
             return cls(
                 source_listing_id=int(data["source_listing_id"]),
                 source_title=str(text(data.get("source_title", ""))),
-                fields=dict(data.get("fields") or {}),
+                fields=fields,
                 materials=[text(m) for m in data.get("materials") or []],
                 description=str(text(data.get("description", ""))),
                 tags=[text(t) for t in data.get("tags") or []],
@@ -191,6 +224,10 @@ def capture(listing: dict[str, Any]) -> Template:
             value = min(value, MAX_QUANTITY)
         if value not in (None, ""):
             fields[name] = value
+
+    # Etsy reports 0 for a weight or size nobody entered, and refuses 0 on a new listing
+    # ("must be greater than 0"): an unset measure is not copied onto the drafts.
+    clean_measures(fields)
 
     # Etsy will refuse anything outside these, and a bad template poisons every draft.
     if fields.get("who_made") not in WHO_MADE:

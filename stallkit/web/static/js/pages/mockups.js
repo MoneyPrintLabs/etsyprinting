@@ -30,6 +30,7 @@ import {
   spinner,
   textInput,
   toggle,
+  uid,
 } from "../ui.js";
 import { icon } from "../icons.js";
 import { percent } from "../format.js";
@@ -351,7 +352,7 @@ function areaState(t, item) {
     return h("span", { class: "mk-state is-own", title: t("area.own_hint") }, t("area.own"), icon("check", { size: 12, strokeWidth: 2.4 }));
   }
   if (item.area_source === "same_size") return h("span", { class: "mk-state is-shared", title: t("area.same_size_hint") }, t("area.same_size"));
-  return h("span", { class: "mk-state is-default", title: t("area.default_hint") }, t("area.default"));
+  return h("span", { class: "mk-state is-default", title: t("area.default_hint") }, icon("crop", { size: 12 }), t("area.default"));
 }
 
 // ------------------------------------------------------------------ which mockups drafts use
@@ -419,9 +420,9 @@ async function mountGrid(el, ctx) {
     return data.items.some((it) => it.enabled !== sel.on.has(it.name));
   };
 
+  // The header holds only "Mockup ekle", as in the video; "Klasörü aç" is in each card's menu.
   const addBtn = button({ label: t("add"), icon: "plus", variant: "primary", onClick: () => pickAndUpload() });
-  const folderBtn = iconButton({ icon: "folder-open", title: t("open_folder"), variant: "ghost", onClick: () => openFolder(ctx) });
-  ctx.setHeader({ actions: [folderBtn, addBtn] });
+  ctx.setHeader({ actions: [addBtn] });
 
   const chipsCtl = chips({
     items: [{ id: "all", label: t("all") }],
@@ -433,10 +434,15 @@ async function mountGrid(el, ctx) {
       renderGrid();
     },
   });
+  // "Seç ve sırala" sits in the filter bar; the counter panel below shows only when it has
+  // something to say (over the limit, nothing switched on) or while choosing.
+  const selectStartBtn = button({ label: t("select.start"), icon: "check-circle", variant: "ghost", size: "sm", class: "mk-select-start", onClick: () => enterSelect() });
+  selectStartBtn.hidden = true;
   const toolbar = h(
     "div",
     { class: "mk-toolbar" },
     chipsCtl.el,
+    selectStartBtn,
     h("p", { class: "mk-autonote" }, icon("sparkles", { size: 14 }), h("span", null, t("auto_note"))),
   );
   const usageHost = h("section", { class: "mk-usage", "aria-label": t("usage.label") });
@@ -461,6 +467,7 @@ async function mountGrid(el, ctx) {
 
   function renderSkeleton() {
     toolbar.hidden = false;
+    selectStartBtn.hidden = true;
     notes.hidden = true;
     usageHost.hidden = true;
     toolsHost.hidden = true;
@@ -543,11 +550,22 @@ async function mountGrid(el, ctx) {
     if (!data || !data.items.length) {
       usageHost.hidden = true;
       toolsHost.hidden = true;
+      selectStartBtn.hidden = true;
       return;
     }
-    usageHost.hidden = false;
     const p = current();
     const m = max();
+    selectStartBtn.hidden = !!sel;
+    // The video goes straight from the filter bar to the cards. The counter stays for what
+    // must never go unnoticed (FIXLIST 9): mockups over the limit, none switched on, and
+    // while choosing.
+    usageHost.hidden = !(sel || p.on > m || p.on === 0);
+    if (usageHost.hidden) {
+      toolsHost.hidden = true;
+      mount(usageHost);
+      mount(toolsHost);
+      return;
+    }
     usageHost.classList.toggle("is-selecting", !!sel);
     usageHost.classList.toggle("is-over", p.on > m);
     const fill = h("span", { class: "mk-meter-fill", style: { width: `${Math.round((p.used / m) * 100)}%` } });
@@ -566,8 +584,7 @@ async function mountGrid(el, ctx) {
       sub,
     );
     if (!sel) {
-      const start = button({ label: t("select.start"), icon: "check-circle", variant: "secondary", class: "mk-select-start", onClick: () => enterSelect() });
-      mount(usageHost, h("div", { class: "mk-usage-row" }, meter, text, h("div", { class: "spacer" }), start));
+      mount(usageHost, h("div", { class: "mk-usage-row" }, meter, text));
       toolsHost.hidden = true;
       mount(toolsHost);
       return;
@@ -676,23 +693,10 @@ async function mountGrid(el, ctx) {
 
   // ---- notes above the grid
 
+  // A mockup still on the default area says so on its own card (an amber "Baskı alanını
+  // ayarla"), so the grid needs no banner for it (FIXLIST 8's cue lives on the card).
   function renderNotes() {
     const list = [];
-    const d = data && data.default_area;
-    if (d && d.count && d.first && !sel) {
-      const first = byName.get(d.first);
-      const how = d.first_same_size
-        ? t("banner.same_size", { n: d.first_same_size, label: first ? itemLabel(t, first) : d.first })
-        : t("banner.one_by_one");
-      list.push(
-        infoNote({
-          tone: "warning",
-          icon: "crop",
-          text: [h("strong", null, t("banner.default", { n: d.count })), " ", h("span", null, how)],
-          action: h("a", { class: "btn btn-primary btn-sm mk-banner-link", href: editorPath(d.first) }, h("span", { class: "btn-label" }, t("banner.fix")), icon("arrow-right", { size: 14 })),
-        }),
-      );
-    }
     if (data && data.positions_error) {
       list.push(infoNote({ tone: "warning", icon: "alert", text: [t("positions_error"), " ", h("span", { class: "mono muted" }, data.positions_error)] }));
     }
@@ -733,7 +737,13 @@ async function mountGrid(el, ctx) {
     return img;
   }
 
+  /**
+   * The pill over a card's photo. Outside selection mode the photo stays clean, as in the
+   * video (the grid order is the listing order); only a mockup that is off or over the
+   * limit says so, so nothing is ever dropped silently (FIXLIST 9).
+   */
   function positionMark(item, p) {
+    if (!sel && isOn(item.name) && !p.over.has(item.name)) return null;
     const n = p.pos.get(item.name);
     if (n === 1) return h("span", { class: "mk-pos is-main", title: t("badge.main_hint") }, icon("star", { size: 11, strokeWidth: 2.2 }), h("span", null, t("badge.main")));
     if (n) return h("span", { class: "mk-pos num", title: t("badge.position", { n }), "aria-label": t("badge.position", { n }) }, String(n));
@@ -757,12 +767,14 @@ async function mountGrid(el, ctx) {
         openMenu(more, item);
       },
     });
-    const setArea = h(
-      "a",
-      { class: cx("mk-set-area", item.area_source === "default" && "is-default"), href: editorPath(item.name), title: t(`area.${item.area_source}_hint`) },
-      icon("crop", { size: 14 }),
-      h("span", null, t("card.set_area")),
-    );
+    // FIXLIST 8's visible action, only where it is needed: a mockup still on the default
+    // area. A card whose area is set ends at its meta line, like the video's; the whole
+    // card and "⋯ > Baskı alanını düzenle" still open the editor.
+    const setArea =
+      item.area_source === "default"
+        ? h("a", { class: "mk-set-area is-default", href: editorPath(item.name), title: t("area.default_hint") }, icon("crop", { size: 14 }), h("span", null, t("card.set_area")))
+        : null;
+    const mark = positionMark(item, p);
     let check = null;
     if (sel) {
       check = checkbox({ checked: on, ariaLabel: t("select.use", { label }), onChange: (v) => setMany([item.name], v) });
@@ -776,7 +788,7 @@ async function mountGrid(el, ctx) {
         title: item.name,
         dataset: { name: item.name },
       },
-      h("div", { class: "mk-card-media" }, thumbImg(item), h("span", { class: "mk-card-pos" }, positionMark(item, p)), check),
+      h("div", { class: "mk-card-media" }, thumbImg(item), mark ? h("span", { class: "mk-card-pos" }, mark) : null, check),
       h(
         "div",
         { class: "mk-card-foot" },
@@ -834,8 +846,65 @@ async function mountGrid(el, ctx) {
     }
     for (const u of uploads.values()) cards.push(u.el);
     if (!cards.length) cards.push(h("div", { class: "mk-grid-full" }, emptyState({ icon: "filter", title: t("filter_empty"), compact: true })));
+    newTile = data.items.length > 0 && filter === "all" && !sel ? newMockupTile() : null;
+    if (newTile) cards.push(newTile);
     mount(grid, cards);
+    spanNewTile();
   }
+
+  // ---- the "Yeni mockup" tile that ends the grid (two columns wide, like the video's)
+
+  let newTile = null;
+  let gridCols = 0;
+
+  function newMockupTile() {
+    const [before, after = ""] = t("grid_new.hint").split("{size}");
+    const zone = dropzone({
+      class: "mk-grid-new",
+      accept: ACCEPT,
+      multiple: true,
+      title: t("library.new"),
+      subtitle: t("grid_new.sub"),
+      onFiles: (list) => queueUpload(list.map((x) => x.file)),
+      onReject: (bad) => ctx.toast({ tone: "warning", title: t("upload.skipped", { n: bad.length }) }),
+      content: [
+        h("span", { class: "mk-grid-new-icon", "aria-hidden": "true" }, icon("plus", { size: 26, strokeWidth: 2.2 })),
+        h("p", { class: "mk-grid-new-title" }, t("library.new")),
+        h("p", { class: "mk-grid-new-sub" }, t("grid_new.sub")),
+        h("p", { class: "mk-grid-new-hint" }, icon("info", { size: 13 }), h("span", null, before, h("span", { class: "mono" }, "2000×2000"), after)),
+      ],
+    });
+    return h("div", { class: "mk-grid-new-cell", role: "listitem" }, zone);
+  }
+
+  /** Two columns wide, or one when only one is left in the last row. */
+  function spanNewTile() {
+    if (!newTile || !newTile.isConnected) return;
+    const cols = String(getComputedStyle(grid).gridTemplateColumns || "")
+      .split(" ")
+      .filter(Boolean).length;
+    gridCols = cols;
+    if (!cols) return;
+    let pos = 0;
+    for (const cell of grid.children) {
+      if (cell === newTile) break;
+      pos = cell.classList.contains("mk-grid-full") ? 0 : (pos + 1) % cols;
+    }
+    const span = pos === 0 ? Math.min(2, cols) : Math.min(2, cols - pos);
+    const want = `span ${span}`;
+    if (newTile.style.gridColumn !== want) newTile.style.gridColumn = want;
+  }
+
+  // The column count changes with the window (4, 5 from 1900 px, 3, 2).
+  const gridRo = new ResizeObserver(() => {
+    requestAnimationFrame(() => {
+      if (!newTile) return;
+      const cols = String(getComputedStyle(grid).gridTemplateColumns || "").split(" ").filter(Boolean).length;
+      if (cols !== gridCols) spanNewTile();
+    });
+  });
+  gridRo.observe(grid);
+  cleanups.push(() => gridRo.disconnect());
 
   // ---- order: menu actions, drag in selection mode
 
@@ -892,6 +961,7 @@ async function mountGrid(el, ctx) {
             if (await editMeta(ctx, item)) load({ quiet: true });
           },
         },
+        { label: t("open_folder"), icon: "folder-open", onClick: () => openFolder(ctx) },
         {
           label: t("menu.delete"),
           icon: "trash",
@@ -902,7 +972,11 @@ async function mountGrid(el, ctx) {
         },
       );
     }
-    menu(anchor, items, { placement: "bottom-end", width: 230 });
+    const pop = menu(anchor, items, { placement: "bottom-end", width: 230 });
+    // The cards carry no "Ana görsel" pill outside selection mode; the menu item says
+    // what the first position means.
+    const mainItem = pop && [...pop.el.querySelectorAll(".menu-item")].find((b) => b.textContent === t("menu.make_main"));
+    if (mainItem) mainItem.title = t("badge.main_hint");
   }
 
   function scroller() {
@@ -1153,9 +1227,10 @@ async function mountEditor(el, ctx, name) {
   const W = () => (item && item.width) || 1;
   const H = () => (item && item.height) || 1;
 
-  const backBtn = iconButton({ icon: "arrow-left", title: t("back"), variant: "ghost", onClick: () => leave(GRID_PATH) });
+  // As in the video, the header holds only "Mockup ekle"; the way back is the sidebar, the
+  // library list, Vazgeç (with nothing unsaved) or the browser's Back.
   const addBtn = button({ label: t("add"), icon: "plus", variant: "primary", onClick: () => pickAndUpload() });
-  ctx.setHeader({ actions: [backBtn, addBtn] });
+  ctx.setHeader({ actions: [addBtn] });
 
   // ---- library (left)
   const libCount = h("span", { class: "mk-lib-count num" });
@@ -1180,9 +1255,11 @@ async function mountEditor(el, ctx, name) {
   previewImg.hidden = true;
   const overlayImg = h("img", { class: "mk-rect-design", alt: "", draggable: "false" });
   const sizeChip = h("span", { class: "mk-rect-size num" });
+  // How to use the rectangle with a mouse and keys: its description (aria-label is the area).
+  const rectHint = h("span", { class: "sr-only", id: uid("mk-rect-hint") }, t("editor.hint"));
   const rect = h(
     "div",
-    { class: "mk-rect", tabindex: "0", role: "group" },
+    { class: "mk-rect", tabindex: "0", role: "group", title: t("editor.hint"), "aria-describedby": rectHint.id },
     overlayImg,
     h("span", { class: "mk-rect-label" }, t("editor.area_label")),
     sizeChip,
@@ -1195,25 +1272,21 @@ async function mountEditor(el, ctx, name) {
   const zoomBtn = h(
     "button",
     { type: "button", class: "mk-zoom", title: t("editor.zoom"), "aria-label": t("editor.zoom"), onClick: () => openZoomMenu() },
-    icon("zoom", { size: 13 }),
+    icon("search", { size: 13 }),
     zoomVal,
   );
-  const showBtn = h(
-    "button",
-    { type: "button", class: "mk-show", "aria-pressed": "true", onClick: () => setShowDesign(!showDesign) },
-    icon("eye", { size: 13 }),
-    h("span", null, t("editor.show_design")),
-  );
-  const stageWrap = h("div", { class: "mk-stage-wrap" }, stage, stageSpinner, zoomBtn, showBtn);
-  const underHost = h("div", { class: "mk-under" });
+  // The pill at the bottom of the stage: "draw the print area", then "print area set".
+  const underHost = h("div", { class: "mk-under", role: "status" });
+  const stageWrap = h("div", { class: "mk-stage-wrap" }, stage, stageSpinner, zoomBtn, underHost);
 
   // ---- side panel (right)
   const titleEl = h("h2", { class: "mk-side-title" });
-  const metaBtn = iconButton({ icon: "edit", title: t("editor.edit_meta"), variant: "ghost", size: "sm", onClick: () => onEditMeta() });
+  // One ⋯ menu instead of extra buttons around the video's layout: show the design, type
+  // and colour, back to the default area.
+  const moreBtn = iconButton({ icon: "more", title: t("editor.more"), variant: "ghost", size: "sm", class: "mk-side-more", onClick: () => openSideMenu() });
   const sizeEl = h("span", { class: "mk-size-chip num" });
   const stateHost = h("span", { class: "mk-state-host" });
   const disabledHost = h("div", { class: "mk-disabled-host" });
-  const resetBtn = button({ label: t("editor.reset_default"), variant: "ghost", size: "sm", icon: "undo", onClick: () => resetArea() });
   const fields = {};
   const fieldEls = [];
   for (const key of ["x", "y", "w", "h"]) {
@@ -1243,13 +1316,11 @@ async function mountEditor(el, ctx, name) {
     icon("chevron-right", { size: 16 }),
   );
   const appliedTitle = h("p", { class: "mk-applied-title" });
-  // After a save: the next mockup still on the default area, so 37 are done one after another.
-  const nextHost = h("div", { class: "mk-next-host" });
   const appliedCard = h(
     "div",
     { class: "mk-applied", role: "status" },
     h("span", { class: "mk-applied-icon" }, icon("check", { size: 15, strokeWidth: 2.8 })),
-    h("div", { class: "mk-applied-text" }, appliedTitle, h("p", { class: "mk-applied-sub" }, t("editor.applied_sub")), nextHost),
+    h("div", { class: "mk-applied-text" }, appliedTitle, h("p", { class: "mk-applied-sub" }, t("editor.applied_sub"))),
   );
   appliedCard.hidden = true;
   const sideSkeleton = h(
@@ -1263,12 +1334,12 @@ async function mountEditor(el, ctx, name) {
     "aside",
     { class: "mk-side" },
     sideSkeleton,
-    h("div", { class: "mk-side-head" }, titleEl, metaBtn),
+    h("div", { class: "mk-side-head" }, titleEl, moreBtn),
     h("div", { class: "mk-side-chips" }, sizeEl, stateHost),
     h("p", { class: "mk-helper" }, t("editor.helper")),
     disabledHost,
     h("div", { class: "mk-divider" }),
-    sectionTitle(t("editor.section_area"), { actions: resetBtn }),
+    sectionTitle(t("editor.section_area")),
     h("div", { class: "mk-fields" }, fieldEls),
     sectionTitle(t("editor.section_preview")),
     designRow,
@@ -1278,14 +1349,17 @@ async function mountEditor(el, ctx, name) {
 
   // ---- footer
   const sameHost = h("div", { class: "mk-same" });
+  // After a save: the next mockup still on the default area, so 37 are done one after another.
+  const nextHost = h("div", { class: "mk-next-host" });
+  nextHost.hidden = true;
   const cancelBtn = button({ label: t("common.cancel"), variant: "secondary", onClick: () => cancel() });
   const saveBtn = button({ label: t("common.save"), icon: "check", variant: "primary", onClick: () => save() });
-  const foot = h("footer", { class: "mk-main-foot" }, sameHost, h("div", { class: "spacer" }), cancelBtn, saveBtn);
+  const foot = h("footer", { class: "mk-main-foot" }, sameHost, h("div", { class: "spacer" }), nextHost, cancelBtn, saveBtn);
 
   const main = h(
     "section",
     { class: "card mk-main is-loading" },
-    h("div", { class: "mk-main-top" }, h("div", { class: "mk-canvas-col" }, stageWrap, underHost), side),
+    h("div", { class: "mk-main-top" }, h("div", { class: "mk-canvas-col" }, stageWrap, rectHint), side),
     foot,
   );
   const shell = h("div", { class: "mk-editor" }, lib, main);
@@ -1343,7 +1417,9 @@ async function mountEditor(el, ctx, name) {
   area = { ...areaRes.area };
   source = areaRes.source;
   siblings = areaRes.same_size || [];
-  sameSize = siblings.length > 0 && !siblings.some((n) => (list.find((it) => it.name === n) || {}).area_source === "own");
+  // On unless a same-size mockup has an area of its own that differs from this one: after
+  // one same-size save they all share it, and the switch stays on (the video's normal).
+  sameSize = siblings.length > 0 && !ownDiffering().length;
 
   renderLibrary();
   renderSide();
@@ -1443,6 +1519,10 @@ async function mountEditor(el, ctx, name) {
     if (!drag.moved) {
       drag.moved = true;
       art.classList.add("is-dragging", `drag-${drag.mode}`);
+      // What the drag changes lights up at the side (the video's focused Genişlik and
+      // Yükseklik while drawing), and Kaydet waits.
+      for (const key of drag.mode === "move" ? ["x", "y"] : ["w", "h"]) fields[key].classList.add("is-focus");
+      saveBtn.classList.add("is-waiting");
     }
     setArea(computeDrag(drag, ddx / drag.width, ddy / drag.height, e.shiftKey));
   });
@@ -1451,6 +1531,8 @@ async function mountEditor(el, ctx, name) {
     const was = drag;
     drag = null;
     art.classList.remove("is-dragging", "drag-move", "drag-resize", "drag-draw");
+    for (const key of ["x", "y", "w", "h"]) fields[key].classList.remove("is-focus");
+    saveBtn.classList.remove("is-waiting");
     try {
       art.releasePointerCapture(e.pointerId);
     } catch {
@@ -1549,11 +1631,14 @@ async function mountEditor(el, ctx, name) {
 
   function layout() {
     if (!item || !stage.isConnected) return;
-    const pad = 36;
+    // The photo fills the stage like the video's (26 px at the sides); above and below it
+    // keeps room for the zoom chip and the hint pill, so neither covers the product.
+    const padX = 26;
+    const padY = 42;
     const sw = stage.clientWidth;
     const sh = stage.clientHeight;
     if (!sw || !sh) return;
-    const fit = Math.max(0.02, Math.min((sw - pad * 2) / W(), (sh - pad * 2) / H()));
+    const fit = Math.max(0.02, Math.min((sw - padX * 2) / W(), (sh - padY * 2) / H()));
     const scale = fit * zoom;
     art.style.width = `${Math.max(1, Math.round(W() * scale))}px`;
     art.style.height = `${Math.max(1, Math.round(H() * scale))}px`;
@@ -1585,7 +1670,19 @@ async function mountEditor(el, ctx, name) {
     rect.style.height = `${area.h * 100}%`;
     sizeChip.textContent = `${Math.round(area.w * W())} × ${Math.round(area.h * H())} px`;
     rect.setAttribute("aria-label", t("editor.area_aria", { x: pct(area.x), y: pct(area.y), w: pct(area.w), h: pct(area.h) }));
+    rect.classList.toggle("is-ghost", isGhost());
     renderFields(false);
+  }
+
+  /**
+   * A mockup whose print area was never set opens like the video's: the bare product and
+   * "draw the print area". The default area stays as a faint outline (drafts use it until
+   * the seller saves); it takes no pointer, so any press on the photo starts a new
+   * rectangle. The first drag, field edit or arrow key makes it the real one; Vazgeç
+   * brings the outline back. It stays focusable for the keyboard.
+   */
+  function isGhost() {
+    return source === "default" && !isDirty();
   }
 
   function renderFields(force) {
@@ -1620,19 +1717,27 @@ async function mountEditor(el, ctx, name) {
   function updateState() {
     const dirty = isDirty();
     ctx.setDirty(dirty);
+    // The video's labels: "◎ Çiziliyor" until the area is saved (its tooltip still says
+    // plainly that it is not saved, or that the default area is in use), "✓ Ayarlı" after.
     let st;
-    if (dirty) st = badge({ text: t("editor.unsaved"), tone: "warning", dot: true });
-    else if (source === "own") st = badge({ text: t("editor.set"), tone: "success", icon: "check" });
-    else if (source === "same_size") st = badge({ text: t("editor.shared"), tone: "accent", title: t("area.same_size_hint") });
-    else st = badge({ text: t("editor.default"), tone: "neutral", title: t("area.default_hint") });
+    if (dirty || source === "default") {
+      st = badge({ text: t("editor.drawing"), tone: "accent", icon: "target", title: dirty ? t("editor.unsaved") : t("area.default_hint") });
+    } else if (source === "own") st = badge({ text: t("editor.set"), tone: "success", icon: "check" });
+    else st = badge({ text: t("editor.shared"), tone: "accent", title: t("area.same_size_hint") });
     mount(stateHost, st);
-    if (!dirty && source === "own") {
-      mount(underHost, h("span", { class: "mk-saved-chip" }, icon("check", { size: 13, strokeWidth: 2.6 }), t("editor.saved_chip")));
-    } else {
-      mount(underHost, h("p", { class: "mk-hint" }, icon("info", { size: 13 }), h("span", null, t("editor.hint"))));
+    const done = !dirty && source === "own";
+    const key = done ? "saved" : "draw";
+    if (underHost.dataset.state !== key) {
+      underHost.dataset.state = key;
+      mount(
+        underHost,
+        done
+          ? h("span", { class: "mk-stage-pill is-done" }, icon("check", { size: 13, strokeWidth: 2.6 }), h("span", null, t("editor.saved_chip")))
+          : h("span", { class: "mk-stage-pill" }, icon("target", { size: 13 }), h("span", null, t("editor.draw_hint"))),
+      );
     }
     appliedCard.hidden = !(lastApplied && !dirty);
-    resetBtn.hidden = !(source === "own" && !dirty);
+    nextHost.hidden = !(lastApplied && !dirty) || !nextHost.firstChild;
     main.classList.toggle("is-dirty", dirty);
     if (item) renderSideNotes();
   }
@@ -1646,14 +1751,12 @@ async function mountEditor(el, ctx, name) {
   }
 
   function renderSideNotes() {
-    const key = `${source}|${isDirty()}|${item.enabled}|${item.over_limit}`;
+    // A never-set area needs no note here: the stage shows the bare product, a faint
+    // outline and "draw the print area", and the badge's tooltip says what default means.
+    const key = `${item.enabled}|${item.over_limit}`;
     if (key === noteKey) return;
     noteKey = key;
     const notesList = [];
-    if (source === "default" && !isDirty()) {
-      // FIXLIST 8: say plainly what "default" means for the drafts.
-      notesList.push(infoNote({ tone: "warning", icon: "crop", text: t("editor.default_note") }));
-    }
     if (!item.enabled) {
       notesList.push(
         infoNote({
@@ -1680,12 +1783,20 @@ async function mountEditor(el, ctx, name) {
     mount(disabledHost, notesList);
   }
 
+  /** Same-size mockups with an area of their own that a same-size save would change. */
+  function ownDiffering() {
+    return siblings.filter((n) => {
+      const it = list.find((x) => x.name === n);
+      return !!it && it.area_source === "own" && !sameArea(it.area, saved);
+    });
+  }
+
   function renderSame() {
     const labels = siblings.map((n) => {
       const it = list.find((x) => x.name === n);
       return it ? itemLabel(t, it) : n;
     });
-    const ownOnes = siblings.filter((n) => (list.find((x) => x.name === n) || {}).area_source === "own");
+    const ownOnes = ownDiffering();
     // 36 colour variants must not become one endless line: a few names, then "+33".
     const SHOWN = 3;
     const names = labels.length > SHOWN ? t("editor.same_size_more", { names: labels.slice(0, SHOWN).join(", "), n: labels.length - SHOWN }) : labels.join(", ");
@@ -1698,10 +1809,11 @@ async function mountEditor(el, ctx, name) {
       sub,
       onChange: (v) => {
         sameSize = v;
+        renderLibrary();
       },
     });
     tog.title = siblings.length ? `${labels.join(", ")}\n\n${t("editor.same_size_explain")}` : t("editor.same_size_explain");
-    mount(sameHost, tog, siblings.length ? h("p", { class: "mk-same-explain" }, t("editor.same_size_explain")) : null);
+    mount(sameHost, tog);
   }
 
   function renderLibrary() {
@@ -1711,6 +1823,8 @@ async function mountEditor(el, ctx, name) {
       list.map((it) => {
         const current = it.name === name;
         const isApplied = applied.has(it.name);
+        // Before the save, the rows the area will also go to (the video's violet "aynı ölçü").
+        const twin = !current && !isApplied && sameSize && siblings.includes(it.name);
         let mark = null;
         if (current) mark = h("span", { class: "mk-lib-mark is-current" }, icon("arrow-right", { size: 16 }));
         else if (isApplied) mark = h("span", { class: "mk-lib-mark is-applied" }, icon("check", { size: 14, strokeWidth: 2.8 }));
@@ -1736,6 +1850,7 @@ async function mountEditor(el, ctx, name) {
               { class: "mk-lib-sub" },
               h("span", { class: "mono" }, sizeText(it)),
               !current && isApplied ? [h("span", { class: "mk-sep", "aria-hidden": "true" }, "·"), h("span", { class: "mk-lib-applied" }, t("library.applied"))] : null,
+              twin ? [h("span", { class: "mk-sep", "aria-hidden": "true" }, "·"), h("span", { class: "mk-lib-twin" }, t("library.same_size"))] : null,
               !it.enabled ? [h("span", { class: "mk-sep", "aria-hidden": "true" }, "·"), h("span", null, t("unused"))] : null,
               it.enabled && it.over_limit ? [h("span", { class: "mk-sep", "aria-hidden": "true" }, "·"), h("span", { class: "mk-lib-over" }, t("over_limit"))] : null,
             ),
@@ -1771,8 +1886,6 @@ async function mountEditor(el, ctx, name) {
     showDesign = !!v;
     writeStored("local", SHOW_KEY, showDesign);
     art.classList.toggle("show-design", showDesign);
-    showBtn.classList.toggle("is-on", showDesign);
-    showBtn.setAttribute("aria-pressed", showDesign ? "true" : "false");
     if (!quiet) {
       markStale();
       loadPreview();
@@ -1787,7 +1900,8 @@ async function mountEditor(el, ctx, name) {
   }
 
   function loadPreview() {
-    if (!showDesign || !design || !area || drag || art.classList.contains("is-loading")) return;
+    // Never-set area: the bare product until the seller draws (the video's first frame).
+    if (!showDesign || !design || !area || drag || art.classList.contains("is-loading") || isGhost()) return;
     const seq = ++previewSeq;
     const a = roundArea(area);
     const img = new Image();
@@ -1872,6 +1986,10 @@ async function mountEditor(el, ctx, name) {
       renderSame();
       renderRect();
       updateState();
+      // In a short window the side column scrolls: bring the notice into view.
+      requestAnimationFrame(() => {
+        if (!appliedCard.hidden && appliedCard.isConnected) appliedCard.scrollIntoView({ block: "nearest" });
+      });
       refreshList();
     } catch (err) {
       if (!ctx.api.isAbort(err)) ctx.toast({ tone: "danger", title: t("editor.save_failed"), message: ctx.api.errorText(err, t) });
@@ -1915,23 +2033,27 @@ async function mountEditor(el, ctx, name) {
     }
   }
 
+  /** "Sıradaki: Kupa · Beyaz →" in the footer after a save, while others are still unset. */
   function renderNext() {
     const waiting = list.filter((it) => it.name !== name && it.area_source === "default");
     const next = waiting.find((it) => it.in_use) || waiting[0];
     if (!next) {
       mount(nextHost);
+      nextHost.hidden = true;
       return;
     }
+    const text = t("editor.next_default", { label: itemLabel(t, next) });
+    const count = t("editor.next_default_count", { n: waiting.length });
     mount(
       nextHost,
       h(
         "a",
-        { class: "mk-next", href: editorPath(next.name), title: t("editor.next_default_hint", { n: waiting.length }) },
-        h("span", null, t("editor.next_default", { label: itemLabel(t, next) })),
-        h("span", { class: "mk-next-count num" }, t("editor.next_default_count", { n: waiting.length })),
+        { class: "mk-next", href: editorPath(next.name), title: `${text} · ${count}`, "aria-label": `${text}, ${count}` },
+        h("span", { class: "mk-next-label" }, text),
         icon("arrow-right", { size: 13 }),
       ),
     );
+    nextHost.hidden = !(lastApplied && !isDirty());
   }
 
   async function refreshList() {
@@ -1961,8 +2083,17 @@ async function mountEditor(el, ctx, name) {
     renderSame();
   }
 
-  function leave(path) {
-    ctx.navigate(path); // the leave guard above asks when there are unsaved changes
+  function openSideMenu() {
+    menu(
+      moreBtn,
+      [
+        { label: t("editor.show_design"), icon: "eye", checked: showDesign, onClick: () => setShowDesign(!showDesign) },
+        { label: t("editor.edit_meta"), icon: "edit", onClick: () => onEditMeta() },
+        { divider: true },
+        { label: t("editor.reset_default"), icon: "undo", disabled: !(source === "own" && !isDirty()), onClick: () => resetArea() },
+      ],
+      { placement: "bottom-end", width: 240 },
+    );
   }
 
   function uploadHere(files) {

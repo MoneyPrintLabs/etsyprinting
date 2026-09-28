@@ -1,12 +1,15 @@
-/* Mağaza Bağlantısı (frame t160) and the consent tab's landing page (/oauth-done). */
+/* Mağaza Bağlantısı (the video's MagazaBaglaEkrani, at the app's 0.88 scale). */
 
+/* The cards fill the window below the stepper, as in the video: the button sits at the
+   bottom of the left card and the status card's footer is always in view. */
 .page-connect {
   gap: 20px;
+  min-height: calc(100vh - var(--topbar-h) - 2 * var(--pad-y));
 }
 
-/* ---- stepper: steps 3 and 4 lead to their pages */
+/* ---- stepper: "Hesap" opens the key form, steps 3 and 4 lead to their pages */
 .page-connect .cx-stepper {
-  padding: 16px 22px;
+  padding: 17px 26px;
 }
 .page-connect .cx-stepper .step.is-link {
   cursor: pointer;
@@ -25,6 +28,7 @@
   grid-template-columns: minmax(0, 1.64fr) minmax(300px, 1fr);
   gap: 20px;
   align-items: stretch;
+  flex: 1;
 }
 .page-connect .cx-main {
   display: flex;
@@ -49,9 +53,17 @@
   background: color-mix(in srgb, var(--tone, var(--accent)) 13%, #121320);
   border: 1px solid color-mix(in srgb, var(--tone, var(--accent)) 26%, transparent);
 }
+.page-connect .cx-title,
+.page-connect .cx-side-title,
+.page-connect .cx-done-title,
+.page-connect .cx-shoprow-name,
+.page-connect .cx-brand-title {
+  font-family: var(--font-display, var(--font));
+  word-spacing: var(--display-word-spacing, normal);
+}
 .page-connect .cx-title {
-  font-size: 27px;
-  font-weight: 650;
+  font-size: 28px;
+  font-weight: 700;
   letter-spacing: -0.02em;
   line-height: 1.2;
   min-width: 0;
@@ -64,6 +76,15 @@
   color: var(--text-2);
 }
 .page-connect .cx-main > .section-title {
+  margin: 6px 0 -8px;
+}
+.page-connect .cx-main.is-connect > .section-title {
+  margin: 12px 0 -6px;
+}
+/* More on the card (the callback question, a problem, a reconnect): the tighter margins,
+   so the button stays in view. */
+.page-connect .cx-main.is-connect.action-first > .section-title,
+.page-connect .cx-main.is-connect:has(> .cx-gate-line, > .cx-problems:not(:empty), > .note:not(.tone-info)) > .section-title {
   margin: 6px 0 -8px;
 }
 .page-connect .cx-main .note {
@@ -81,14 +102,18 @@
   min-width: 0;
 }
 
-/* ---- the permissions box */
+/* ---- the permissions box: 3 rows split by thin lines */
 .page-connect .cx-perms {
   display: flex;
   flex-direction: column;
-  padding: 4px 0;
+  padding: 0;
+  overflow: hidden;
   border-radius: var(--radius);
-  background: #161921;
+  background: var(--panel-2);
   border: 1px solid var(--border);
+}
+.page-connect .cx-perm + .cx-perm {
+  border-top: 1px solid var(--border-soft, #1d2230);
 }
 .page-connect .cx-perm {
   display: flex;
@@ -114,12 +139,6 @@
   flex: 1;
   min-width: 0;
 }
-.page-connect .cx-perm-note {
-  margin-left: 8px;
-  font-size: 12px;
-  font-weight: 450;
-  color: var(--muted);
-}
 .page-connect .cx-perm.is-new .cx-perm-check {
   color: var(--accent-2);
   background: var(--accent-soft);
@@ -132,18 +151,19 @@
   font-size: 13px;
 }
 
-/* "Silme izni istemiyoruz": the blue-green note under the list */
+/* "Silme izni istemiyoruz": the sky-blue note under the list */
 .page-connect .note.tone-info {
   min-height: 58px;
   padding: 12px 18px;
-  background: #111c28;
-  border-color: #1f3a4f;
+  background: rgba(90, 184, 255, 0.07);
+  border-color: rgba(90, 184, 255, 0.28);
   color: var(--text-2);
-  font-size: 15px;
+  font-size: 15.8px;
 }
 .page-connect .note.tone-info .note-icon {
-  color: #7cc4ea;
-  background: #16344d;
+  border-radius: 8px;
+  color: #5ab8ff;
+  background: rgba(90, 184, 255, 0.14);
 }
 
 /* ---- the action row at the bottom of the card */
@@ -154,20 +174,22 @@
   flex-wrap: wrap;
 }
 .page-connect .cx-connect-row {
+  gap: 19px;
   margin-top: auto;
   padding-top: 26px;
 }
+/* "Etsy mağazanı bağla" and "Devam: Mockuplar": the video's 60px button at 0.88. */
 .page-connect .cx-connect-btn,
 .page-connect .cx-main .btn-primary.btn-lg {
-  height: 52px;
-  min-width: 200px;
-  padding: 0 26px;
-  font-size: 16px;
-  border-radius: 11px;
+  height: 53px;
+  min-width: 255px;
+  padding: 0 25px;
+  font-size: 16.5px;
+  border-radius: 12px;
 }
 /* Busy, the button dims to the video's darker violet and loses its glow. */
 .page-connect .cx-main .cx-connect-btn[aria-busy="true"] {
-  min-width: 254px;
+  min-width: 255px;
   opacity: 1;
   background: #5d52c8;
   border-color: rgba(255, 255, 255, 0.05);
@@ -182,12 +204,13 @@
   font-size: 13px;
   color: var(--muted);
 }
+/* Beside the button, as in the video (up to 316px), narrower rather than wrapping. */
 .page-connect .cx-progress {
   display: flex;
+  flex: 1 1 200px;
   flex-direction: column;
   gap: 9px;
-  width: 316px;
-  max-width: 100%;
+  max-width: 316px;
 }
 .page-connect .cx-progress-top {
   display: flex;
@@ -223,19 +246,6 @@
 .page-connect .cx-link-btn:hover {
   color: var(--text);
   text-decoration: underline;
-}
-.page-connect .cx-danger-ghost {
-  color: #ff8a8a;
-}
-.page-connect .cx-danger-ghost:hover:not(:disabled) {
-  color: #ffa3a3;
-  background: var(--danger-soft);
-}
-.page-connect .cx-meta {
-  margin-top: -6px;
-  font-size: 12px;
-  color: var(--muted);
-  overflow-wrap: anywhere;
 }
 
 /* ---- keys: how to make the app */
@@ -384,52 +394,60 @@
   margin-bottom: 18px;
 }
 .page-connect .cx-side-title {
-  font-size: 17px;
-  font-weight: 650;
+  font-size: 17.5px;
+  font-weight: 700;
   letter-spacing: -0.01em;
 }
 .page-connect .cx-side-badge .badge {
   height: 24px;
-  font-size: 12px;
+  font-size: 12.3px;
 }
 .page-connect .cx-diagram {
   position: relative;
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 36px 20px 30px;
-  border-radius: 14px;
-  background: radial-gradient(120% 90% at 18% 38%, rgba(124, 108, 246, 0.1), transparent 55%), #0d0e13;
-  border: 1px solid var(--border);
+  padding: 38px 18px 30px;
+  border-radius: var(--radius-lg);
+  background: radial-gradient(316px 176px at 50% 40%, rgba(123, 108, 255, 0.1), transparent 75%), var(--bg);
+  border: 1px solid var(--border-soft, var(--border));
   overflow: hidden;
+}
+.page-connect .cx-diagram.is-connected {
+  background: radial-gradient(316px 176px at 50% 40%, rgba(47, 214, 163, 0.09), transparent 75%), var(--bg);
 }
 .page-connect .cx-node {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
+  gap: 2px;
   flex: none;
   width: 104px;
   text-align: center;
 }
+/* A lit tile (the app always, the shop once connected), as the video draws it. */
 .page-connect .cx-node-tile {
+  position: relative;
+  z-index: 1; /* above the rail, which runs under the tiles */
   display: grid;
   place-items: center;
   width: 90px;
   height: 90px;
   margin-bottom: 10px;
-  border-radius: 20px;
-  background: #181a22;
-  border: 1px solid #2a2c36;
-  color: #c9ccd6;
+  border-radius: 24px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text-2);
 }
-.page-connect .cx-node-tile.is-app {
-  background: linear-gradient(160deg, #262744 0%, #1a1b2c 100%);
-  border-color: #3a3a5c;
-  box-shadow: 0 0 44px -6px rgba(124, 108, 246, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+.page-connect .cx-node-tile.is-app,
+.page-connect .cx-diagram.is-connected .cx-node-tile.is-shop {
+  background: linear-gradient(160deg, #232838, #171b25);
+  border-color: rgba(168, 156, 255, 0.35);
+  box-shadow: 0 12px 32px rgba(123, 108, 255, 0.2);
+  color: var(--text);
 }
 .page-connect .cx-node-tile .logo-tile {
-  border-radius: 12px;
+  border-radius: 13px;
 }
 .page-connect .cx-node-name {
   max-width: 100%;
@@ -437,128 +455,148 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 14px;
-  font-weight: 650;
+  font-weight: 600;
   color: var(--text);
 }
 .page-connect .cx-node-sub {
   font-size: 11.5px;
   color: var(--muted);
 }
+
+/* The link: a dashed rail from tile to tile (6px under each), the fill that grows with
+   the connect's progress (--p, 0..100), the dot riding its end, the lock in the middle
+   (it turns violet past half way, mint once connected). */
 .page-connect .cx-link {
   position: relative;
   flex: 1;
-  min-width: 60px;
+  min-width: 48px;
   height: 90px;
-  display: flex;
-  align-items: center;
+}
+.page-connect .cx-link-rail {
+  position: absolute;
+  left: -23px;
+  right: -23px;
+  top: 50%;
+  height: 3.5px;
+  margin-top: -1.75px;
+  border-radius: 2px;
+  background: repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.16) 0 7px, transparent 7px 12px);
+}
+.page-connect .cx-link-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: calc(var(--p, 0) * 1%);
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  box-shadow: 0 0 12px rgba(168, 156, 255, 0.7);
 }
 .page-connect .cx-link-dot {
   position: absolute;
-  left: -4px;
   top: 50%;
+  left: calc(var(--p, 0) * 1%);
+  display: none;
   width: 12px;
   height: 12px;
-  margin-top: -6px;
   border-radius: 50%;
-  background: #6d6f7c;
-  z-index: 1;
-}
-.page-connect .cx-link-line {
-  flex: 1;
-  height: 2px;
-  background: repeating-linear-gradient(90deg, #3b3e4a 0 7px, transparent 7px 12px);
-}
-.page-connect .cx-link-lock {
-  display: grid;
-  place-items: center;
-  flex: none;
-  width: 28px;
-  height: 28px;
-  margin: 0 6px;
-  border-radius: 50%;
-  background: #15161d;
-  border: 1px solid #2c2e38;
-  color: var(--muted);
+  background: #fff;
+  box-shadow: 0 0 0 3.5px rgba(168, 156, 255, 0.35), 0 0 16px var(--accent-2);
+  transform: translate(-50%, -50%);
 }
 .page-connect .cx-diagram.is-connecting .cx-link-dot {
-  background: #fff;
-  box-shadow: 0 0 0 4px rgba(155, 140, 255, 0.28), 0 0 16px 3px rgba(155, 140, 255, 0.75);
-  animation: cx-pulse 1.6s ease-in-out infinite;
+  display: block;
 }
-.page-connect .cx-diagram.is-connecting .cx-link-line {
-  background: repeating-linear-gradient(90deg, #5a5480 0 7px, transparent 7px 12px);
-  background-size: 24px 2px;
-  animation: cx-flow 0.9s linear infinite;
+.page-connect .cx-diagram:not(.is-connecting):not(.is-connected) .cx-link-fill {
+  display: none;
 }
-.page-connect .cx-diagram.is-connected .cx-link-dot {
+.page-connect .cx-diagram.is-connected .cx-link-fill {
+  width: 100%;
   background: var(--success);
-  box-shadow: 0 0 12px 2px rgba(52, 211, 153, 0.45);
+  box-shadow: 0 0 12px rgba(47, 214, 163, 0.6);
 }
-.page-connect .cx-diagram.is-connected .cx-link-line {
-  background: color-mix(in srgb, var(--success) 55%, transparent);
+.page-connect .cx-link-lock {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 35px;
+  height: 35px;
+  border-radius: 50%;
+  background: var(--panel);
+  border: 1.5px solid var(--border);
+  color: var(--muted);
+  transform: translate(-50%, -50%);
+}
+.page-connect .cx-diagram.is-half .cx-link-lock {
+  border-color: var(--accent-2);
+  color: var(--accent-2);
 }
 .page-connect .cx-diagram.is-connected .cx-link-lock {
-  color: #06291d;
-  background: var(--success);
   border-color: var(--success);
+  color: var(--success);
 }
-.page-connect .cx-diagram.is-connected .cx-node-tile.is-shop {
-  border-color: color-mix(in srgb, var(--success) 40%, #2a2c36);
-  color: var(--text);
-}
-@keyframes cx-pulse {
-  50% {
-    box-shadow: 0 0 0 6px rgba(155, 140, 255, 0.16), 0 0 22px 5px rgba(155, 140, 255, 0.55);
+@media (prefers-reduced-motion: no-preference) {
+  .page-connect .cx-diagram.is-connecting .cx-link-fill {
+    transition: width 0.6s var(--ease);
   }
-}
-@keyframes cx-flow {
-  to {
-    background-position: 24px 0;
+  .page-connect .cx-diagram.is-connecting .cx-link-dot {
+    transition: left 0.6s var(--ease);
+  }
+  .page-connect .cx-link-lock {
+    transition: border-color 0.3s, color 0.3s;
   }
 }
 
+/* ---- the 3 steps under the diagram */
 .page-connect .cx-flow {
   display: flex;
   flex-direction: column;
-  padding: 26px 0 8px 10px;
+  padding: 22px 0 8px;
 }
 .page-connect .cx-flow-step {
   position: relative;
   display: flex;
-  gap: 16px;
+  gap: 14px;
   min-height: 61px;
 }
 .page-connect .cx-flow-step:not(:last-child)::after {
   content: "";
   position: absolute;
-  left: 10px;
-  top: 26px;
+  left: 11.5px;
+  top: 30px;
   bottom: 4px;
-  width: 1px;
-  background: var(--border-2);
+  width: 2px;
+  border-radius: 1px;
+  background: var(--border);
+}
+.page-connect .cx-flow-step.is-done:not(:last-child)::after {
+  background: rgba(47, 214, 163, 0.45);
 }
 .page-connect .cx-flow-mark {
   display: grid;
   place-items: center;
   flex: none;
-  width: 21px;
-  height: 21px;
+  width: 25px;
+  height: 25px;
   border-radius: 50%;
-  border: 1px solid var(--border-2);
+  border: 1.5px solid var(--border);
   background: var(--panel);
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 650;
+  font-size: 11.5px;
+  font-weight: 700;
 }
 .page-connect .cx-flow-step.is-running .cx-flow-mark {
   border-color: transparent;
   background: var(--accent-soft);
 }
 .page-connect .cx-flow-ring {
-  width: 13px;
-  height: 13px;
+  width: 17px;
+  height: 17px;
   border-radius: 50%;
-  border: 2px solid rgba(155, 140, 255, 0.25);
+  border: 2px solid rgba(168, 156, 255, 0.25);
   border-top-color: var(--accent-2);
   border-right-color: var(--accent-2);
   animation: sk-spin 0.9s linear infinite;
@@ -571,9 +609,9 @@
 .page-connect .cx-flow-text {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
   min-width: 0;
-  padding-top: 1px;
+  padding-top: 2px;
 }
 .page-connect .cx-flow-text b {
   font-size: 14px;
@@ -590,17 +628,23 @@
 .page-connect .cx-flow-step.is-running .cx-flow-text span {
   color: var(--accent-2);
 }
+
+/* ---- the footer: one sentence, at the same place in every state (as in the video) */
 .page-connect .cx-side-foot {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
   margin-top: auto;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
-  font-size: 12px;
+  padding-top: 15px;
+  border-top: 1px solid var(--border-soft, var(--border));
+  font-size: 12.3px;
   color: var(--muted);
 }
-.page-connect .cx-side-foot .icon {
+.page-connect .cx-side-note {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.page-connect .cx-side-note .icon {
   flex: none;
 }
 
@@ -615,22 +659,29 @@
   .page-connect .cx-node-tile {
     width: 74px;
     height: 74px;
-    border-radius: 18px;
+    border-radius: 20px;
   }
   .page-connect .cx-node-tile .logo-tile {
-    width: 42px !important;
-    height: 42px !important;
+    width: 44px !important;
+    height: 44px !important;
+    border-radius: 11px;
   }
   .page-connect .cx-node-tile .logo-tile svg {
     width: 68%;
     height: 68%;
   }
+  .page-connect .cx-node-tile.is-shop svg {
+    width: 36px;
+    height: 36px;
+  }
   .page-connect .cx-link {
     height: 74px;
-    min-width: 48px;
+    min-width: 40px;
   }
-  .page-connect .cx-link-lock {
-    margin: 0 3px;
+  /* 11px of node padding + the 10px gap + 6px under the tile */
+  .page-connect .cx-link-rail {
+    left: -27px;
+    right: -27px;
   }
 }
 @media (max-width: 1180px) {
@@ -639,6 +690,34 @@
   }
   .page-connect .cx-title {
     font-size: 23px;
+  }
+}
+/* Two columns in a narrow window: smaller tiles, so the link keeps its room. */
+@media (min-width: 1001px) and (max-width: 1180px) {
+  .page-connect .cx-node {
+    width: 84px;
+  }
+  .page-connect .cx-node-tile {
+    width: 64px;
+    height: 64px;
+    border-radius: 18px;
+  }
+  .page-connect .cx-node-tile .logo-tile {
+    width: 38px !important;
+    height: 38px !important;
+    border-radius: 10px;
+  }
+  .page-connect .cx-node-tile.is-shop svg {
+    width: 32px;
+    height: 32px;
+  }
+  .page-connect .cx-link {
+    height: 64px;
+    min-width: 36px;
+  }
+  .page-connect .cx-link-rail {
+    left: -26px;
+    right: -26px;
   }
 }
 @media (max-width: 1000px) {
@@ -666,10 +745,6 @@
 }
 .page-connect .cx-grid.mode-keys .cx-side-foot {
   margin-top: 10px;
-}
-.page-connect .cx-head .badge {
-  flex: none;
-  margin-left: 4px;
 }
 
 /* ---- the callback address: copy it, where it goes on Etsy, Etsy's rules */
@@ -900,19 +975,21 @@
   color: var(--accent-2);
 }
 
-/* ---- "did you add the callback?" before the first Bağlan */
+/* ---- "Callback adresini Etsy'ye eklediniz mi?": in the keys step right after saving
+   (with "Devam: mağazayı bağla"), or on demand on the connect card */
 .page-connect .cx-gate {
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding: 16px 18px;
   border-radius: var(--radius);
-  background: color-mix(in srgb, var(--accent) 7%, #13141a);
+  background: color-mix(in srgb, var(--accent) 7%, var(--panel));
   border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  scroll-margin: 16px;
 }
 .page-connect .cx-gate.is-done {
   border-color: color-mix(in srgb, var(--success) 38%, var(--border));
-  background: color-mix(in srgb, var(--success) 5%, #13141a);
+  background: color-mix(in srgb, var(--success) 5%, var(--panel));
 }
 .page-connect .cx-gate-head {
   display: flex;
@@ -944,7 +1021,7 @@
   color: var(--text-2);
 }
 .page-connect .cx-gate .cx-cb {
-  background: #101118;
+  background: var(--bg);
 }
 .page-connect .cx-gate-foot {
   display: flex;
@@ -960,30 +1037,54 @@
 .page-connect .cx-gate-skip {
   font-size: 12px;
 }
-/* A shop's first connect or a reconnect: Bağlan before the permissions (connectView),
-   a little tighter so the question and the button fit a 1280x720 window. */
+.page-connect .cx-gate.is-step .cx-gate-next {
+  flex: none;
+}
+/* Keys saved by an older version: the question as one line above the button. */
+.page-connect .cx-gate-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 6%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+}
+.page-connect .cx-gate-line.is-done {
+  background: color-mix(in srgb, var(--success) 5%, var(--panel));
+  border-color: color-mix(in srgb, var(--success) 34%, var(--border));
+}
+.page-connect .cx-gate-line .cx-gate-check {
+  font-size: 13.5px;
+}
+/* pinned to the card's bottom with the button (see .cx-connect-row) */
+.page-connect .cx-gate-line {
+  margin-top: auto;
+}
+.page-connect .cx-gate-line + .cx-connect-row {
+  margin-top: 0;
+  padding-top: 0;
+}
+.page-connect .cx-main.action-first .cx-gate-line {
+  margin-top: 0;
+}
+/* A reconnect: the button before the permissions (connectView), a little tighter so it
+   is on screen in a 1280x720 window. */
 .page-connect .cx-main.action-first {
   gap: 15px;
   padding-top: 28px;
-}
-.page-connect .cx-main.action-first .cx-gate {
-  gap: 10px;
-  padding: 13px 16px 14px;
 }
 .page-connect .cx-main.action-first .cx-connect-row {
   margin-top: 0;
   padding-top: 0;
 }
-.page-connect .cx-main.action-first .cx-connect-row + .section-title,
-.page-connect .cx-main.action-first .cx-connect-row + .cx-cb-meta + .section-title {
+.page-connect .cx-main.action-first .cx-connect-row + .section-title {
   margin-top: 14px;
 }
 .page-connect .cx-connect-row .cx-hint {
   flex: 1 1 220px;
   min-width: 0;
-}
-.page-connect .cx-connect-row .cx-hint + .spacer {
-  display: none;
 }
 .page-connect .cx-hint.is-warn {
   color: var(--warning);
@@ -1000,13 +1101,6 @@
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-}
-.page-connect .cx-cb-meta {
-  margin-top: -8px;
-}
-.page-connect .cx-cb-meta .cx-link-btn {
-  display: inline;
-  font-size: 12px;
 }
 
 /* ---- "Etsy bir hata mı gösterdi?" while the connect waits */
@@ -1122,11 +1216,341 @@
   }
 }
 
+/* ---- connected: the video's success card (mint border and glow, a big check, the shop
+   row, the permissions as badges, "Devam: Mockuplar") */
+.page-connect .cx-main.is-connected {
+  position: relative;
+  isolation: isolate;
+  gap: 0;
+  border-color: rgba(47, 214, 163, 0.3);
+}
+.page-connect .cx-main.is-connected::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(460px 280px at 8% 0%, rgba(47, 214, 163, 0.13), transparent 70%);
+}
+/* Centred in the card, but never clipped: the free space goes above and below, and a
+   card with notes simply grows. */
+.page-connect .cx-main.is-connected > :first-child {
+  margin-top: auto;
+}
+.page-connect .cx-main.is-connected > :last-child {
+  margin-bottom: auto;
+}
+.page-connect .cx-medal {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: var(--success-soft);
+  border: 1px solid rgba(47, 214, 163, 0.35);
+  box-shadow: 0 0 0 9px rgba(47, 214, 163, 0.05), 0 10px 35px rgba(47, 214, 163, 0.22);
+}
+.page-connect .cx-medal > span {
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  background: var(--success);
+  color: #062a1f;
+}
+.page-connect .cx-done-title {
+  margin-top: 25px;
+  font-size: 35px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+.page-connect .cx-done-lead {
+  margin-top: 9px;
+  font-size: 15.8px;
+  line-height: 1.55;
+  color: var(--text-2);
+}
+.page-connect .cx-done-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 18px;
+}
+.page-connect .cx-shoprow {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+  margin-top: 26px;
+  padding: 16px 19px;
+  border-radius: var(--radius-lg);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
+.page-connect .cx-shoprow-tile {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 47px;
+  height: 47px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #3a3f4c, #262a34);
+  color: var(--text);
+}
+/* The counts drop under the name, together, when the row is narrow. A line then starts
+   with a "·": the text box reaches 13px (the dot and its gap) further left than the name,
+   and that strip is clipped, so only a dot that starts a line is hidden. */
+.page-connect .cx-shoprow-text {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 10px;
+  row-gap: 2px;
+  min-width: 0;
+  margin-left: -13px;
+  clip-path: inset(-4px -4px -4px 13px);
+}
+.page-connect .cx-shoprow-name {
+  margin-left: 13px;
+  font-size: 19px;
+  font-weight: 700;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.page-connect .cx-shoprow-counts {
+  display: inline-flex;
+  flex-wrap: wrap;
+  column-gap: 10px;
+  row-gap: 2px;
+  min-width: 0;
+}
+.page-connect .cx-count {
+  font-size: 15px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.page-connect .cx-count b {
+  font-weight: 700;
+  color: var(--text);
+}
+.page-connect .cx-sep {
+  display: inline-block;
+  width: 4px;
+  margin-right: 9px;
+  color: var(--muted);
+}
+.page-connect .cx-shoprow > .badge {
+  flex: none;
+  margin-left: auto;
+}
+.page-connect .cx-shoprow .badge,
+.page-connect .cx-chips .badge {
+  height: auto;
+  padding: 5px 10px;
+  font-size: 12.3px;
+  line-height: 1.25;
+}
+.page-connect .cx-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin-top: 16px;
+}
+.page-connect .cx-chips .badge.tone-info {
+  --tone: #5ab8ff;
+  --tone-soft: rgba(90, 184, 255, 0.14);
+}
+/* The video keeps the 4 chips on one line; wrapping stays for longer texts. */
+@media (max-width: 1440px) {
+  .page-connect .cx-chips {
+    gap: 7px;
+  }
+  .page-connect .cx-chips .badge {
+    padding: 5px 8px;
+  }
+}
+.page-connect .cx-done-title:focus {
+  outline: none;
+}
+.page-connect .cx-done-actions {
+  gap: 19px;
+  margin-top: 38px;
+}
+.page-connect .cx-done-actions .btn-primary.btn-lg {
+  min-width: 0; /* as wide as its label, as in the video */
+}
+
+/* ---- the first run: the video's first screen (Kayıt) brand panel beside the key form,
+   in windows wide enough for both */
+.page-connect .cx-brand {
+  display: none;
+}
+@media (min-width: 1100px) {
+  .page-connect .cx-grid.is-first-run {
+    grid-template-columns: minmax(0, 45fr) minmax(0, 55fr);
+  }
+  .page-connect .cx-grid.is-first-run .cx-side {
+    display: none;
+  }
+  .page-connect .cx-grid.is-first-run .cx-brand {
+    display: flex;
+  }
+}
+.page-connect .cx-brand {
+  position: sticky;
+  top: 0;
+  isolation: isolate;
+  align-self: start;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 28px;
+  min-width: 0;
+  /* the window below the stepper (--cx-steps-h is measured by connect.js) */
+  min-height: calc(100vh - var(--topbar-h) - 2 * var(--pad-y) - var(--cx-steps-h, 70px) - 20px);
+  padding: clamp(28px, 3vw, 48px) clamp(26px, 3.2vw, 56px) clamp(24px, 2.4vw, 40px);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.page-connect .cx-brand::before,
+.page-connect .cx-brand::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.page-connect .cx-brand::before {
+  background:
+    radial-gradient(545px 405px at 12% 8%, rgba(123, 108, 255, 0.3), transparent 65%),
+    radial-gradient(457px 370px at 95% 105%, rgba(168, 156, 255, 0.16), transparent 65%);
+}
+.page-connect .cx-brand::after {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 39px 39px;
+  -webkit-mask-image: radial-gradient(615px 457px at 20% 25%, #000 20%, transparent 75%);
+  mask-image: radial-gradient(615px 457px at 20% 25%, #000 20%, transparent 75%);
+}
+.page-connect .cx-brand-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  justify-content: center;
+}
+.page-connect .cx-brand-title {
+  display: flex;
+  flex-direction: column;
+  font-size: clamp(34px, 3.1vw, 54px);
+  font-weight: 800;
+  line-height: 1.07;
+  letter-spacing: -0.017em;
+  color: var(--text);
+}
+.page-connect .cx-brand-grad {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 5px;
+  background: linear-gradient(90deg, var(--accent-2) 0%, #c9c1ff 55%, var(--accent-2) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.page-connect .cx-brand-sub {
+  margin-top: 14px;
+  font-size: clamp(16px, 1.25vw, 19px);
+  color: var(--text-2);
+}
+.page-connect .cx-brand-list {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(14px, 1.35vw, 21px);
+  margin-top: clamp(24px, 2.6vw, 42px);
+}
+.page-connect .cx-brand-item {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.page-connect .cx-brand-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: var(--accent-soft);
+  border: 1px solid rgba(123, 108, 255, 0.28);
+  color: var(--accent-2);
+}
+.page-connect .cx-brand-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.page-connect .cx-brand-text b {
+  font-size: clamp(14.5px, 1.1vw, 17.5px);
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text);
+}
+.page-connect .cx-brand-text span {
+  font-size: clamp(12.5px, 0.9vw, 13.6px);
+  line-height: 1.45;
+  color: var(--muted);
+}
+.page-connect .cx-brand-flow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 9px;
+}
+.page-connect .cx-brand-pill {
+  padding: 6px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-2);
+  font-size: 12.3px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.page-connect .cx-brand-pill.is-last {
+  border-color: rgba(47, 214, 163, 0.35);
+  background: var(--success-soft);
+  color: var(--success);
+}
+.page-connect .cx-brand-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+.page-connect .cx-brand-arrow {
+  display: inline-flex;
+  color: var(--muted-2, var(--muted));
+}
+
 /* A short window (1280x720): the card a little tighter, so Bağlan stays on screen. */
 @media (max-height: 760px) {
+  .page-connect .cx-stepper {
+    padding-top: 16px;
+    padding-bottom: 16px;
+  }
   .page-connect .cx-main {
     gap: 15px;
     padding-top: 28px;
+  }
+  .page-connect .cx-main.is-connect > .section-title {
+    margin: 6px 0 -8px;
   }
   .page-connect .cx-perm {
     min-height: 46px;
@@ -1135,8 +1559,44 @@
     min-height: 48px;
     padding-top: 9px;
     padding-bottom: 9px;
+    font-size: 15px;
   }
   .page-connect .cx-connect-row {
     padding-top: 14px;
+  }
+  .page-connect .cx-medal {
+    width: 72px;
+    height: 72px;
+  }
+  .page-connect .cx-medal > span {
+    width: 48px;
+    height: 48px;
+  }
+  .page-connect .cx-medal svg {
+    width: 28px;
+    height: 28px;
+  }
+  .page-connect .cx-done-title {
+    margin-top: 18px;
+  }
+  .page-connect .cx-done-actions {
+    margin-top: 28px;
+  }
+  .page-connect .cx-side-head {
+    margin-bottom: 14px;
+  }
+  .page-connect .cx-flow {
+    padding-top: 16px;
+  }
+  .page-connect .cx-flow-step {
+    min-height: 54px;
+  }
+  .page-connect .cx-brand {
+    padding-top: 26px;
+    padding-bottom: 22px;
+  }
+  .page-connect .cx-brand-list {
+    gap: 12px;
+    margin-top: 22px;
   }
 }

@@ -71,8 +71,9 @@ def _cell(value: Any) -> str:
 
 
 # A decimal comma carries one or two digits after it. Three or more is a thousands
-# separator in every locale that uses one, so it is never read as a decimal point.
-DECIMAL_COMMA = re.compile(r"-?\d+,\d{1,2}")
+# separator in every locale that uses one, so it is never read as a decimal point,
+# except after a lone 0: no thousands separator follows a 0, so 0,250 (kg) is 0.25.
+DECIMAL_COMMA = re.compile(r"-?(?:\d+,\d{1,2}|0,\d+)")
 
 
 def split_multi(value: str, *, allow_comma: bool = False) -> list[str]:
@@ -126,16 +127,18 @@ def as_float(
     # cannot be a thousands separator. '1,299' is 1299 to a Turkish or German seller and
     # 1.299 to a naive parser. A rule of "one comma, no dot" cannot tell them apart and
     # would price a 1.299 TL poster at one lira thirty, with `price > 0` waving it
-    # through. Two digits after the comma is a decimal; anything else is ambiguous and
-    # has to be typed unambiguously rather than guessed at.
+    # through. One or two digits after the comma is a decimal, and so is a comma after
+    # a lone 0 ('0,250' kg); anything else is ambiguous and has to be typed
+    # unambiguously rather than guessed at.
     text = value.strip()
     if DECIMAL_COMMA.fullmatch(text):
         text = text.replace(",", ".")
     elif "," in text:
+        # web/api/listings.py reads this message's first words: keep them.
         raise ValidationError(
             f"{field} {value!r} is ambiguous — a comma here could be a decimal point or a "
-            f"thousands separator. Write it as {text.replace(',', '')} or "
-            f"{text.replace(',', '')}.00"
+            f"thousands separator. Write {text.replace(',', '')} if the comma separates "
+            f"thousands, or {text.replace(',', '.')} if it is a decimal point."
         )
     try:
         number = float(text)

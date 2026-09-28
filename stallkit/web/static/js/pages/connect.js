@@ -3,21 +3,24 @@
 // without any API call (that tab has no session cookie); it tells this tab through a
 // BroadcastChannel, relayed as the local event "oauth-done", and this page re-checks.
 //
-// The left card follows the setup: keys missing or refused -> how to create the app and
-// the key form; keys fine -> "Etsy mağazanızı bağlayın" (frame t160); connected -> the
-// granted permissions. The right card shows the connection as a diagram and 3 steps.
+// The left card follows the setup (the video's MagazaBaglaEkrani): keys missing or
+// refused -> how to create the app and the key form (the first run beside the brand
+// panel of the video's first screen); keys fine -> "Etsy mağazanızı bağlayın";
+// connected -> "Mağaza bağlandı" with the shop row and the granted permissions. The right
+// card shows the connection as a diagram (the line fills while connecting) and 3 steps.
 //
 // Setup has to be foolproof (real reports: Etsy's "The requested redirect URL is not
 // permitted" because the callback was never added on Etsy), so:
 // - the callback address is shown with a copy button, the exact place on Etsy and its
-//   rules, both in the how-to and before the first "Bağlan";
-// - the first "Bağlan" of a shop waits for "I added the callback" (remembered per shop,
-//   skippable with a small link);
+//   rules, in the how-to and right after the keys are saved;
+// - the first connect of a shop waits for "I added the callback" (remembered per shop
+//   and address, skippable with a small link), asked in the keys step;
 // - GET /api/connect/preflight checks the keys, the callback and its port before Etsy
 //   opens, and each problem comes with its fix;
 // - while the connect job waits for longer than SLOW_AFTER, "Etsy bir hata mı gösterdi?"
 //   lists the errors Etsy's page shows and what to do about each.
 
+import { number } from "../format.js";
 import { icon, logoMark } from "../icons.js";
 import {
   badge,
@@ -43,20 +46,24 @@ const YOUR_APPS_URL = "https://www.etsy.com/developers/your-apps";
 const DEFAULT_CALLBACK = "http://localhost:3003/oauth/redirect";
 const DEFAULT_SCOPES = ["shops_r", "listings_r", "listings_w", "transactions_r", "transactions_w"];
 
-// What each scope lets stallkit do, in the words of the consent card. listings_r and
-// listings_w are one line; a scope not listed here is shown by its raw name.
+// What each scope lets stallkit do, in the words of the consent card (3 lines, as in the
+// video). shops_r belongs to the listings line: drafts need the shop's shipping profiles,
+// and Etsy's own consent screen still names every scope. `chip` is the short form the
+// connected card shows. A scope not listed here is shown by its raw name.
 const PERMISSIONS = [
-  { scopes: ["listings_r", "listings_w"], key: "perm.listings" },
-  { scopes: ["transactions_r"], key: "perm.orders" },
-  { scopes: ["transactions_w"], key: "perm.tracking", note: "perm.tracking_note" },
-  { scopes: ["shops_r"], key: "perm.shop" },
+  { scopes: ["listings_r", "listings_w", "shops_r"], key: "perm.listings", chip: "chip.listings" },
+  { scopes: ["transactions_r"], key: "perm.orders", chip: "chip.orders" },
+  { scopes: ["transactions_w"], key: "perm.tracking", chip: "chip.tracking", note: "perm.tracking_note" },
 ];
 const WORDED = new Set(PERMISSIONS.flatMap((p) => p.scopes));
 
-// The connect job's phases, in order, and how far along the bar each one is.
+// The connect job's phases, in order, and how far along the bar each one is. As in the
+// video, the badge, the bar, the hint and the spinning step change together at thirds:
+// step 2 ("Siz izin verirsiniz") spins below 67% (the consent, then the code checked:
+// "İzniniz doğrulanıyor…"), step 3 only while the shop is read.
 const PHASES = ["starting", "opened", "code_received", "fetching_shop", "done"];
-const PHASE_PCT = { starting: 5, opened: 16, code_received: 74, fetching_shop: 88, done: 100 };
-const CREEP_TO = 62; // while waiting for the person, the bar creeps towards this
+const PHASE_PCT = { starting: 5, opened: 16, code_received: 64, fetching_shop: 88, done: 100 };
+const CREEP_TO = 62; // while waiting for the person, the bar creeps towards this (< code_received)
 const TERMINAL = new Set(["done", "error", "cancelled"]);
 const SLOW_AFTER = 15; // seconds on Etsy's page before "Etsy bir hata mı gösterdi?" appears
 // A connect that ended with one of these gets the same help, open.
@@ -143,13 +150,14 @@ function permList(t, rows) {
     rows.map((r) =>
       h(
         "li",
-        { class: cx("cx-perm", r.isNew && "is-new") },
+        // The line reads as in the video; the note stays for screen readers and on hover.
+        { class: cx("cx-perm", r.isNew && "is-new"), title: r.note || undefined },
         h("span", { class: "cx-perm-check", "aria-hidden": "true" }, icon("check", { size: 13, strokeWidth: 2.4 })),
         h(
           "span",
           { class: "cx-perm-text" },
           r.raw ? h("code", { class: "cx-scope mono" }, r.raw) : r.text,
-          r.note ? h("span", { class: "cx-perm-note" }, r.note) : null,
+          r.note ? h("span", { class: "sr-only" }, " " + r.note) : null,
         ),
         r.isNew ? badge({ text: t("connect.extra_badge"), tone: "accent", size: "sm" }) : null,
       ),
@@ -165,12 +173,86 @@ function safeNote(t) {
   });
 }
 
+/** The granted permissions as the connected card's row of badges (the video's 4 chips). */
+function permChips(t, granted) {
+  const set = new Set(granted);
+  const chips = [];
+  for (const p of PERMISSIONS) {
+    if (!p.scopes.some((s) => set.has(s))) continue;
+    chips.push(badge({ text: t(p.chip), tone: "success", icon: "check", title: p.note ? t(p.note) : undefined }));
+  }
+  for (const s of granted) if (!WORDED.has(s)) chips.push(badge({ text: s, tone: "neutral" }));
+  // Only true while Etsy has not granted the delete scope (?scope=listings_d can ask for it).
+  if (!set.has("listings_d")) chips.push(badge({ text: t("chip.no_delete"), tone: "info", icon: "lock" }));
+  return h("div", { class: "cx-chips" }, chips);
+}
+
+/** "· 306 ilan" with the number in bold (a count from /api/connect/counts). */
+function countText(t, key, n) {
+  const text = t(key, { n });
+  const raw = String(n);
+  const i = text.indexOf(raw);
+  const sep = h("span", { class: "cx-sep", "aria-hidden": "true" }, "·");
+  if (i < 0) return h("span", { class: "cx-count" }, sep, text);
+  return h("span", { class: "cx-count" }, sep, text.slice(0, i), h("b", { class: "num" }, number(n)), text.slice(i + raw.length));
+}
+
 function extLink(href, label, variant = "secondary") {
   return h(
     "a",
     { href, target: "_blank", rel: "noopener noreferrer", class: cx("btn", `btn-${variant}`, "btn-sm", "cx-ext") },
     h("span", { class: "btn-label" }, label),
     icon("external", { size: 13 }),
+  );
+}
+
+const BRAND_BENEFITS = [
+  ["image", "brand.b1"],
+  ["file", "brand.b2"],
+  ["chart", "brand.b3"],
+];
+
+/** The video's first screen (Kayıt) brand panel, beside the first run's key form. */
+function brandPanel(t) {
+  // Each arrow stays with the pill after it, so a wrapped strip never ends on an arrow.
+  const flow = [];
+  for (let i = 1; i <= 4; i++) {
+    flow.push(
+      h(
+        "li",
+        { class: "cx-brand-step" },
+        i > 1 ? h("span", { class: "cx-brand-arrow", "aria-hidden": "true" }, icon("arrow-right", { size: 14 })) : null,
+        h("span", { class: cx("cx-brand-pill", i === 4 && "is-last") }, t(`brand.flow.${i}`)),
+      ),
+    );
+  }
+  return h(
+    "aside",
+    { class: "cx-brand", "aria-label": t("brand.label") },
+    h(
+      "div",
+      { class: "cx-brand-body" },
+      h(
+        "h2",
+        { class: "cx-brand-title" },
+        h("span", null, t("brand.title_1")),
+        h("span", { class: "cx-brand-grad" }, h("span", null, t("brand.title_2")), h("span", null, t("brand.title_3"))),
+      ),
+      h("p", { class: "cx-brand-sub" }, t("brand.sub")),
+      h(
+        "ul",
+        { class: "cx-brand-list" },
+        BRAND_BENEFITS.map(([ic, key]) =>
+          h(
+            "li",
+            { class: "cx-brand-item" },
+            h("span", { class: "cx-brand-icon", "aria-hidden": "true" }, icon(ic, { size: 21 })),
+            h("span", { class: "cx-brand-text" }, h("b", null, t(`${key}.title`)), h("span", null, t(`${key}.sub`))),
+          ),
+        ),
+      ),
+    ),
+    h("ol", { class: "cx-brand-flow", "aria-label": t("brand.flow_label") }, flow),
   );
 }
 
@@ -207,40 +289,69 @@ async function mountConnect(el, ctx) {
     info: null,
     infoError: null,
     mode: null,
-    editKeys: false,
+    // ?keys=1 (Ayarlar → "Anahtarları değiştir") opens the key form
+    editKeys: !!ctx.query.keys,
     keyResult: null, // the last POST /api/connect/keys answer, shown once
     conn: null, // a connect in progress: {jobId, phase, pct, url, popup, blocked, since, slow}
     connError: null, // why the last connect failed (ApiError or job.error)
     extra: /^[a-z_]{3,32}$/.test(ctx.query.scope || "") ? ctx.query.scope : null,
-    gateOpen: null, // the "did you add the callback?" box: decided once info arrives
+    // "Callback adresini Etsy'ye eklediniz mi?": asked in the keys step right after keys
+    // Etsy accepts were saved (keysConfirm); a shop whose keys were saved before that
+    // gets one checkbox line above the connect button (gateAsk, kept for the visit); the
+    // full box opens on demand ("Etsy'de nasıl eklenir?", gateOpen).
+    keysConfirm: false,
+    afterSave: false,
+    gateAsk: null,
+    gateOpen: false,
     pre: null, // the last pre-flight: {loading, data, error}
     troubleOpen: null, // the person opened/closed the help panel (null: not touched)
+    counts: null, // {listings, to_ship} from /api/connect/counts, for the shop row
+    announceDone: false, // a connect just ended here: focus goes to "Mağaza bağlandı"
   };
+  if (ctx.query.keys) ctx.setQuery({ keys: null });
   let creepTimer = null;
   let pollTimer = null;
   let slowTimer = null;
   let preSeq = 0;
+  let countsSeq = 0;
   let form = null; // the key form's nodes, kept so typing survives re-renders
-  const live = {}; // nodes updated in place (progress, connect button, pre-flight, help)
+  const live = { gateChecks: [] }; // nodes updated in place (progress, connect button, pre-flight, help)
 
   // ---- layout
   const steps = stepper({ steps: [] });
   steps.classList.add("cx-stepper");
+  // A linked step: steps 3 and 4 lead to their pages; a finished "Hesap" opens the key
+  // form (the page's way to change the keys, as the video's status card has no links).
+  function followStep(li) {
+    if (li.dataset.action === "keys") {
+      openKeys();
+      if (form && form.key.isConnected) form.key.focus({ preventScroll: true });
+    } else if (li.dataset.href) {
+      ctx.navigate(li.dataset.href);
+    }
+  }
   steps.addEventListener("click", (e) => {
-    const li = e.target.closest(".step[data-href]");
-    if (li) ctx.navigate(li.dataset.href);
+    const li = e.target.closest(".step.is-link");
+    if (li) followStep(li);
   });
   steps.addEventListener("keydown", (e) => {
-    const li = e.target.closest(".step[data-href]");
+    const li = e.target.closest(".step.is-link");
     if (li && (e.key === "Enter" || e.key === " ")) {
       e.preventDefault();
-      ctx.navigate(li.dataset.href);
+      followStep(li);
     }
   });
   const main = h("section", { class: "card cx-main" });
   const side = buildSide();
-  const grid = h("div", { class: "cx-grid" }, main, side.el);
+  const brand = brandPanel(t); // shown on the first run only (css: wide windows)
+  const grid = h("div", { class: "cx-grid" }, brand, main, side.el);
   el.append(steps, grid);
+  // The brand panel is as tall as the window below the stepper.
+  let stepsObserver = null;
+  if (typeof ResizeObserver === "function") {
+    stepsObserver = new ResizeObserver(() => el.style.setProperty("--cx-steps-h", `${steps.offsetHeight}px`));
+    stepsObserver.observe(steps);
+  }
 
   // ---- state helpers
   const state = () => (s.status && s.status.state) || "checking";
@@ -253,7 +364,7 @@ async function mountConnect(el, ctx) {
     if (connecting()) return "connect";
     const st = state();
     if (!s.info) return s.infoError ? "error" : "loading";
-    if (s.editKeys) return "keys";
+    if (s.editKeys || s.keysConfirm) return "keys";
     if (st === "keys" || st === "bad_keys" || !s.info.keys) return "keys";
     if (st === "connected") return "connected";
     if (st === "disconnected" || st === "reconnect") return "connect";
@@ -263,6 +374,13 @@ async function mountConnect(el, ctx) {
 
   function shopName() {
     return (s.status && s.status.shop && s.status.shop.name) || (s.info && s.info.shop_name) || null;
+  }
+
+  /** The shop's name, or before the first connect the sidebar shop card's label
+   *  ("Mağaza 1"): the video shows one name in both places. */
+  function shownShopName() {
+    const label = typeof ctx.shopLabel === "function" ? ctx.shopLabel() : null;
+    return shopName() || label || t("diagram.shop");
   }
 
   // ---- stepper
@@ -276,8 +394,8 @@ async function mountConnect(el, ctx) {
     const list = [
       { label: t("steps.account"), state: st === "bad_keys" ? "error" : keysOk ? "done" : "todo", doneSub: t("steps.done"), errSub: t("steps.bad_keys") },
       { label: t("steps.shop"), state: st === "reconnect" ? "error" : shopOk ? "done" : "todo", doneSub: t("steps.done"), errSub: t("steps.reconnect") },
-      { label: t("steps.mockups"), state: mockups > 0 ? "done" : "todo", doneSub: t("steps.mockups_n", { n: mockups }) },
-      { label: t("steps.upload"), state: su.template ? "done" : "todo", doneSub: t("steps.ready") },
+      { label: t("steps.mockups"), state: mockups > 0 ? "done" : "todo", doneSub: t("steps.done") },
+      { label: t("steps.upload"), state: su.template ? "done" : "todo", doneSub: t("steps.done") },
     ];
     const current = list.findIndex((x) => x.state !== "done");
     if (current >= 0 && list[current].state === "todo") list[current].state = "current";
@@ -289,11 +407,20 @@ async function mountConnect(el, ctx) {
   }
 
   function renderSteps() {
-    steps.update(stepperSteps());
+    const list = stepperSteps();
+    steps.update(list);
     const links = [null, null, "/kurulum/mockuplar", setup().template ? "/tasarim-yukle" : "/kurulum/sablon"];
+    const mode = computeMode();
+    const keysLink = list[0].state === "done" && !connecting() && (mode === "connect" || mode === "connected");
     steps.querySelectorAll(".step").forEach((li, i) => {
-      if (!links[i]) return;
-      li.dataset.href = links[i];
+      if (i === 0 && keysLink) {
+        li.dataset.action = "keys";
+        li.title = t("keys.edit");
+      } else if (links[i]) {
+        li.dataset.href = links[i];
+      } else {
+        return;
+      }
       li.classList.add("is-link");
       li.tabIndex = 0;
       li.setAttribute("role", "link");
@@ -303,30 +430,30 @@ async function mountConnect(el, ctx) {
   // ---- the right card
   function buildSide() {
     const badgeSlot = h("span", { class: "cx-side-badge" });
-    const lock = h("span", { class: "cx-link-lock", title: t("diagram.lock") });
+    const lock = h("span", { class: "cx-link-lock", title: t("diagram.lock") }, icon("lock", { size: 16, strokeWidth: 2 }));
     const nameEl = h("b", { class: "cx-node-name" });
+    // The link: a dashed rail from tile to tile (under both), the fill that grows with the
+    // connect's progress, the dot riding its end, and the lock in the middle.
     const diagram = h(
       "div",
       { class: "cx-diagram" },
       h(
         "div",
         { class: "cx-node" },
-        h("span", { class: "cx-node-tile is-app" }, logoMark({ size: 50 })),
+        h("span", { class: "cx-node-tile is-app" }, logoMark({ size: 54 })),
         h("b", { class: "cx-node-name" }, t("app.name")),
         h("span", { class: "cx-node-sub" }, t("diagram.app_sub")),
       ),
       h(
         "div",
         { class: "cx-link", "aria-hidden": "true" },
-        h("span", { class: "cx-link-dot" }),
-        h("span", { class: "cx-link-line" }),
+        h("span", { class: "cx-link-rail" }, h("span", { class: "cx-link-fill" }), h("span", { class: "cx-link-dot" })),
         lock,
-        h("span", { class: "cx-link-line" }),
       ),
       h(
         "div",
         { class: "cx-node" },
-        h("span", { class: "cx-node-tile is-shop" }, icon("store", { size: 26 })),
+        h("span", { class: "cx-node-tile is-shop" }, icon("store", { size: 44, strokeWidth: 1.6 })),
         nameEl,
         h("span", { class: "cx-node-sub" }, t("diagram.shop_sub")),
       ),
@@ -338,16 +465,33 @@ async function mountConnect(el, ctx) {
       h("header", { class: "cx-side-head" }, h("h2", { class: "cx-side-title" }, t("status.title")), badgeSlot),
       diagram,
       flow,
-      h("footer", { class: "cx-side-foot" }, icon("info", { size: 14 }), h("span", null, t("status.footer"))),
+      // One line in every state, as in the video: the footer never moves.
+      h("footer", { class: "cx-side-foot" }, h("p", { class: "cx-side-note" }, icon("info", { size: 14 }), h("span", null, t("status.footer")))),
     );
     return { el: card, badgeSlot, lock, nameEl, diagram, flow };
+  }
+
+  function openKeys() {
+    s.editKeys = true;
+    s.keyResult = null;
+    s.connError = null;
+    render(true);
+  }
+
+  function openGate() {
+    s.gateOpen = true;
+    render(true);
+    const g = main.querySelector(".cx-gate");
+    if (g) g.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
 
   function flowStates() {
     if (connecting()) {
       const p = s.conn.phase;
       if (p === "starting") return ["running", "todo", "todo"];
-      if (p === "opened") return ["done", "running", "todo"];
+      // The code exchanged for a token is still "Siz izin verirsiniz" (the hint reads
+      // "İzniniz doğrulanıyor…"); step 3 spins only with "Mağaza bilgileri alınıyor…".
+      if (p === "opened" || p === "code_received") return ["done", "running", "todo"];
       if (p === "done") return ["done", "done", "done"];
       return ["done", "done", "running"];
     }
@@ -359,18 +503,19 @@ async function mountConnect(el, ctx) {
     const st = state();
     let b;
     if (connecting()) b = badge({ text: t("status.connecting", { pct: Math.round(s.conn.pct) }), tone: "accent" });
-    else if (st === "connected") b = badge({ text: t("status.connected"), tone: "success", dot: true });
+    else if (st === "connected") b = badge({ text: t("status.connected"), tone: "success", icon: "check" });
     else if (st === "reconnect") b = badge({ text: t("status.reconnect"), tone: "warning", dot: true });
     else if (st === "bad_keys") b = badge({ text: t("status.bad_keys"), tone: "danger", dot: true });
     else if (st === "offline" || st === "error") b = badge({ text: t("status.offline"), tone: "warning", dot: true });
     else if (st === "checking") b = badge({ text: t("status.checking"), tone: "neutral" });
-    else b = badge({ text: t("status.not_connected"), tone: "neutral", dot: true });
+    else b = badge({ text: t("status.not_connected"), tone: "neutral" });
     mount(side.badgeSlot, b);
 
     const linked = st === "connected" && !connecting();
-    side.diagram.className = cx("cx-diagram", connecting() && "is-connecting", linked && "is-connected");
-    mount(side.lock, icon(linked ? "check" : "lock", { size: 13, strokeWidth: linked ? 2.4 : 1.8 }));
-    side.nameEl.textContent = shopName() || t("diagram.shop");
+    const pct = connecting() ? Math.round(s.conn.pct) : linked ? 100 : 0;
+    side.diagram.className = cx("cx-diagram", connecting() && "is-connecting", linked && "is-connected", connecting() && pct >= 50 && "is-half");
+    side.diagram.style.setProperty("--p", String(pct));
+    side.nameEl.textContent = shownShopName();
     side.nameEl.title = side.nameEl.textContent;
 
     const states = flowStates();
@@ -382,7 +527,7 @@ async function mountConnect(el, ctx) {
           st2 === "running"
             ? h("span", { class: "cx-flow-ring", role: "img", "aria-label": t("common.loading") })
             : st2 === "done"
-              ? icon("check", { size: 12, strokeWidth: 2.6 })
+              ? icon("check", { size: 14, strokeWidth: 2.6 })
               : String(n);
         return h(
           "li",
@@ -448,10 +593,7 @@ async function mountConnect(el, ctx) {
       icon: "key",
       onClick: () => {
         if (connecting()) cancelConnect();
-        s.editKeys = true;
-        s.keyResult = null;
-        s.connError = null;
-        render(true);
+        openKeys();
       },
     });
   }
@@ -627,6 +769,13 @@ async function mountConnect(el, ctx) {
     if (other && (!otherInput.value.trim() || !own)) otherInput.value = other[1];
     for (const f of [form.keyField, form.secretField]) f.setError("");
     ctx.setDirty(typedKeys());
+    syncKeyActions();
+  }
+
+  /** Right after saving, the callback question takes the save row's place; typing into a
+   *  key field brings the save row back. */
+  function syncKeyActions() {
+    if (live.keyActions) live.keyActions.hidden = !!s.keysConfirm && !typedKeys();
   }
 
   function buildForm() {
@@ -658,7 +807,12 @@ async function mountConnect(el, ctx) {
     );
     const result = h("div", { class: "cx-result", role: "status" });
     const save = button({ label: t("keys.save"), variant: "primary", size: "lg", icon: "check", type: "submit" });
-    for (const input of [key, secret]) input.addEventListener("input", () => ctx.setDirty(typedKeys()));
+    for (const input of [key, secret]) {
+      input.addEventListener("input", () => {
+        ctx.setDirty(typedKeys());
+        syncKeyActions();
+      });
+    }
     key.addEventListener("paste", (e) => onKeyPaste(e, "key"));
     secret.addEventListener("paste", (e) => onKeyPaste(e, "secret"));
     return { key, secret, cb, keyField, secretField, cbField, adv, result, save };
@@ -730,6 +884,8 @@ async function mountConnect(el, ctx) {
     } else {
       kids.push(sectionTitle(t("keys.howto")), howto());
     }
+    live.keyActions = h("div", { class: "cx-actions" }, form.save, h("span", { class: "cx-local" }, icon("lock", { size: 13 }), t("keys.local")));
+    syncKeyActions();
     kids.push(
       sectionTitle(t("keys.form")),
       h(
@@ -746,10 +902,12 @@ async function mountConnect(el, ctx) {
         h("p", { class: "cx-form-hint" }, icon("sparkles", { size: 13 }), h("span", null, t("keys.combined_hint"))),
         form.adv,
         form.result,
-        h("div", { class: "cx-actions" }, form.save, h("span", { class: "cx-local" }, icon("lock", { size: 13 }), t("keys.local"))),
+        live.keyActions,
       ),
-      infoNote({ icon: "info", tone: "neutral", text: t("keys.one_app") }),
     );
+    // Keys Etsy accepts were just saved: the callback question, then on to connecting.
+    if (s.keysConfirm) kids.push(gateBox({ next: true }));
+    kids.push(infoNote({ icon: "info", tone: "neutral", text: t("keys.one_app") }));
     return kids;
   }
 
@@ -768,9 +926,12 @@ async function mountConnect(el, ctx) {
       if (res.status) s.status = res.status;
       if (res.check === "ok") {
         s.editKeys = false;
+        s.afterSave = true; // loadInfo decides whether the callback question comes next
         ctx.toast({ tone: "success", title: t("keys.saved_toast"), message: t("keys.result.ok") });
       }
       await loadInfo();
+      const gate = s.keysConfirm && main.querySelector(".cx-gate");
+      if (gate) gate.scrollIntoView({ block: "nearest", behavior: "smooth" });
     } catch (err) {
       if (ctx.api.isAbort(err)) return;
       const which = err.params && err.params.field;
@@ -787,10 +948,12 @@ async function mountConnect(el, ctx) {
   }
 
   function actionFirst() {
-    return !connecting() && (!!s.gateOpen || state() === "reconnect");
+    return !connecting() && state() === "reconnect";
   }
 
-  // connect: the t160 card, plus the callback question, the pre-flight and the help
+  // connect: the video's card (title, lead, İSTENEN İZİNLER, the note, the button at the
+  // bottom), plus the pre-flight problems, the callback question when still open, and the
+  // help while waiting for Etsy
   function connectView() {
     const info = s.info || {};
     const kids = [head("link", t("connect.title")), h("p", { class: "cx-lead" }, t("connect.lead"))];
@@ -798,6 +961,8 @@ async function mountConnect(el, ctx) {
     kids.push(...statusNotes(), ...keyResultNotes());
     live.problems = h("div", { class: "cx-problems" });
     kids.push(live.problems);
+    // "Etsy'de nasıl eklenir?": the whole callback box, under the lead, on demand
+    if (s.gateOpen && !connecting()) kids.push(gateBox());
     const scopes = [...(info.scopes_requested || DEFAULT_SCOPES)];
     const extra = [];
     if (s.extra && !scopes.includes(s.extra)) {
@@ -805,32 +970,65 @@ async function mountConnect(el, ctx) {
       extra.push(s.extra);
     }
     const perms = [sectionTitle(t("connect.perms")), permList(t, permissionRows(t, scopes, extra)), safeNote(t)];
+    // Keys saved by an older version, or the tick taken back: one line above the button.
+    const gate = s.gateAsk && !s.gateOpen && !connecting() ? gateLine() : null;
     if (actionFirst()) {
-      // A shop's first connect (the callback question) or a reconnect (the note above):
-      // the button comes before the permissions, so it is on screen without scrolling
-      // (1280x720 included).
-      if (s.gateOpen) kids.push(gateBox());
-      kids.push(connectRow(), ...perms);
+      // A reconnect (the note above): the button comes before the permissions, so it is
+      // on screen without scrolling (1280x720 included).
+      kids.push(gate, connectRow(), ...perms);
     } else {
-      kids.push(...perms, connectRow());
+      kids.push(...perms, gate, connectRow());
     }
     live.trouble = h("div", { class: "cx-trouble-slot" });
     kids.push(live.trouble);
     renderProblems();
     renderTrouble();
-    return kids;
+    return kids.filter(Boolean);
   }
 
-  // -- "Callback adresini Etsy'ye eklediniz mi?": once per shop, before the first Bağlan
-  function gateBox() {
-    const info = s.info || {};
-    const box = checkbox({ checked: !!info.callback_confirmed, label: t("gate.check"), onChange: (v) => setCallbackConfirmed(v) });
+  function gateCheckbox() {
+    const box = checkbox({ checked: !!(s.info && s.info.callback_confirmed), label: t("gate.check"), onChange: (v) => setCallbackConfirmed(v) });
     box.classList.add("cx-gate-check");
-    live.gateCheck = box;
+    live.gateChecks.push(box);
+    return box;
+  }
+
+  /** The callback question in one line: the tick and a way to the whole box. */
+  function gateLine() {
+    return h(
+      "div",
+      { class: cx("cx-gate-line", s.info && s.info.callback_confirmed && "is-done") },
+      gateCheckbox(),
+      h("button", { type: "button", class: "cx-link-btn", onClick: () => openGate() }, t("connect.callback_how")),
+    );
+  }
+
+  // -- "Callback adresini Etsy'ye eklediniz mi?": once per shop and address. `next`: in the
+  // keys step, with "Devam: mağazayı bağla" (enabled once ticked).
+  function gateBox({ next = false } = {}) {
+    const info = s.info || {};
     const skip = h("button", { type: "button", class: "cx-link-btn cx-gate-skip", onClick: () => skipGate() }, t("gate.skip"));
+    let go = null;
+    if (next) {
+      go = button({
+        label: t("gate.next"),
+        variant: "primary",
+        iconRight: "arrow-right",
+        disabled: !info.callback_confirmed,
+        class: "cx-gate-next",
+        onClick: () => {
+          s.keysConfirm = false;
+          s.gateOpen = false;
+          s.gateAsk = false; // answered
+          render(true);
+          if (!s.pre) runPreflight(true); // the keys step had no pre-flight
+        },
+      });
+      live.gateNext = go;
+    }
     return h(
       "section",
-      { class: cx("cx-gate", info.callback_confirmed && "is-done"), "aria-labelledby": "cx-gate-title" },
+      { class: cx("cx-gate", info.callback_confirmed && "is-done", next && "is-step"), "aria-labelledby": "cx-gate-title" },
       h(
         "div",
         { class: "cx-gate-head" },
@@ -838,37 +1036,44 @@ async function mountConnect(el, ctx) {
         h("div", { class: "cx-gate-text" }, h("h3", { class: "cx-gate-title", id: "cx-gate-title" }, t("gate.title")), h("p", null, t("gate.lead"))),
       ),
       callbackGuide({ dense: true }),
-      h("div", { class: "cx-gate-foot" }, box, h("span", { class: "spacer" }), skip),
+      h("div", { class: "cx-gate-foot" }, gateCheckbox(), h("span", { class: "spacer" }), skip, go),
     );
+  }
+
+  /** The tick's look everywhere it is shown (box, line, Devam, the connect button). */
+  function showConfirmed(value) {
+    for (const box of live.gateChecks) box.checked = value;
+    main.querySelectorAll(".cx-gate, .cx-gate-line").forEach((n) => n.classList.toggle("is-done", value));
+    if (live.gateNext) live.gateNext.setDisabled(!value);
+    updateConnectButton();
   }
 
   async function setCallbackConfirmed(value, { quiet = false } = {}) {
     if (!s.info) return;
     const before = !!s.info.callback_confirmed;
     s.info.callback_confirmed = value;
-    const gate = main.querySelector(".cx-gate");
-    if (gate) gate.classList.toggle("is-done", value);
-    updateConnectButton();
+    showConfirmed(value);
     try {
       const res = await ctx.api.post("/api/connect/callback-confirmed", { confirmed: value });
       if (s.info) s.info.callback_confirmed = !!res.callback_confirmed;
     } catch (err) {
       if (s.info) s.info.callback_confirmed = before;
-      if (live.gateCheck) live.gateCheck.checked = before;
-      if (gate) gate.classList.toggle("is-done", before);
       if (!quiet) ctx.toast({ tone: "danger", title: ctx.api.errorText(err, t) });
     }
-    updateConnectButton();
+    if (s.info) showConfirmed(!!s.info.callback_confirmed);
   }
 
   function skipGate() {
     s.gateOpen = false;
+    s.gateAsk = false;
+    s.keysConfirm = false;
     setCallbackConfirmed(true, { quiet: true });
     render(true);
+    if (!s.pre) runPreflight(true);
   }
 
   function gateBlocks() {
-    return !!(s.gateOpen && s.info && !s.info.callback_confirmed);
+    return !!(s.gateAsk && s.info && !s.info.callback_confirmed);
   }
 
   // -- pre-flight: what would stop "Bağlan", found before Etsy's page opens
@@ -924,6 +1129,7 @@ async function mountConnect(el, ctx) {
     if (p === "starting") return t("connect.phase.starting");
     if (p === "opened") return s.conn && s.conn.blocked && !s.conn.restored ? t("connect.popup_blocked") : t("connect.phase.opened");
     if (p === "done") return t("connect.phase.done");
+    if (p === "code_received") return t("connect.phase.verifying"); // the code -> a token
     return t("connect.phase.fetching");
   }
 
@@ -955,47 +1161,11 @@ async function mountConnect(el, ctx) {
       live.hint = h("p", { class: "cx-hint", role: "status" });
       aside = live.hint;
     }
-    const edit = running
-      ? null
-      : button({
-          label: t("keys.edit"),
-          variant: "ghost",
-          size: "sm",
-          icon: "key",
-          onClick: () => {
-            s.editKeys = true;
-            s.keyResult = null;
-            render(true);
-          },
-        });
-    const row = h("div", { class: "cx-actions cx-connect-row" }, btn, aside, h("span", { class: "spacer" }), edit);
-    const meta =
-      running || s.gateOpen
-        ? null
-        : h(
-            "p",
-            { class: "cx-meta cx-cb-meta" },
-            h("span", null, t("connect.callback_meta")),
-            " ",
-            h("span", { class: "mono" }, callbackUri()),
-            " · ",
-            h(
-              "button",
-              {
-                type: "button",
-                class: "cx-link-btn",
-                onClick: () => {
-                  s.gateOpen = true;
-                  render(true);
-                  const g = main.querySelector(".cx-gate");
-                  if (g) g.scrollIntoView({ block: "nearest", behavior: "smooth" });
-                },
-              },
-              t("connect.callback_how"),
-            ),
-          );
+    // The button and its hint only, as in the video: the keys change from the stepper's
+    // "Hesap" (and Ayarlar), the callback how-to is in the question line above.
+    const row = h("div", { class: "cx-actions cx-connect-row" }, btn, aside);
     updateConnectButton();
-    return [row, meta];
+    return row;
   }
 
   /** The connect button and its hint follow the callback question and the pre-flight. */
@@ -1086,19 +1256,17 @@ async function mountConnect(el, ctx) {
     renderTrouble();
   }
 
-  // connected
+  // connected: the video's success card. Disconnecting lives in Ayarlar → Etsy bağlantısı,
+  // changing the keys behind the stepper's "Hesap".
   function connectedView() {
     const info = s.info || {};
-    const name = shopName();
-    const title = head("check", name || t("connected.title_plain"), "success");
-    if (state() === "connected") title.append(badge({ text: t("status.connected_long"), tone: "success", dot: true }));
-    const kids = [title, h("p", { class: "cx-lead" }, t("connected.lead"))];
-    kids.push(...statusNotes(), ...keyResultNotes());
-    if (s.connError) kids.push(problemNote(s.connError));
+    const linked = state() === "connected";
+    const notes = [...statusNotes(), ...keyResultNotes()];
+    if (s.connError) notes.push(problemNote(s.connError));
     const granted = info.scopes_granted && info.scopes_granted.length ? info.scopes_granted : (s.status && s.status.scopes) || [];
     const missing = info.missing_scopes || [];
     if (missing.length) {
-      kids.push(
+      notes.push(
         infoNote({
           icon: "alert",
           tone: "warning",
@@ -1108,7 +1276,7 @@ async function mountConnect(el, ctx) {
       );
     }
     if (s.extra && !granted.includes(s.extra)) {
-      kids.push(
+      notes.push(
         infoNote({
           icon: "key",
           tone: "accent",
@@ -1117,51 +1285,56 @@ async function mountConnect(el, ctx) {
         }),
       );
     }
-    kids.push(sectionTitle(t("connected.perms")), permList(t, permissionRows(t, granted, [])), safeNote(t));
-    kids.push(
+    live.shopCounts = h("span", { class: "cx-shoprow-counts" });
+    renderCounts();
+    return [
+      h("div", { class: "cx-medal", "aria-hidden": "true" }, h("span", null, icon("check", { size: 32, strokeWidth: 3 }))),
+      h("h2", { class: "cx-done-title", tabIndex: -1 }, t("connected.title")),
+      h("p", { class: "cx-done-lead" }, t("connected.sub")),
+      notes.length ? h("div", { class: "cx-done-notes" }, notes) : null,
       h(
         "div",
-        { class: "cx-actions cx-connect-row" },
-        button({ label: t("connected.next"), variant: "primary", size: "lg", iconRight: "arrow-right", onClick: () => ctx.navigate("/kurulum/mockuplar") }),
-        button({ label: t("connected.disconnect"), variant: "ghost", icon: "logout", class: "cx-danger-ghost", onClick: () => disconnect() }),
-        h("span", { class: "spacer" }),
-        button({
-          label: t("keys.edit"),
-          variant: "ghost",
-          size: "sm",
-          icon: "key",
-          onClick: () => {
-            s.editKeys = true;
-            s.keyResult = null;
-            render(true);
-          },
-        }),
+        { class: "cx-shoprow" },
+        h("span", { class: "cx-shoprow-tile", "aria-hidden": "true" }, icon("store", { size: 25 })),
+        h("div", { class: "cx-shoprow-text" }, h("b", { class: "cx-shoprow-name" }, shownShopName()), live.shopCounts),
+        linked ? badge({ text: t("status.connected_long"), tone: "success", icon: "check" }) : null,
       ),
-    );
-    if (info.keys) kids.push(h("p", { class: "cx-meta" }, t("connected.meta", { prefix: info.keystring_prefix, url: info.redirect_uri })));
-    return kids;
+      permChips(t, granted),
+      h(
+        "div",
+        { class: "cx-actions cx-done-actions" },
+        button({ label: t("connected.next"), variant: "primary", size: "lg", iconRight: "arrow-right", onClick: () => ctx.navigate("/kurulum/mockuplar") }),
+        h("span", { class: "cx-hint" }, t("connected.next_hint")),
+      ),
+    ].filter(Boolean);
   }
 
-  async function disconnect() {
-    const ok = await ctx.confirm({
-      title: t("disconnect.title"),
-      message: t("disconnect.message"),
-      confirmLabel: t("disconnect.confirm"),
-      danger: true,
-      icon: "logout",
-    });
-    if (!ok) return;
-    try {
-      const res = await ctx.api.post("/api/connect/disconnect", {});
-      if (res.status) s.status = res.status;
-      s.keyResult = null;
-      s.connError = null;
-      s.pre = null;
-      ctx.toast({ tone: "info", title: t("disconnect.done") });
-      await loadInfo();
-    } catch (err) {
-      ctx.toast({ tone: "danger", title: ctx.api.errorText(err, t) });
+  // The shop row's "· 44 ilan · 12 bekleyen sipariş": two counts, cached by the server;
+  // a count that could not be read is left out.
+  function renderCounts() {
+    if (!live.shopCounts) return;
+    const data = s.counts && s.counts.data;
+    const kids = [];
+    if (data) {
+      for (const [key, stat] of [["connected.listings", data.listings], ["connected.pending", data.to_ship]]) {
+        if (stat && typeof stat.value === "number") kids.push(countText(t, key, stat.value));
+      }
     }
+    mount(live.shopCounts, kids);
+  }
+
+  async function loadCounts() {
+    const seq = ++countsSeq;
+    s.counts = { loading: true, data: s.counts && s.counts.data };
+    try {
+      const data = await ctx.api.get("/api/connect/counts", null, { signal: ctx.signal });
+      if (seq !== countsSeq) return;
+      s.counts = { loading: false, data };
+    } catch (err) {
+      if (ctx.api.isAbort(err) || seq !== countsSeq) return;
+      s.counts = { loading: false, data: null, error: err };
+    }
+    renderCounts();
   }
 
   // ---- connecting
@@ -1294,8 +1467,14 @@ async function mountConnect(el, ctx) {
       if (s.extra) s.extra = null;
       if (s.info) s.info.callback_confirmed = true;
       s.gateOpen = false;
-      const shop = job.result && job.result.shop_name;
-      ctx.toast({ tone: "success", title: t("connect.done_toast"), message: shop || undefined });
+      s.gateAsk = false;
+      s.counts = null; // the shop row reads them for the shop just connected
+      // As in the video, the card turning into "Mağaza bağlandı" is the feedback: no
+      // toast, and the bell's "connected" notification (kept for a connect that ends while
+      // the person is on another page) is read already. Focus goes to the new heading.
+      s.announceDone = true;
+      const note = job.result && job.result.notification;
+      if (note && typeof ctx.markNotificationsRead === "function") ctx.markNotificationsRead([note]);
       ctx.refreshStatus(false).catch(() => {});
     } else if (job.status === "error") {
       s.connError = job.error || { code: "internal" };
@@ -1367,9 +1546,15 @@ async function mountConnect(el, ctx) {
       s.infoError = err;
     }
     if (s.extra && s.info && !(s.info.known_scopes || []).includes(s.extra)) s.extra = null;
+    if (s.info && s.afterSave) {
+      // Keys Etsy accepts were just saved: an address not confirmed yet is asked about
+      // right there, in the keys step, before the connect card.
+      s.keysConfirm = !!s.info.keys && !s.info.callback_confirmed;
+      s.afterSave = false;
+      if (s.keysConfirm) s.gateAsk = false; // asked there, not again on the connect card
+    }
     // Asked until answered (per shop and address); once shown it stays for this visit.
-    if (s.info && !s.info.callback_confirmed) s.gateOpen = true;
-    else if (s.gateOpen === null && s.info) s.gateOpen = false;
+    if (s.info && !s.info.callback_confirmed && !s.keysConfirm) s.gateAsk = true;
     const job = s.info && s.info.job;
     if (job && !s.conn && !TERMINAL.has(job.status)) {
       // A connect started earlier (another visit, another tab) is still waiting.
@@ -1407,14 +1592,30 @@ async function mountConnect(el, ctx) {
         live.problems = null;
         live.trouble = null;
       }
+      live.gateChecks = [];
+      live.gateNext = null;
+      live.keyActions = null;
+      live.shopCounts = null;
+      const focused = document.activeElement;
+      const hadFocus = !focused || focused === document.body || main.contains(focused);
+      const onDoneTitle = !!(focused && focused.classList && focused.classList.contains("cx-done-title"));
       mount(main, (views[mode] || loadingView)());
+      // Right after a connect the clicked button is gone: focus (and a screen reader) goes
+      // to "Mağaza bağlandı", and a re-render keeps it there.
+      if (mode === "connected" && ((s.announceDone && hadFocus) || onDoneTitle)) {
+        const title = main.querySelector(".cx-done-title");
+        if (title) title.focus({ preventScroll: true });
+      }
+      if (mode === "connected") s.announceDone = false;
       if (modeChanged) {
         const scroller = el.closest(".content");
         if (scroller) scroller.scrollTop = 0;
       }
       main.className = cx("card", "cx-main", `is-${mode}`, mode === "connect" && actionFirst() && "action-first");
-      grid.className = cx("cx-grid", `mode-${mode}`);
+      // The first run (no keys saved yet): the key form beside the brand panel.
+      grid.className = cx("cx-grid", `mode-${mode}`, mode === "keys" && s.info && !s.info.keys && "is-first-run");
     }
+    if (mode === "connected" && state() === "connected" && !s.counts) loadCounts();
     renderSide();
   }
 
@@ -1429,5 +1630,8 @@ async function mountConnect(el, ctx) {
 
   render(true);
   await loadInfo();
-  return () => stopTimers();
+  return () => {
+    stopTimers();
+    if (stepsObserver) stepsObserver.disconnect();
+  };
 }

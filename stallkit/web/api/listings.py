@@ -878,7 +878,59 @@ def _read_csv(data: bytes) -> list[dict[str, str]]:
     return rows
 
 
+# stallkit.listings words its notes and refusals in English, for the CLI. The ones about
+# weights, sizes and numbers (the refusals sellers meet most: Etsy takes a weight or a
+# size only above 0 and with its unit) get a code and their values here, so the page
+# shows them in the seller's language (listings.json import.warn.* / import.err.*).
+# Anything without a code is shown as it is.
+_SIZE = r"item_length|item_width|item_height"
+_MEASURE_FIELDS = ("item_weight", "item_length", "item_width", "item_height")
+_QUOTED = r"'[^']*'|\"[^\"]*\""
+_NOTE_CODES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"item_weight 0 not sent \(Etsy needs a value above 0\)"), "weight_zero"),
+    (re.compile(rf"(?P<field>{_SIZE}) 0 not sent \(Etsy needs a value above 0\)"), "size_zero"),
+    (re.compile(r"item_weight not sent: item_weight_unit is empty"), "weight_no_unit"),
+    (re.compile(rf"(?P<fields>(?:{_SIZE})(?:, (?:{_SIZE}))*) not sent: item_dimensions_unit is empty"),
+     "size_no_unit"),
+)
+_PROBLEM_CODES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"no updatable fields present in this row"), "nothing_to_update"),
+    (re.compile(rf"(?P<field>[a-z_]+) (?P<value>{_QUOTED}) is ambiguous\b.*", re.S), "comma"),
+    (re.compile(rf"(?P<field>[a-z_]+) must be a number, got (?P<value>{_QUOTED})"), "not_a_number"),
+    (re.compile(r"item_weight_unit must be one of (?P<units>[a-z, ]+)"), "weight_unit"),
+    (re.compile(r"item_dimensions_unit must be one of (?P<units>[a-z, ]+)"), "size_unit"),
+)
+
+
+def _coded(text: str, table: tuple[tuple[re.Pattern[str], str], ...]) -> dict[str, Any]:
+    """One note or refusal as {text, code, params}; code is None when it has none."""
+    code = getattr(text, "code", None)  # a note that already carries its code
+    if code:
+        return {"text": str(text), "code": code, "params": dict(getattr(text, "params", None) or {})}
+    for pattern, name in table:
+        match = pattern.fullmatch(text.strip())
+        if not match:
+            continue
+        params = {k: v for k, v in match.groupdict().items() if v is not None}
+        if "value" in params:
+            params["value"] = params["value"][1:-1]  # repr() quotes
+        if name == "comma":
+            value = params["value"]
+            params.update(dot=value.replace(",", "."), plain=value.replace(",", ""))
+            # "0,250": no thousands separator follows a lone 0, so it is a decimal.
+            if re.fullmatch(r"-?0,\d+", value.strip()):
+                name = "comma_decimal"
+        elif name == "not_a_number" and params.get("field") in _MEASURE_FIELDS:
+            name = "measure_not_a_number"
+            params["unit_field"] = ("item_weight_unit" if params["field"] == "item_weight"
+                                    else "item_dimensions_unit")
+        return {"text": str(text), "code": name, "params": params}
+    return {"text": str(text), "code": None, "params": {}}
+
+
 def _result(result: Any) -> dict[str, Any]:
+    problems = [p for p in (result.message or "").split("; ") if p.strip()] \
+        if result.status == "error" else []
     return {
         "row": result.row,
         "action": result.action,
@@ -886,7 +938,9 @@ def _result(result: Any) -> dict[str, Any]:
         "listing_id": result.listing_id,
         "title": result.title,
         "message": result.message,
-        "warnings": list(result.warnings),
+        # The message's parts (build_payload joins them with "; "), each with its code.
+        "problems": [_coded(p, _PROBLEM_CODES) for p in problems],
+        "warnings": [_coded(w, _NOTE_CODES) for w in result.warnings],
     }
 
 

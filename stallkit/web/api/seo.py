@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import re
 import threading
 import time
@@ -34,6 +35,8 @@ from ..router import ApiError, Request, Response
 if TYPE_CHECKING:  # pragma: no cover
     from ..context import AppContext
     from ..router import Router
+
+log = logging.getLogger("stallkit.web")
 
 STATES = ("active", "draft")
 AUDIT_TTL = 300.0  # seconds an audit is reused unless the page asks for a rescan
@@ -319,32 +322,41 @@ def tag_proposal(tags: list[str]) -> dict[str, Any]:
     return {"keep": keep, "remove": remove, "free_slots": MAX_TAGS - len(keep)}
 
 
-def dedupe_title(title: str, words: list[str] | None = None) -> str:
-    """The title with each stuffed word kept only where it first appears.
+# The title's phrases: the parts between commas (or ; | · and a dash with spaces round
+# it). A hyphen inside a word ("T-Shirt") or an "&" / "/" that joins two words is no
+# boundary, so a phrase is never torn apart.
+_PHRASE_SEP = re.compile(r"(\s*[,;|·]\s*|\s+[-–—]\s+)")
 
-    "Floral Print Poster, Floral Wall Art, Floral Print" -> "Floral Print Poster, Wall Art, Print".
-    Separators left dangling by a removed word are tidied up.
+
+def dedupe_title(title: str) -> tuple[str, list[str]]:
+    """The title without its repeated phrases, and the phrases left out.
+
+    Only a whole phrase goes, and only when every word in it already appears earlier:
+    "Floral Print Poster, Floral Wall Art, Floral Print" -> "Floral Print Poster, Floral
+    Wall Art" (without "Floral Print"). A phrase that adds even one word of its own
+    stays exactly as written, so no phrase loses a word it needs ("Cute Cat Lover Canvas
+    Carryall" keeps its "Cat"). A title that still repeats itself after this is left for
+    the seller to reword.
     """
-    stuffed = set(words if words is not None else repeated_title_words(title))
-    if not stuffed:
-        return title
-    parts = _WORD_SPLIT.split(title)
+    parts = _PHRASE_SEP.split(title)
     seen: set[str] = set()
     out: list[str] = []
-    for index, part in enumerate(parts):
-        if index % 2 == 1:  # a word (the split keeps captured words at odd indexes)
-            low = part.lower()
-            if low in stuffed and low in seen:
-                continue
-            seen.add(low)
-        out.append(part)
+    dropped: list[str] = []
+    for index in range(0, len(parts), 2):  # phrases at even indexes, separators between
+        phrase = parts[index]
+        words = set(seo.content_words(phrase))
+        if out and words and words <= seen:
+            dropped.append(phrase.strip())
+            continue
+        if out:
+            out.append(parts[index - 1])
+        out.append(phrase)
+        seen |= words
+    if not dropped:
+        return title, []
     text = "".join(out)
-    text = re.sub(r"\s+", " ", text)
-    text = re.sub(r"\s+([,.;:!?)])", r"\1", text)
-    text = re.sub(rf"({_SEP})(?:\s*{_SEP})+", r"\1", text)
-    text = re.sub(r"\(\s*\)", "", text)
-    text = re.sub(r"^[\s,.;:|/&+\-–—·]+|[\s,;:|/&+\-–—·]+$", "", text)
-    return re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"[\s,;|·\-–—]+$", "", text)
+    return re.sub(r"\s+", " ", text).strip(), dropped
 
 
 def proposal(listing: dict[str, Any], codes: set[str]) -> dict[str, Any]:
@@ -352,11 +364,6 @@ def proposal(listing: dict[str, Any], codes: set[str]) -> dict[str, Any]:
     title = (listing.get("title") or "").strip()
     tags = tag_proposal(_tags(listing))
     title_fix = None
-    if "title.repetition" in codes:
-        words = repeated_title_words(title)
-        after = dedupe_title(title, words)
-        if after and after != title and len(after) <= MAX_TITLE_LEN:
-            title_fix = {"before": title, "after": after, "words": words}
     manual = [
         code for code in (
             "title.missing", "title.too_short", "title.too_long", "title.front_empty",
@@ -364,6 +371,16 @@ def proposal(listing: dict[str, Any], codes: set[str]) -> dict[str, Any]:
             "description.opening",
         ) if code in codes
     ]
+    if "title.repetition" in codes:
+        # Only whole repeated phrases are offered for removal; words repeated inside
+        # phrases that say something new are the seller's to reword (the dialog links
+        # to the listing).
+        after, dropped = dedupe_title(title)
+        if dropped and after and len(after) <= MAX_TITLE_LEN:
+            title_fix = {"before": title, "after": after, "phrases": dropped,
+                         "words": repeated_title_words(title)}
+        if not title_fix or repeated_title_words(after):
+            manual.insert(0, "title.repetition")
     return {
         **tags,
         "title": title_fix,
@@ -418,6 +435,34 @@ def audit_item(listing: dict[str, Any]) -> dict[str, Any]:
 # --- endpoints ----------------------------------------------------------------------------
 
 
+SEO_NOTE_PREF = "panel_seo_note"  # what the last "tag suggestions" notification said
+NOTE_TITLE_MAX = 80
+
+
+def _note_suggestions(ctx: AppContext, state: str, items: list[dict[str, Any]]) -> None:
+    """After an audit read from Etsy: one Panel note, "SEO: 3 ilan için etiket önerisi",
+    naming the weakest of them. It replaces the previous one, and is not repeated while
+    the audit finds the same."""
+    tagged = [i for i in items if i["fix"]["remove"] or i["fix"]["free_slots"] > 0]
+    if not tagged:
+        return
+    weakest = tagged[0]  # items are sorted weakest first
+    title = weakest["title"] or ""
+    if len(title) > NOTE_TITLE_MAX:
+        title = title[: NOTE_TITLE_MAX - 1].rstrip() + "…"
+    sig = f"{ctx.shop_id}|{state}|{len(tagged)}|{weakest['listing_id']}|{weakest['score']}"
+    try:
+        if ctx.shop_prefs().get(SEO_NOTE_PREF) == sig:
+            return
+        ctx.update_shop_prefs(**{SEO_NOTE_PREF: sig})
+        ctx.notify("panel", "notify.seo_suggest",
+                   {"n": len(tagged), "title": title, "score": weakest["score"],
+                    "listing_id": weakest["listing_id"]},
+                   tone="warning", link="/seo", replace=True)
+    except Exception:  # noqa: BLE001 — a note must never break the audit
+        log.exception("could not note the SEO suggestions")
+
+
 def audit(req: Request) -> dict[str, Any]:
     ctx = req.ctx
     assert ctx is not None
@@ -428,6 +473,8 @@ def audit(req: Request) -> dict[str, Any]:
     items.sort(key=lambda item: (item["score"], item["title"].lower(), item["listing_id"]))
     shop = seo.audit_shop(listings)
     scanned = len(items)
+    if not data["cached"]:
+        _note_suggestions(ctx, state, items)
     return {
         "state": state,
         "items": items,

@@ -7,6 +7,8 @@
     GET  /api/connect/preflight   keys, callback and callback port, before Etsy is opened
     POST /api/connect/start       the same checks, then the callback listener and the job
     POST /api/connect/disconnect  forget this computer's sign-in (token.json)
+    GET  /api/connect/counts      the connected card's shop row: active listings and
+                                  orders to ship (two count requests, cached a minute)
 
 The consent happens on Etsy's own page, in a tab the browser opened for it. Etsy sends
 that tab to the one-shot callback listener (by default
@@ -28,6 +30,7 @@ from ... import auth, shops
 from ...config import DEFAULT_SCOPES, Config, split_credential
 from ...desktop import settings
 from ...errors import AuthError, AuthUnreachable, ConfigError, EtsyApiError, StallKitError
+from ..errors import describe
 from ..jobs import JobCancelled
 from ..router import ApiError, Request
 
@@ -57,17 +60,49 @@ CALLBACK_PREF = "etsy_callback_confirmed"
 # Status states in which Etsy has accepted the saved keys at the last check.
 KEYS_ACCEPTED = ("disconnected", "connected", "reconnect")
 
+COUNT_TTL = 60.0  # the shop row's counts, as long as the Panel keeps its own
+COUNT_ATTEMPTS = 2  # a page read must stay quick: two tries per request
+COUNT_NAMES = ("listings", "to_ship")
+
 # _CallbackHandler.return_url is class state: one connect flow sets it at a time.
 _listener_lock = threading.Lock()
 
 
+class CountCache:
+    """Per-shop cache of the shop row's counts: {(shop_id, name): (read_at, value)}."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._items: dict[tuple[str, str], tuple[float, int]] = {}
+
+    def get(self, shop_id: str, name: str, ttl: float = COUNT_TTL) -> int | None:
+        with self._lock:
+            hit = self._items.get((shop_id, name))
+        if hit is None or time.time() - hit[0] > ttl:
+            return None
+        return hit[1]
+
+    def put(self, shop_id: str, name: str, value: int) -> None:
+        with self._lock:
+            self._items[(shop_id, name)] = (time.time(), value)
+
+    def forget(self, shop_id: str, names: tuple[str, ...]) -> None:
+        with self._lock:
+            for name in names:
+                self._items.pop((shop_id, name), None)
+
+
 def register(r: Router, ctx: AppContext) -> None:
+    counts = CountCache()
+    ctx.on_change("listings", lambda c: counts.forget(c.shop_id, ("listings",)), name="connect")
+    ctx.on_change("orders", lambda c: counts.forget(c.shop_id, ("to_ship",)), name="connect")
     r.get("/api/connect/info", info)
     r.post("/api/connect/keys", save_keys)
     r.post("/api/connect/callback-confirmed", callback_confirmed)
     r.get("/api/connect/preflight", preflight)
     r.post("/api/connect/start", start)
     r.post("/api/connect/disconnect", disconnect)
+    r.get("/api/connect/counts", lambda req: shop_counts(req, counts))
 
 
 def _ctx(req: Request) -> AppContext:
@@ -178,6 +213,47 @@ def info(req: Request) -> dict[str, Any]:
         "shop_name": ctx.anonymise(name) if name else None,
         "job": job.to_dict() if job else None,
     }
+
+
+# --- GET /api/connect/counts -------------------------------------------------------------
+
+
+def _count(client: Any, name: str) -> int:
+    if name == "listings":
+        return int(client.count_listings("active"))
+    # getShopReceipts filters (OAS): paid, not shipped, not cancelled = the orders to ship.
+    return int(client.count_receipts(was_paid=True, was_shipped=False, was_canceled=False))
+
+
+def shop_counts(req: Request, cache: CountCache) -> dict[str, Any]:
+    """Active listings and orders to ship, for the connected card's shop row.
+
+    One limit=1 request each, cached a minute per shop and dropped when this app changes
+    the shop's listings or orders. Each count may fail on its own ({"value": null,
+    "error": {...}}); while the status check finds Etsy unreachable, only what is cached
+    is answered, so the page does not wait for two time-outs.
+    """
+    ctx = _ctx(req)
+    client = ctx.client()  # 409 setup_needed before the shop is connected
+    shop_id = ctx.shop_id
+    offline = ctx.status.get("state") == "offline"
+    out: dict[str, Any] = {}
+    for name in COUNT_NAMES:
+        value = cache.get(shop_id, name, float("inf") if offline else COUNT_TTL)
+        if value is None and offline:
+            out[name] = {"value": None, "error": {"code": "offline", "message": "Etsy is not reachable.",
+                                                  "params": {}}}
+            continue
+        if value is None:
+            try:
+                with client.attempts(COUNT_ATTEMPTS):
+                    value = _count(client, name)
+            except Exception as exc:  # noqa: BLE001 — one count failing must not hide the other
+                out[name] = {"value": None, "error": describe(exc)}
+                continue
+            cache.put(shop_id, name, value)
+        out[name] = {"value": value, "error": None}
+    return out
 
 
 # --- POST /api/connect/callback-confirmed ------------------------------------------------
@@ -489,7 +565,7 @@ def _preflight(ctx: AppContext) -> dict[str, Any]:
 
 
 def preflight(req: Request) -> dict[str, Any]:
-    """What would stop "Bağlan" now, checked before the person is sent to Etsy."""
+    """What would stop "Etsy mağazanı bağla" now, checked before the person is sent to Etsy."""
     return _preflight(_ctx(req))
 
 
@@ -620,15 +696,19 @@ def _connect(
     if name:
         # The real name is stored: the bell and the Panel hide it when they show it,
         # for as long as the hide-names preference is on (also for older notifications).
-        ctx.notify("connect", "notify.connected", {"shop": name}, tone="success",
-                   link="/kurulum/magaza")
+        note = ctx.notify("connect", "notify.connected", {"shop": name}, tone="success",
+                          link="/kurulum/magaza")
     else:
-        ctx.notify("connect", "notify.connected_plain", tone="success", link="/kurulum/magaza")
+        note = ctx.notify("connect", "notify.connected_plain", tone="success",
+                          link="/kurulum/magaza")
     _phase(job, "done", 4)
     return {
         "shop_name": shown,
         "scopes": list(token.scopes),
         "missing_scopes": list(token.missing_scopes(config.scopes)),
+        # For the bell's sake: the page that watched the connect end marks it read (the
+        # card turning into "Mağaza bağlandı" said it already); on any other page it stays.
+        "notification": note.get("id"),
     }
 
 

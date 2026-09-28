@@ -3,8 +3,9 @@
 //
 // Server: GET /api/orders, /api/orders/summary, /api/orders/carriers,
 // POST /api/orders/country, /api/orders/ship, /api/orders/export.csv,
-// /api/orders/import-tracking. The ship job is kind "orders"; each row it finishes
-// arrives as a job-event of type "row".
+// /api/orders/import-tracking, GET/POST /api/orders/drafts (the carriers and numbers
+// not sent yet). The ship job is kind "orders"; each row it finishes arrives as a
+// job-event of type "row".
 
 import {
   badge,
@@ -13,12 +14,13 @@ import {
   cx,
   emptyState,
   h,
+  iconButton,
   infoNote,
   menu,
   mount,
   pagination,
+  progressBar,
   searchInput,
-  spinner,
   table,
   tabs,
   thumb,
@@ -36,6 +38,21 @@ const COUNTRIES = ["TR", "US", "GB", "CA", "AU", "DE", "FR", "NL", "IT", "ES", "
   "SE", "DK", "FI", "NO", "PT", "GR", "UA", "IN", "JP", "MX", "NZ"];
 const ROW_H = 57;
 const CONFIRM_PREVIEW = 8;
+// A row Etsy just accepted flashes and its badge flips to "Kargoda" (t280's upload).
+const FLIP_MS = 450;
+// "Select all" ticks the rows top to bottom: the video's eight rows in 0.4 s, each box
+// in 150 ms (orders.css o-tick-*).
+const TICK_SPAN_MS = 400;
+const TICK_STEP_MS = 45;
+const TICK_MS = 150;
+// The upload pill shows its Stop control once a send has run this long: a short send
+// looks like the video, a long one can still be stopped.
+const STOP_AFTER_MS = 1500;
+// Numbers typed or imported but not sent are saved this long after the last change.
+const DRAFT_SAVE_MS = 600;
+const MAX_DRAFTS = 500; // the server's SHIP_MAX_ROWS
+// Rows read per request when the whole waiting list is selected (the server's maximum).
+const WAITING_PAGE = 100;
 // What each ship job this tab started sends (job id -> [{receipt_id, carrier_name,
 // tracking_code}]). A job waiting behind another one (a long Tasarım Yükle run) has no
 // state on the server until it starts, so a page that comes back meanwhile takes its rows
@@ -73,6 +90,14 @@ function shortTitle(title) {
   const text = String(title || "");
   const first = text.split(/\s*[,|]\s*|\s+[-–—]\s+/)[0];
   return first.length >= 8 ? first : text;
+}
+
+function reducedMotion() {
+  try {
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  } catch {
+    return false;
+  }
 }
 
 function today() {
@@ -122,7 +147,18 @@ export default {
       loadSeq: 0,
       setup: false,
       waiting: null, // every receipt id of the waiting list, in order (from the last full read)
+      knowing: null, // the read of waiting rows not loaded yet (after "select all"), while it runs
+      posting: false, // the ship request is on its way
+      flipAt: new Map(), // receipt_id -> when Etsy accepted it on this page (performance.now())
+      tickAt: null, // when "select all" started its cascade (performance.now())
+      tickIds: new Set(), // the rows that cascade
+      jobSeenAt: 0, // when this page first saw the running send (Date.now())
+      stopTimer: null,
+      stopFor: null, // the send whose Stop control is showing
+      draftsLoad: null, // the saved carriers and numbers, read once
     };
+    // Unsent carriers and numbers, saved in the shop's home (POST /api/orders/drafts).
+    const drafts = { timer: null, saving: null, failed: false, version: 0, saved: 0 };
 
     // --------------------------------------------------------------- setup gate
 
@@ -194,13 +230,37 @@ export default {
     const inFlight = (id) => !!S.job && S.jobIds.includes(id) && !S.results.has(id);
 
     function isReady(id) {
+      // Sent from this page, or being sent: never offered again, loaded or not.
+      const r = S.results.get(id);
+      if ((r && r.status === "ok") || inFlight(id)) return false;
       const row = S.known.get(id);
       if (row && !isEditable(row)) return false;
       const carrier = carrierFor(id);
       return !!trackingFor(id) && !!carrier && carrierKnown(carrier);
     }
 
-    const readyIds = () => [...S.selected].filter((id) => isReady(id));
+    /** Ticked orders that are not uploaded yet (an uploaded one keeps its tick, t280). */
+    const freshSelectedIds = () =>
+      [...S.selected].filter((id) => {
+        const r = S.results.get(id);
+        return !(r && r.status === "ok");
+      });
+    const freshSelected = () => freshSelectedIds().length;
+
+    /** Waiting orders with a carrier and a number that are not sent yet, in list order. */
+    function allReadyIds() {
+      if (S.waiting) return S.waiting.filter((id) => S.edits.has(id) && isReady(id));
+      return [...S.edits.keys()].filter((id) => isReady(id));
+    }
+
+    /** What the upload button sends (the video's "Takip numaralarını yükle (24)"): the
+     *  ticked orders that are ready or, with nothing ticked, every ready waiting order
+     *  (`tick`: those get ticked when the button is pressed). */
+    function sendPlan() {
+      const picked = freshSelectedIds();
+      if (picked.length) return { ids: picked.filter((id) => isReady(id)), tick: false };
+      return { ids: allReadyIds(), tick: true };
+    }
 
     function regionName(code) {
       try {
@@ -220,56 +280,54 @@ export default {
 
     // --------------------------------------------------------------- header
 
+    // "Takip numaralarını yükle (n)" (sendPlan). Always in full colour, as in the video:
+    // with nothing ready it opens the CSV picker; while Etsy works it only says so
+    // (aria-disabled), and the pill by the search box shows how far the upload is.
     const sendBtn = button({
-      label: t("send"),
-      icon: "send",
+      label: t("send.none"),
+      icon: "truck",
       variant: "primary",
-      disabled: true,
+      class: "o-send",
       onClick: () => send(),
     });
-    const stopBtn = button({ label: t("send.stop"), icon: "stop", variant: "ghost", onClick: () => stopJob() });
-    stopBtn.hidden = true;
+    // "CSV içe aktar": the video's ghost button, it imports at once. The rest (export,
+    // refresh, Etsy's own order page, the ship-from country) is the ⋯ menu in the footer.
     const csvBtn = button({
       label: t("csv.button"),
       icon: "file",
-      iconRight: "chevron-down",
-      variant: "secondary",
+      variant: "ghost",
+      title: t("csv.import"),
+      class: "o-csv",
+      onClick: () => fileInput.click(),
+    });
+    ctx.setHeader({ actions: [csvBtn, sendBtn] });
+    const moreBtn = iconButton({
+      icon: "more",
+      variant: "ghost",
+      size: "sm",
+      title: t("csv.more"),
+      class: "o-more-btn",
       onClick: () => openCsvMenu(),
     });
-    ctx.setHeader({ actions: [stopBtn, csvBtn, sendBtn] });
+    moreBtn.setAttribute("aria-haspopup", "menu");
 
-    /** Tracking numbers typed on this page that are neither sent nor being sent. */
-    function unsentCount() {
-      let n = 0;
-      for (const id of S.edits.keys()) {
-        if (!trackingFor(id) || inFlight(id)) continue;
-        const r = S.results.get(id);
-        if (r && r.status === "ok") continue;
-        const row = S.known.get(id);
-        if (row && row.status !== "unshipped") continue;
-        n += 1;
-      }
-      return n;
-    }
+    const jobTotal = () => {
+      const p = (S.job && S.job.progress) || {};
+      return p.total || S.jobIds.length || (S.job && S.job.params && S.job.params.n) || 0;
+    };
 
     function syncSend() {
-      ctx.setDirty(unsentCount() > 0);
-      if (S.job) {
-        const p = S.job.progress || {};
-        const total = p.total || S.jobIds.length || (S.job.params && S.job.params.n) || "?";
-        sendBtn.setLabel(t("send.progress", { done: p.done || 0, total }));
-        sendBtn.setCount(null);
-        sendBtn.setLoading(true);
-        stopBtn.hidden = !S.job.cancellable;
-        return;
-      }
-      stopBtn.hidden = true;
-      sendBtn.setLoading(false);
-      sendBtn.setLabel(t("send"));
-      const n = readyIds().length;
-      sendBtn.setCount(n > 0 ? n : null);
-      sendBtn.setDisabled(n === 0);
-      sendBtn.title = n ? "" : t("send.hint");
+      syncDirty();
+      csvBtn.setDisabled(!!S.job);
+      const busy = !!S.job || S.posting;
+      // During a send the button keeps the number being sent; afterwards it counts what
+      // is still ready (never the rows just sent: they are not ready any more).
+      const n = S.job ? jobTotal() : sendPlan().ids.length;
+      sendBtn.setLabel(n ? t("send", { n }) : t("send.none"));
+      if (busy) sendBtn.setAttribute("aria-disabled", "true");
+      else sendBtn.removeAttribute("aria-disabled");
+      sendBtn.title = busy ? t("uploading") : n ? "" : t("send.hint");
+      renderSlot();
     }
 
     function updateSubtitle() {
@@ -311,41 +369,21 @@ export default {
         S.page = 1;
         ctx.setQuery({ tab: id === "unshipped" ? null : id, page: null });
         tabsC.update(tabItems());
-        syncCountry();
         load();
       },
     });
 
-    // The ship-from country decides Etsy's carrier list: a quiet button, a menu of countries.
-    const countryBtn = button({
-      label: "",
-      icon: "globe",
-      iconRight: "chevron-down",
-      variant: "ghost",
-      size: "sm",
-      class: "o-country",
-      onClick: () => openCountryMenu(),
-    });
-    countryBtn.hidden = true;
-
+    // The ship-from country decides Etsy's carrier list. It sits in the ⋯ menu (the
+    // video's toolbar holds only the tabs, the status pill and the search box).
     const countryLabel = (code) => {
       const name = regionName(code);
       return name.length <= 14 ? name : code;
     };
 
-    function syncCountry() {
-      const code = S.carriers && S.carriers.country;
-      countryBtn.hidden = !code || !(S.tab === "unshipped" || S.tab === "all");
-      if (!code) return;
-      countryBtn.setLabel([h("span", { class: "o-country-prefix" }, `${t("country.prefix")} `), countryLabel(code)]);
-      countryBtn.title = `${t("country.label")}: ${regionName(code)}`;
-      countryBtn.setAttribute("aria-label", countryBtn.title);
-    }
-
     function openCountryMenu() {
       const current = S.carriers && S.carriers.country;
       menu(
-        countryBtn,
+        moreBtn,
         [
           { header: t("country.label") },
           ...countryOptions(current).map((o) => ({
@@ -357,12 +395,77 @@ export default {
             },
           })),
         ],
-        { placement: "bottom-start", width: 280, class: "o-country-menu" },
+        { placement: "top-end", width: 280, class: "o-country-menu" },
       );
     }
 
-    const doneEl = h("div", { class: "o-done", role: "status" });
-    doneEl.hidden = true;
+    // The pill left of the search box (t280): "✓ 12 sipariş seçili" while orders are
+    // ticked, the upload's progress while Etsy works, "12/12 takip numarası Etsy'ye
+    // yüklendi" once it is done.
+    const slotEl = h("div", { class: "o-pill", role: "status" });
+    slotEl.hidden = true;
+    let slotMode = "";
+    const upBar = progressBar({ value: 0, max: 1, label: t("uploading") });
+    const upCount = h("span", { class: "o-pill-count num", "aria-hidden": "true" });
+    const upStop = iconButton({ icon: "stop", title: t("send.stop"), variant: "ghost", size: "sm", class: "o-pill-stop", onClick: () => stopJob() });
+    const upNodes = [
+      h("span", { class: "o-pill-spin" }, icon("refresh", { size: 15, strokeWidth: 2.2 })),
+      h("span", { class: "o-pill-text" }, t("uploading")),
+      upBar.el,
+      upCount,
+      upStop,
+    ];
+
+    /** How long the send has been running, in ms (from the server's start time when known). */
+    function jobAge() {
+      if (!S.job) return 0;
+      const started = S.job.started_at ? S.job.started_at * 1000 : S.jobSeenAt || Date.now();
+      return Date.now() - started;
+    }
+
+    /** Stop is the only way to call off a send (Etsy e-mails each buyer as it goes): it
+     *  shows once the send has run STOP_AFTER_MS, and stays. */
+    function stopShown() {
+      if (!S.job || !S.job.cancellable) return false;
+      if (S.stopFor === S.job.id) return true; // once shown, it stays (a queued send starting)
+      const wait = STOP_AFTER_MS - jobAge();
+      if (wait <= 0) {
+        S.stopFor = S.job.id;
+        return true;
+      }
+      if (!S.stopTimer) {
+        S.stopTimer = setTimeout(() => {
+          S.stopTimer = null;
+          if (ctx.isActive() && S.job) renderSlot();
+        }, wait + 20);
+      }
+      return false;
+    }
+
+    function renderSlot() {
+      const done = S.lastDone;
+      const picked = freshSelected();
+      let mode = "";
+      if (S.job) mode = "progress";
+      else if (picked > 0) mode = "selected";
+      else if (done && done.sent > 0) mode = done.sent < done.total ? "partial" : "done";
+      slotEl.hidden = !mode;
+      const stop = mode === "progress" && stopShown();
+      slotEl.className = cx("o-pill", mode && `is-${mode}`, stop && "has-stop");
+      if (mode === "progress") {
+        const p = S.job.progress || {};
+        const total = jobTotal();
+        upBar.update(p.done || 0, total || 1);
+        upCount.textContent = `${p.done || 0}/${total || "?"}`;
+        upStop.hidden = !stop;
+        if (slotMode !== mode) mount(slotEl, upNodes); // kept, so the icon keeps turning
+      } else if (mode === "selected") {
+        mount(slotEl, icon("check", { size: 15, strokeWidth: 2.4 }), h("span", null, t("selected", { n: picked })));
+      } else if (mode) {
+        mount(slotEl, icon("check", { size: 15, strokeWidth: 2.4 }), h("span", null, t("banner.done", { sent: done.sent, total: done.total })));
+      } else mount(slotEl);
+      slotMode = mode;
+    }
 
     const search = searchInput({
       placeholder: t("search"),
@@ -377,7 +480,7 @@ export default {
       },
     });
 
-    const bar = h("div", { class: "o-bar" }, tabsC.el, countryBtn, h("div", { class: "spacer" }), doneEl, search);
+    const bar = h("div", { class: "o-bar" }, tabsC.el, h("div", { class: "spacer" }), slotEl, search);
     const alerts = h("div", { class: "o-alerts" });
 
     // --------------------------------------------------------------- table
@@ -404,7 +507,9 @@ export default {
     function renderProduct(row) {
       const first = row.items[0];
       if (!first) return h("span", { class: "muted" }, "–");
-      const parts = first.variations.map((v) => v.value || v.name).filter(Boolean);
+      // "Kupa · 11oz", "Bez Çanta": the kind of product, then its variation.
+      const kind = first.type && first.type !== "other" && t.has(`type.${first.type}`) ? t(`type.${first.type}`) : "";
+      const parts = [kind, ...first.variations.map((v) => v.value || v.name)].filter(Boolean);
       if (first.quantity > 1) parts.push(t("qty", { n: first.quantity }));
       const more = row.items.length - 1;
       const sub =
@@ -444,8 +549,10 @@ export default {
     }
 
     function carrierWrapClass(wrap, value) {
-      wrap.className = cx("o-carrier", "is-edit", !value && "is-empty", value && !carrierKnown(value) && "is-bad");
-      wrap.title = value && !carrierKnown(value) ? t("carrier.unknown", { name: value }) : value || t("carrier.placeholder");
+      const bad = value && !carrierKnown(value);
+      const country = S.carriers && S.carriers.country ? regionName(S.carriers.country) : "";
+      wrap.className = cx("o-carrier", "is-edit", !value && "is-empty", bad && "is-bad");
+      wrap.title = bad ? t("carrier.unknown", { name: value, country }) : value === OTHER ? t("carrier.other") : value || t("carrier.placeholder");
     }
 
     function carrierOptions(value) {
@@ -482,6 +589,7 @@ export default {
           refreshDefaultCarriers();
         }
         if (trackingFor(id)) ensureSelected(sel, id);
+        saveDraftsSoon();
         syncSend();
       });
       return wrap;
@@ -504,7 +612,7 @@ export default {
       const id = row.receipt_id;
       if (!isEditable(row)) {
         const s = lastShipment(row);
-        if (!s || !s.tracking_code) return h("span", { class: "muted" }, "–");
+        if (!s || !s.tracking_code) return h("span", { class: "muted o-track-none" }, "–");
         return h(
           "span",
           { class: "o-track", title: s.tracking_code },
@@ -528,6 +636,7 @@ export default {
         S.edits.set(id, { ...(S.edits.get(id) || {}), tracking_code: input.value });
         clearResult(id);
         if (input.value.trim()) ensureSelected(input, id);
+        saveDraftsSoon();
         syncSend();
       });
       input.addEventListener("keydown", (e) => {
@@ -543,13 +652,9 @@ export default {
 
     function statusBadge(row) {
       const id = row.receipt_id;
-      const r = S.results.get(id);
-      if (inFlight(id)) {
-        const sending = S.jobIds.find((x) => !S.results.has(x)) === id && S.job.status === "running";
-        return sending
-          ? h("span", { class: "badge tone-accent o-sending" }, spinner({ size: 11 }), h("span", null, t("status.sending")))
-          : badge({ text: t("status.queued"), tone: "muted" });
-      }
+      // A row waiting its turn keeps "Hazırlanıyor" until Etsy takes it (the pill shows
+      // the progress); then it flips to "Kargoda ✓".
+      const r = inFlight(id) ? null : S.results.get(id);
       if (r && r.status === "error") {
         return badge({ text: t("status.error"), tone: "danger", icon: "alert", title: rowErrorText(r) });
       }
@@ -598,15 +703,73 @@ export default {
       if (tr) tr.classList.remove("is-error");
     }
 
-    /** Tick a row's checkbox the way a click would (no re-render: the input keeps focus). */
+    /** Tick a row's checkbox the way a click would (no re-render: the input keeps focus).
+     *  Only while some orders are ticked: with none, every ready order is sent anyway. */
     function ensureSelected(node, id) {
-      if (S.selected.has(id)) return;
+      if (S.selected.has(id) || !freshSelected()) return;
       const tr = node.closest("tr");
       const cb = tr && tr.querySelector("td.tbl-check input.checkbox");
       if (cb && !cb.checked) {
         cb.checked = true;
         cb.dispatchEvent(new Event("change"));
       }
+    }
+
+    /** Still flipping to "Kargoda" (and forgets flips that are over). */
+    function isFlipping(id, now) {
+      const at = S.flipAt.get(id);
+      if (at === undefined) return false;
+      if (now - at < FLIP_MS) return true;
+      S.flipAt.delete(id);
+      return false;
+    }
+
+    /** Job events re-render the rows several times a second: a flipping row carries on
+     *  where its animation was (a negative delay) instead of starting over. The same
+     *  goes for the "select all" cascade (--tick-delay). */
+    function syncFlips() {
+      const now = performance.now();
+      for (const tr of tbl.el.querySelectorAll("tbody tr.is-flipping")) {
+        const row = S.rows[Number(tr.dataset.index)];
+        const at = row ? S.flipAt.get(row.receipt_id) : undefined;
+        if (at !== undefined) tr.style.setProperty("--flip-delay", `${Math.round(at - now)}ms`);
+      }
+      if (S.tickAt === null) return;
+      const step = tickStep();
+      for (const tr of tbl.el.querySelectorAll("tbody tr.is-cascade")) {
+        const i = Number(tr.dataset.index) || 0;
+        tr.style.setProperty("--tick-delay", `${Math.round(i * step - (now - S.tickAt))}ms`);
+      }
+    }
+
+    /** The gap between two rows of the cascade: 0.4 s for the whole page. */
+    const tickStep = () => Math.min(TICK_STEP_MS, TICK_SPAN_MS / Math.max(1, S.rows.length));
+
+    /** Still ticking in the "select all" cascade (and forgets a cascade that is over). */
+    function isCascading(id, now) {
+      if (S.tickAt === null) return false;
+      if (now - S.tickAt >= TICK_SPAN_MS + TICK_MS + 50) {
+        S.tickAt = null;
+        S.tickIds = new Set();
+        return false;
+      }
+      return S.tickIds.has(id);
+    }
+
+    /** Tick these orders, the ones on this page one after another (the video's cascade). */
+    function tickRows(ids) {
+      const next = new Set(S.selected);
+      const fresh = ids.filter((id) => !next.has(id));
+      for (const id of ids) next.add(id);
+      S.selected = next;
+      if (fresh.length && !reducedMotion()) {
+        S.tickAt = performance.now();
+        S.tickIds = new Set(fresh);
+      }
+      tbl.update(undefined, S.selected);
+      syncFlips();
+      syncHeadCheck();
+      syncSend();
     }
 
     const emptyHost = h("div", { class: "o-empty" });
@@ -617,7 +780,7 @@ export default {
         { key: "product", label: t("col.product"), render: renderProduct },
         { key: "total", label: t("col.total"), width: 108, align: "right", render: renderTotal },
         { key: "carrier", label: t("col.carrier"), width: 131, render: renderCarrier, class: "o-td-carrier" },
-        { key: "tracking", label: t("col.tracking"), width: 206, render: renderTracking, class: "o-td-tracking" },
+        { key: "tracking", label: t("col.tracking"), width: 206, render: renderTracking, class: "o-td-tracking", headerClass: "o-th-tracking" },
         { key: "status", label: t("col.status"), width: 160, render: renderStatus },
       ],
       rows: [],
@@ -632,13 +795,93 @@ export default {
       class: "o-table",
       rowClass: (row) => {
         const r = S.results.get(row.receipt_id);
-        return cx(r && r.status === "error" && "is-error", !isEditable(row) && "is-done");
+        const now = performance.now();
+        return cx(
+          r && r.status === "error" && "is-error",
+          !isEditable(row) && "is-done",
+          isFlipping(row.receipt_id, now) && "is-flipping",
+          isCascading(row.receipt_id, now) && "is-cascade",
+        );
       },
       onSelectionChange: (sel) => {
         S.selected = sel;
+        syncHeadCheck();
         syncSend();
       },
     });
+
+    // On the waiting list the header checkbox ticks every waiting order, on every page
+    // (t280: "select all, upload"). table() would tick only the rows on screen, so its
+    // change is caught on the way down; other tabs and searches keep the per-page tick.
+    const wholeList = () => S.tab === "unshipped" && !S.q && Array.isArray(S.waiting) && S.waiting.length > 0;
+    tbl.el.addEventListener(
+      "change",
+      (e) => {
+        if (!e.target.matches("thead input.checkbox") || !wholeList()) return;
+        e.stopPropagation();
+        selectWaiting(e.target.checked);
+      },
+      true,
+    );
+
+    function selectWaiting(on) {
+      if (on) {
+        tickRows(S.waiting);
+        knowWaiting();
+        return;
+      }
+      const next = new Set(S.selected);
+      for (const id of S.waiting) next.delete(id);
+      S.selected = next;
+      S.tickAt = null;
+      S.tickIds = new Set();
+      tbl.update(undefined, S.selected);
+      syncFlips();
+      syncHeadCheck();
+      syncSend();
+    }
+
+    /** The header checkbox against the whole waiting list: ticked, part (–) or empty. */
+    function syncHeadCheck() {
+      const head = tbl.el.querySelector("thead input.checkbox");
+      if (!head || !wholeList()) return;
+      const n = S.waiting.filter((id) => S.selected.has(id)).length;
+      head.checked = n > 0 && n === S.waiting.length;
+      head.indeterminate = n > 0 && n < S.waiting.length;
+      head.disabled = false;
+    }
+
+    function remember(row) {
+      const r = S.results.get(row.receipt_id);
+      if (r && r.status === "ok") markShipped(row, r);
+      S.known.set(row.receipt_id, row);
+    }
+
+    /** Read the waiting orders not loaded yet (other pages), so the send guard and the
+     *  confirm list know them. The list is cached on the server: no extra Etsy call. */
+    function knowWaiting() {
+      if (S.knowing) return S.knowing;
+      const waiting = S.waiting || [];
+      const pages = new Set();
+      waiting.forEach((id, i) => {
+        if (!S.known.has(id)) pages.add(Math.floor(i / WAITING_PAGE) + 1);
+      });
+      if (!pages.size) return Promise.resolve();
+      S.knowing = (async () => {
+        try {
+          for (const page of pages) {
+            const data = await ctx.api.get("/api/orders", { tab: "unshipped", per_page: WAITING_PAGE, page }, { signal: ctx.signal });
+            for (const row of data.rows || []) if (!S.known.has(row.receipt_id)) remember(row);
+          }
+        } catch (err) {
+          if (!ctx.api.isAbort(err) && !(err instanceof ctx.api.ApiError)) console.warn("[orders] waiting", err);
+        } finally {
+          S.knowing = null;
+        }
+        if (ctx.isActive()) syncSend();
+      })();
+      return S.knowing;
+    }
 
     const rangeEl = h("span", { class: "o-range" });
     const pag = pagination({
@@ -650,7 +893,9 @@ export default {
         load();
       },
     });
-    const foot = h("div", { class: "o-foot" }, rangeEl, h("div", { class: "spacer" }), pag);
+    // The footer stays while the list loads, is empty or failed: its ⋯ menu holds
+    // "Listeyi yenile" and the Etsy link, needed most then. Only the range and pages go.
+    const foot = h("div", { class: "o-foot" }, rangeEl, h("div", { class: "spacer" }), moreBtn, pag);
     const tableHost = h("div", { class: "o-table-host" }, tbl.el);
     const tableCard = card({ pad: false, class: "o-card", body: [tableHost, foot] });
     const note = h("p", { class: "o-note" }, icon("info", { size: 14 }), h("span", null, t("note")));
@@ -681,6 +926,8 @@ export default {
     function renderRows() {
       setEmpty();
       tbl.update(S.rows, S.selected);
+      syncFlips();
+      syncHeadCheck();
       const d = S.data;
       if (d && d.total > 0) {
         const from = (d.page - 1) * d.per_page + 1;
@@ -689,7 +936,7 @@ export default {
         if (d.truncated && d.q) parts.push(" · ", t("range.truncated", { n: d.scanned }));
         mount(rangeEl, parts);
       } else mount(rangeEl);
-      foot.hidden = !d || d.total === 0;
+      rangeEl.hidden = !d || d.total === 0;
       pag.hidden = !d || d.pages <= 1;
       if (d) pag.update(d.page, d.pages);
       tabsC.update(tabItems());
@@ -711,16 +958,13 @@ export default {
           }),
         ),
       );
-      foot.hidden = true;
+      rangeEl.hidden = true;
+      pag.hidden = true;
     }
 
     function renderBanner() {
       const done = S.lastDone;
-      if (done && done.sent > 0) {
-        doneEl.className = cx("o-done", done.sent < done.total && "is-partial");
-        mount(doneEl, icon("check", { size: 15, strokeWidth: 2.4 }), h("span", null, t("banner.done", { sent: done.sent, total: done.total })));
-        doneEl.hidden = false;
-      } else doneEl.hidden = true;
+      renderSlot();
       const restricted = (S.summary && S.summary.tracking_restricted) || (done && done.restricted);
       mount(
         alerts,
@@ -746,7 +990,8 @@ export default {
       const seq = ++S.loadSeq;
       if (!tableHost.contains(tbl.el)) mount(tableHost, tbl.el);
       tbl.update(null);
-      foot.hidden = true;
+      rangeEl.hidden = true;
+      pag.hidden = true;
       try {
         const data = await ctx.api.get(
           "/api/orders",
@@ -760,14 +1005,15 @@ export default {
           load();
           return;
         }
+        if (data.tab === "unshipped" && !data.q && Array.isArray(data.ids)) S.waiting = data.ids;
+        for (const row of data.rows) remember(row);
+        // The carriers and numbers saved last time, before the first rows show (asked
+        // after the list, so the server checks them against the waiting list it read).
+        if (!S.draftsLoad) S.draftsLoad = loadDrafts();
+        await S.draftsLoad;
+        if (seq !== S.loadSeq) return;
         S.data = data;
         S.rows = data.rows;
-        if (data.tab === "unshipped" && !data.q && Array.isArray(data.ids)) S.waiting = data.ids;
-        for (const row of data.rows) {
-          const r = S.results.get(row.receipt_id);
-          if (r && r.status === "ok") markShipped(row, r);
-          S.known.set(row.receipt_id, row);
-        }
         renderRows();
       } catch (err) {
         if (ctx.api.isAbort(err) || seq !== S.loadSeq) return;
@@ -795,7 +1041,6 @@ export default {
       S.carriers = { ...c, carriers: c.carriers || [] };
       const last = canonicalCarrier(c.last_carrier || "");
       if (changedCountry || !S.defaultCarrier || !carrierKnown(S.defaultCarrier)) S.defaultCarrier = last;
-      syncCountry();
       if (S.data) renderRows();
     }
 
@@ -809,13 +1054,120 @@ export default {
     }
 
     async function changeCountry(code) {
-      countryBtn.setLoading(true);
+      moreBtn.disabled = true;
+      moreBtn.setAttribute("aria-busy", "true");
       try {
         applyCarriers(await ctx.api.post("/api/orders/country", { country: code }, { signal: ctx.signal }), true);
       } catch (err) {
         if (!ctx.api.isAbort(err)) ctx.toast({ tone: "danger", title: ctx.api.errorText(err, t) });
       } finally {
-        countryBtn.setLoading(false);
+        moreBtn.disabled = false;
+        moreBtn.removeAttribute("aria-busy");
+      }
+    }
+
+    // --------------------------------------------------------------- drafts
+    //
+    // Carriers and numbers typed or imported but not sent yet are kept in the shop's home
+    // (GET/POST /api/orders/drafts): the page opens again the way it was left, like the
+    // video's rows with their carrier and number in place. Saved DRAFT_SAVE_MS after the
+    // last change; leaving asks only while a save is pending or has failed.
+
+    async function loadDrafts() {
+      try {
+        const res = await ctx.api.get("/api/orders/drafts", null, { signal: ctx.signal });
+        let added = 0;
+        for (const d of res.rows || []) {
+          const id = Number(d.receipt_id);
+          if (!Number.isInteger(id) || id <= 0 || S.edits.has(id) || S.results.has(id)) continue;
+          S.edits.set(id, { carrier_name: d.carrier_name || "", tracking_code: d.tracking_code || "", note_to_buyer: d.note_to_buyer || "" });
+          added += 1;
+        }
+        // Not ticked: the video's rows start with their numbers in and no ticks.
+        if (added && S.data && ctx.isActive()) renderRows();
+      } catch (err) {
+        if (!ctx.api.isAbort(err) && !(err instanceof ctx.api.ApiError)) console.warn("[orders] drafts", err);
+      }
+    }
+
+    /** The unsent carriers and numbers of waiting orders, as the server keeps them. */
+    function draftRows() {
+      const rows = [];
+      for (const [id, e] of S.edits) {
+        if (!e) continue;
+        const r = S.results.get(id);
+        if (r && r.status === "ok") continue;
+        const row = S.known.get(id);
+        if (row && row.status !== "unshipped") continue;
+        const tracking = String(e.tracking_code || "").trim();
+        const carrier = String(e.carrier_name || "").trim();
+        if (!tracking && !carrier) continue;
+        rows.push({ receipt_id: id, carrier_name: carrier, tracking_code: tracking, note_to_buyer: e.note_to_buyer || "" });
+      }
+      return rows.slice(-MAX_DRAFTS);
+    }
+
+    const draftsPending = () => !!drafts.timer || !!drafts.saving || drafts.failed;
+
+    /** A save pending or failed: closing or reloading the tab asks first. */
+    function syncDirty() {
+      ctx.setDirty(draftsPending());
+    }
+
+    function saveDraftsSoon() {
+      drafts.version += 1;
+      clearTimeout(drafts.timer);
+      drafts.timer = setTimeout(() => {
+        drafts.timer = null;
+        flushDrafts();
+      }, DRAFT_SAVE_MS);
+      syncDirty();
+    }
+
+    /** Save now; resolves true once what is on the page is saved. */
+    async function flushDrafts() {
+      clearTimeout(drafts.timer);
+      drafts.timer = null;
+      while (drafts.saving) await drafts.saving;
+      if (drafts.saved === drafts.version && !drafts.failed) return true;
+      const version = drafts.version;
+      const wasFailing = drafts.failed;
+      // No ctx.signal: a save started just before leaving must still arrive.
+      drafts.saving = ctx.api
+        .post("/api/orders/drafts", { rows: draftRows() })
+        .then(() => {
+          drafts.saved = Math.max(drafts.saved, version);
+          drafts.failed = false;
+        })
+        .catch((err) => {
+          drafts.failed = true;
+          if (!wasFailing && ctx.isActive()) {
+            ctx.toast({ tone: "warning", title: t("drafts.failed"), message: ctx.api.errorText(err, t), timeout: 8000 });
+          }
+        })
+        .finally(() => {
+          drafts.saving = null;
+          if (ctx.isActive()) syncDirty();
+        });
+      await drafts.saving;
+      return !drafts.failed && drafts.saved === drafts.version;
+    }
+
+    /** The tab is going away with a save pending: send it anyway (keepalive). */
+    function flushDraftsOnExit() {
+      if (!drafts.timer && !drafts.failed) return;
+      clearTimeout(drafts.timer);
+      drafts.timer = null;
+      try {
+        fetch("/api/orders/drafts", {
+          method: "POST",
+          keepalive: true,
+          credentials: "same-origin",
+          headers: { "X-Stallkit": "1", "Content-Type": "application/json" },
+          body: JSON.stringify({ rows: draftRows() }),
+        }).catch(() => {});
+      } catch {
+        /* the page is closing: nothing more to do */
       }
     }
 
@@ -826,15 +1178,18 @@ export default {
       row.shipments = r.shipments && r.shipments.length ? r.shipments : [{ carrier_name: r.carrier_name, tracking_code: r.tracking_code }];
     }
 
-    function applyResult(r) {
+    /** One row's answer from the ship job; `live` when it just arrived (it flips). */
+    function applyResult(r, live = false) {
       if (!r || r.receipt_id === undefined) return;
       S.results.set(r.receipt_id, r);
       const row = S.known.get(r.receipt_id);
       if (row && r.status === "ok") markShipped(row, r);
+      if (live && r.status === "ok") S.flipAt.set(r.receipt_id, performance.now());
     }
 
     function attachJob(job, ids) {
       S.job = job;
+      S.jobSeenAt = Date.now();
       if (ids) S.jobIds = ids;
       syncSend();
       if (S.data) renderRows();
@@ -856,6 +1211,8 @@ export default {
       for (const r of (full.result && full.result.rows) || state.rows || []) applyResult(r);
       S.job = null;
       S.jobIds = [];
+      clearTimeout(S.stopTimer);
+      S.stopTimer = null;
       const res = full.result;
       if (full.status === "done" && res) {
         S.lastDone = res;
@@ -877,12 +1234,14 @@ export default {
       if (res.restricted) {
         ctx.toast({ tone: "warning", title: t("done.restricted"), message: t("errors.tracking_restricted"), timeout: 9000 });
       } else if (res.sent > 0 && !res.failed) {
-        ctx.toast({
+        const note = ctx.toast({
           tone: "success",
           title: t("done.title", { n: res.sent }),
           message: [`${t("done.msg")} · ${relative(Date.now())}`, skippedMsg].filter(Boolean).join(" "),
           timeout: 8000,
         });
+        // The video's wider card with the haloed mint check (styled in orders.css).
+        if (note && note.el) note.el.classList.add("o-toast-lg");
       } else if (res.sent > 0) {
         ctx.toast({ tone: "warning", title: t("done.partial", { sent: res.sent, failed: res.failed }), message: t("done.partial_msg"), timeout: 9000 });
       } else {
@@ -891,12 +1250,13 @@ export default {
       }
     }
 
-    // Typed numbers live only on this page: leaving (a link, Back, a shop switch, a
-    // language change) asks first, and syncSend() keeps the reload/close prompt current.
-    ctx.onBeforeLeave(() => {
-      const n = unsentCount();
+    // Typed numbers are saved in the shop's home: leaving (a link, Back, a shop switch, a
+    // language change) saves what is pending first, and asks only when that fails.
+    ctx.onBeforeLeave(async () => {
+      if (!draftsPending() || (await flushDrafts())) return true;
+      const n = draftRows().length;
       if (!n) return true;
-      return ctx.confirm({ title: t("common:leave.title"), message: t("leave.unsent", { n }), confirmLabel: t("common:leave.confirm"), danger: true });
+      return ctx.confirm({ title: t("common:leave.title"), message: t("leave.unsaved", { n }), confirmLabel: t("common:leave.confirm"), danger: true });
     });
 
     ctx.events.on("job", (job) => {
@@ -904,8 +1264,8 @@ export default {
       if (S.job && job.id === S.job.id) {
         S.job = job;
         if (ACTIVE.has(job.status)) {
+          // Progress only moves the pill; the rows change with each "row" event.
           syncSend();
-          if (S.data) renderRows();
           if (job.status === "running" && !S.jobIds.length) restoreQueue(job.id);
         } else finishJob(job);
       } else if (!S.job && ACTIVE.has(job.status) && !S.finished.has(job.id)) {
@@ -915,11 +1275,12 @@ export default {
 
     ctx.events.on("job-event", (ev) => {
       if (!ev || ev.kind !== "orders" || ev.type !== "row" || !S.job || ev.job_id !== S.job.id) return;
-      applyResult(ev.data);
+      applyResult(ev.data, true);
       if (S.data) renderRows();
+      else syncSend();
     });
 
-    /** Show which rows a job sends (the fields filled, "Sırada" / "Gönderiliyor"). */
+    /** Show which rows a job sends (their carrier and number filled in). */
     function useQueue(queue) {
       for (const q of queue) {
         const id = Number(q.receipt_id);
@@ -975,8 +1336,29 @@ export default {
     }
 
     async function send() {
-      if (S.job) return;
-      const ids = readyIds();
+      if (S.job || S.posting) return; // Etsy is busy with the last send (aria-disabled)
+      const plan = sendPlan();
+      if (!plan.ids.length) {
+        // Nothing to send yet: the numbers usually come from the carrier's CSV.
+        fileInput.click();
+        return;
+      }
+      // Nothing ticked: the ready orders get ticked (the video's "select all, upload").
+      if (plan.tick) tickRows(plan.ids);
+      // Orders on other pages: read them first, so the list below names each buyer.
+      if (sendPlan().ids.some((id) => !S.known.has(id))) {
+        S.posting = true;
+        syncSend();
+        try {
+          await knowWaiting();
+        } finally {
+          S.posting = false;
+        }
+        if (!ctx.isActive()) return;
+        syncSend();
+        if (S.job) return;
+      }
+      const ids = sendPlan().ids;
       if (!ids.length) return;
       const list = ids.map((id) => ({
         receipt_id: id,
@@ -1010,8 +1392,9 @@ export default {
         preview,
         restricted ? infoNote({ tone: "warning", icon: "alert", text: t("confirm.restricted") }) : null,
       ]);
-      if (!ok || S.job) return;
-      sendBtn.setLoading(true);
+      if (!ok || S.job || S.posting) return;
+      S.posting = true;
+      syncSend();
       // Old answers go now: the new job's first rows may arrive before the POST's answer.
       for (const id of ids) S.results.delete(id);
       try {
@@ -1021,15 +1404,16 @@ export default {
           rows: list,
           confirm: true,
         });
+        S.posting = false;
         if (!S.finished.has(job.id)) {
           SENT_QUEUES.set(job.id, list.map((x) => ({ receipt_id: x.receipt_id, carrier_name: x.carrier_name, tracking_code: x.tracking_code })));
           writeSent();
           S.lastDone = null;
           renderBanner();
           attachJob(job, ids);
-        }
+        } else syncSend();
       } catch (err) {
-        sendBtn.setLoading(false);
+        S.posting = false;
         if (err.code === "invalid" && err.params && Array.isArray(err.params.rows)) {
           for (const p of err.params.rows) {
             if (p.receipt_id) S.results.set(p.receipt_id, { receipt_id: p.receipt_id, status: "error", code: "invalid", message: p.message });
@@ -1043,7 +1427,7 @@ export default {
 
     /** ctx.confirm, wide enough for the list of orders and tracking numbers. */
     function confirmSend(n, body) {
-      return ctx.confirm({ title: t("confirm.title"), body, width: 540, class: "o-confirm", confirmLabel: t("confirm.ok", { n }), icon: "send" });
+      return ctx.confirm({ title: t("confirm.title"), body, width: 540, class: "o-confirm", confirmLabel: t("confirm.ok", { n }), icon: "truck" });
     }
 
     async function stopJob() {
@@ -1058,16 +1442,19 @@ export default {
     // --------------------------------------------------------------- CSV
 
     function openCsvMenu() {
+      const country = S.carriers && S.carriers.country;
+      const showCountry = !!country && (S.tab === "unshipped" || S.tab === "all");
       menu(
-        csvBtn,
+        moreBtn,
         [
           { label: t("csv.export"), icon: "download", onClick: () => exportCsv() },
-          { label: t("csv.import"), icon: "upload", onClick: () => fileInput.click(), disabled: !!S.job },
           { divider: true },
           { label: t("menu.refresh"), icon: "refresh", onClick: () => refreshAll() },
           { label: t("menu.etsy"), icon: "external", onClick: () => window.open(SOLD_URL, "_blank", "noopener") },
+          showCountry ? { divider: true } : null,
+          showCountry ? { label: t("country.item", { name: countryLabel(country) }), icon: "globe", onClick: () => openCountryMenu() } : null,
         ],
-        { placement: "bottom-end", width: 270 },
+        { placement: "top-end", width: 290 },
       );
     }
 
@@ -1120,6 +1507,9 @@ export default {
       let unknown = 0;
       let notWaiting = 0;
       const filled = [];
+      // Like a number typed in: it joins the ticked orders when some are ticked; with
+      // none, the upload button counts every ready order anyway.
+      const joinSelection = freshSelected() > 0;
       for (const r of res.rows || []) {
         const carrier = r.carrier_name ? canonicalCarrier(r.carrier_name) : "";
         const row = S.known.get(r.receipt_id);
@@ -1131,10 +1521,11 @@ export default {
         if (carrier && !carrierKnown(carrier)) unknown += 1;
         S.edits.set(r.receipt_id, { tracking_code: r.tracking_code, carrier_name: carrier, note_to_buyer: r.note_to_buyer || "" });
         S.results.delete(r.receipt_id);
-        S.selected.add(r.receipt_id);
+        if (joinSelection) S.selected.add(r.receipt_id);
         filled.push(r.receipt_id);
       }
       S.selected = new Set(S.selected);
+      if (filled.length) saveDraftsSoon();
       const errors = res.errors || [];
       const extra = [
         errors.length ? t("csv.import_errors", { n: errors.length, line: errors[0].line }) : "",
@@ -1161,9 +1552,10 @@ export default {
         search.value = "";
         ctx.setQuery({ tab: null, q: null, page: page > 1 ? page : null });
         tabsC.update(tabItems(), "unshipped");
-        syncCountry();
         load();
       } else renderRows();
+      // The numbers may be on other pages: know those orders before the confirm lists them.
+      knowWaiting();
     }
 
     // --------------------------------------------------------------- start
@@ -1181,12 +1573,17 @@ export default {
       resizeTimer = setTimeout(onResize, 250);
     };
     window.addEventListener("resize", resized);
+    window.addEventListener("pagehide", flushDraftsOnExit);
 
     await Promise.all([load(), loadSummary(), loadCarriers(), resumeJob()]);
 
     return () => {
       window.removeEventListener("resize", resized);
+      window.removeEventListener("pagehide", flushDraftsOnExit);
       clearTimeout(resizeTimer);
+      clearTimeout(S.stopTimer);
+      // Unmounted with a save still waiting (the guard was not asked): send it now.
+      flushDraftsOnExit();
     };
   },
 };

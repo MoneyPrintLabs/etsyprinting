@@ -1,4 +1,13 @@
-/* Tasarım Yükle (video frames t210, t220, t240). Everything is scoped to .page-designs. */
+/* Tasarım Yükle (video frames t210, t220, t240; source YukleEkrani.tsx). Everything is
+   scoped to .page-designs, except the modals this page opens (they live in <body>).
+   Sizes are the video's at the 1545 px viewport (its px x 0.878). */
+
+.page-designs {
+  --dz-checker: repeating-conic-gradient(#eeedf2 0% 25%, #dfdee6 0% 50%) 0 0 / 10.5px 10.5px;
+  --dz-grad: linear-gradient(135deg, var(--accent-2) 0%, var(--accent) 100%);
+  --dz-sky: #5ab8ff;
+  --dz-sky-soft: rgba(90, 184, 255, 0.14);
+}
 
 /* ------------------------------------------------------------------ idle: the drop zone */
 
@@ -6,12 +15,10 @@
   min-height: calc(100vh - var(--topbar-h) - 2 * var(--pad-y));
 }
 .page-designs .dz-upload-host:empty,
-.page-designs .dz-note-host:empty,
-.page-designs .dz-pending-host:empty {
+.page-designs .dz-note-host:empty {
   display: none;
 }
-.page-designs .dz-note-host,
-.page-designs .dz-pending-host {
+.page-designs .dz-note-host {
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -22,61 +29,47 @@
   min-height: 340px;
   overflow: hidden;
   gap: 0;
-  padding: 40px 24px;
-  border: 1.5px dashed #2a2d37;
-  border-radius: var(--radius-lg);
+  padding: 32px 24px;
+  border: 2px dashed #363d50;
+  border-radius: 19px;
   background:
-    radial-gradient(ellipse 42% 48% at 50% 44%, rgba(124, 108, 246, 0.075), transparent 70%),
-    #0f1015;
+    radial-gradient(544px 316px at 50% 44%, rgba(124, 108, 246, 0.09), transparent 70%),
+    var(--panel);
+  transition: border-color 0.25s, box-shadow 0.3s, background 0.3s, transform 0.3s var(--ease);
 }
 .page-designs .dz-drop:hover {
-  border-color: #3a3e4c;
+  border-color: #434b61;
 }
+/* Files over the zone (video t207): a purple tint and glow, the border in accent. */
 .page-designs .dz-drop.is-over {
-  border-color: var(--accent);
+  border-color: var(--accent-2);
   background:
-    radial-gradient(ellipse 50% 55% at 50% 44%, rgba(124, 108, 246, 0.18), transparent 72%),
-    #0f1015;
+    radial-gradient(544px 316px at 50% 44%, rgba(124, 108, 246, 0.25), transparent 70%),
+    linear-gradient(rgba(124, 108, 246, 0.07), rgba(124, 108, 246, 0.07)),
+    var(--panel);
+  box-shadow: 0 0 0 5px rgba(124, 108, 246, 0.12), 0 21px 79px rgba(124, 108, 246, 0.3);
+  transform: scale(1.01);
 }
-.page-designs .dz-icon {
-  position: relative;
-  display: grid;
-  place-items: center;
-  width: 100px;
-  height: 100px;
-  margin-bottom: 62px;
-  border-radius: 26px;
-  background: linear-gradient(180deg, #222338, #191a28);
-  border: 1px solid rgba(155, 140, 255, 0.2);
-  color: var(--accent-2);
-  box-shadow:
-    0 0 0 10px rgba(124, 108, 246, 0.035),
-    0 18px 60px -12px rgba(124, 108, 246, 0.55);
-}
-.page-designs .dz-title {
-  position: relative;
-  font-size: 31px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  line-height: 1.2;
-}
-.page-designs .dz-sub {
-  position: relative;
-  margin-top: 14px;
-  font-size: 15px;
-  color: var(--muted);
-}
-.page-designs .dz-pick {
-  position: relative;
-  margin-top: 30px;
-  color: var(--muted);
-  font-weight: 500;
-}
-.page-designs .dz-pick:hover {
-  color: var(--text);
+/* Uploading: the zone keeps its look (setDisabled would dim it) and shows the pill. */
+.page-designs .dz-drop.is-disabled.is-uploading {
+  opacity: 1;
+  cursor: progress;
 }
 
-/* Floating, blurred sample tiles around the drop zone (decoration only). */
+/* The faint 44 px grid in the middle and the floating sample designs (decoration). */
+.page-designs .dz-grid {
+  position: absolute;
+  inset: 0;
+  opacity: 0.5;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+  background-size: 38.6px 38.6px;
+  background-position: center center;
+  -webkit-mask-image: radial-gradient(ellipse 60% 70% at 50% 50%, #000 20%, transparent 100%);
+  mask-image: radial-gradient(ellipse 60% 70% at 50% 50%, #000 20%, transparent 100%);
+}
 .page-designs .dz-decor {
   position: absolute;
   inset: 0;
@@ -84,30 +77,379 @@
 }
 .page-designs .dz-float {
   position: absolute;
+  left: calc(var(--x) * 100%);
+  top: calc(var(--y) * 100%);
   display: grid;
   place-items: center;
+  width: var(--s);
+  height: var(--s);
   overflow: hidden;
-  border-radius: 16px;
-  background: #1a1b22;
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  color: #4a4e5c;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
-  opacity: 0.55;
+  border-radius: 14px;
+  background: var(--dz-checker);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1), 0 16px 35px rgba(0, 0, 0, 0.5);
+  color: #8b91a3;
+  opacity: var(--o);
+  transform: translate(-50%, -50%) rotate(var(--r));
+  transition: transform 0.45s var(--ease), opacity 0.3s;
 }
 .page-designs .dz-float img {
   width: 100%;
   height: 100%;
+  object-fit: contain;
+}
+.page-designs .dz-drop.is-over .dz-float {
+  opacity: calc(var(--o) * 0.65);
+  transform: translate(-50%, -50%) translate(var(--ox), var(--oy)) rotate(calc(var(--r) * 0.6));
+}
+
+.page-designs .dz-body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+}
+/* The icon tile and its two rings: the rings overflow the tile and take no height. */
+.page-designs .dz-icon-wrap {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 102px;
+  height: 102px;
+  margin-bottom: 52px;
+  transition: transform 0.35s var(--ease);
+}
+.page-designs .dz-ring {
+  position: absolute;
+  border: 1px solid;
+  border-radius: 50%;
+  pointer-events: none;
+  transition: transform 0.35s var(--ease), border-color 0.3s;
+}
+.page-designs .dz-ring-a {
+  inset: -45.5px;
+  border-color: rgba(124, 108, 246, 0.1);
+}
+.page-designs .dz-ring-b {
+  inset: -23px;
+  border-color: rgba(124, 108, 246, 0.2);
+}
+.page-designs .dz-icon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 31.6px;
+  background: var(--panel-3);
+  border: 1px solid rgba(124, 108, 246, 0.35);
+  box-shadow: 0 16px 44px rgba(124, 108, 246, 0.25);
+  color: var(--accent-2);
+  transition: box-shadow 0.3s, color 0.2s;
+}
+.page-designs .dz-icon::before,
+.page-designs .dz-icon::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+.page-designs .dz-icon::before {
+  background: rgba(124, 108, 246, 0.16);
+}
+.page-designs .dz-icon::after {
+  background: var(--dz-grad);
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+.page-designs .dz-icon svg {
+  position: relative;
+  z-index: 1;
+  transition: transform 0.35s var(--ease);
+}
+.page-designs .dz-drop.is-over .dz-icon-wrap {
+  transform: translateY(-9px);
+}
+.page-designs .dz-drop.is-over .dz-ring-a {
+  border-color: rgba(124, 108, 246, 0.35);
+  transform: scale(1.06);
+}
+.page-designs .dz-drop.is-over .dz-ring-b {
+  border-color: rgba(124, 108, 246, 0.45);
+  transform: scale(1.12);
+}
+.page-designs .dz-drop.is-over .dz-icon {
+  color: #fff;
+  box-shadow: 0 16px 44px rgba(124, 108, 246, 0.6);
+}
+.page-designs .dz-drop.is-over .dz-icon::after {
+  opacity: 1;
+}
+.page-designs .dz-drop.is-over .dz-icon svg {
+  transform: translateY(-3.5px);
+}
+
+/* "Tasarımlarınızı buraya sürükleyin" gives way to "Bırakın!" (one after the other). */
+.page-designs .dz-titles {
+  display: grid;
+  justify-items: center;
+  width: 100%;
+}
+.page-designs .dz-title,
+.page-designs .dz-title-over {
+  grid-area: 1 / 1;
+  line-height: 1.2;
+  letter-spacing: -0.5px;
+  text-align: center;
+}
+.page-designs .dz-title {
+  font-size: 33.4px;
+  font-weight: 700;
+  transition: opacity 0.16s, transform 0.25s var(--ease);
+}
+.page-designs .dz-title-over {
+  font-size: 36.9px;
+  font-weight: 800;
+  color: #fff;
+  text-shadow: 0 3.5px 26px rgba(124, 108, 246, 0.6);
+  opacity: 0;
+  transform: translateY(10px) scale(0.94);
+  transition: opacity 0.16s, transform 0.3s var(--ease);
+}
+.page-designs .dz-drop.is-over .dz-title {
+  opacity: 0;
+  transform: translateY(-10px);
+}
+.page-designs .dz-drop.is-over .dz-title-over {
+  opacity: 1;
+  transform: none;
+  transition-delay: 0.12s;
+}
+.page-designs .dz-sub {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 2px 10.5px;
+  margin-top: 10.5px;
+  font-size: 15.8px;
+  color: var(--text-2);
+}
+.page-designs .dz-dot {
+  color: #4a5163;
+}
+
+/* The row under the words: "Dosya seç", the dragged files' pill, or the upload's. */
+.page-designs .dz-slot {
+  display: grid;
+  justify-items: center;
+  align-items: center;
+  min-height: 46px;
+  margin-top: 26px;
+}
+.page-designs .dz-slot > * {
+  grid-area: 1 / 1;
+}
+.page-designs .dz-pick-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  transition: opacity 0.18s, visibility 0s;
+}
+.page-designs .dz-pick {
+  height: 45.6px;
+  padding: 0 19px;
+  gap: 7px;
+  border: 0;
+  border-radius: 10.5px;
+  background: var(--accent-soft);
+  color: var(--accent-2);
+  font-size: 15.8px;
+  font-weight: 600;
+}
+.page-designs .dz-pick:hover:not(:disabled) {
+  background: rgba(124, 108, 246, 0.22);
+  color: var(--accent-2);
+}
+.page-designs .dz-pick-or {
+  font-size: 14px;
+  color: var(--muted);
+}
+.page-designs .dz-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  height: 45.6px;
+  padding: 0 19px 0 7px;
+  border-radius: 999px;
+  background: var(--dz-grad);
+  color: #fff;
+  font-size: 15.8px;
+  font-weight: 700;
+  white-space: nowrap;
+  box-shadow: 0 10.5px 30px rgba(124, 108, 246, 0.45);
+}
+.page-designs .dz-pill-drag {
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(8px) scale(0.96);
+  transition: opacity 0.2s, transform 0.3s var(--ease), visibility 0s 0.3s;
+}
+.page-designs .dz-pill-drag:empty {
+  display: none;
+}
+.page-designs .dz-drop.is-over .dz-pill-drag {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition: opacity 0.2s 0.1s, transform 0.3s var(--ease) 0.1s, visibility 0s;
+}
+.page-designs .dz-drop.is-over .dz-pick-row,
+.page-designs .dz-drop.is-uploading .dz-pick-row {
+  opacity: 0;
+  visibility: hidden;
+}
+.page-designs .dz-pill-stack {
+  display: inline-flex;
+  margin-right: 3px;
+}
+.page-designs .dz-pill-tile {
+  display: grid;
+  place-items: center;
+  width: 31.6px;
+  height: 31.6px;
+  overflow: hidden;
+  border-radius: 9px;
+  border: 2px solid #8c7fff;
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+.page-designs .dz-pill-tile + .dz-pill-tile {
+  margin-left: -12px;
+}
+.page-designs .dz-pill-tile.is-image {
+  background: var(--dz-checker);
+}
+.page-designs .dz-pill-tile img {
+  width: 100%;
+  height: 100%;
   object-fit: cover;
 }
-.page-designs .dz-float-a { left: 6%; top: 15%; width: 98px; height: 98px; transform: rotate(-7deg); }
-.page-designs .dz-float-b { left: 18%; top: 58%; width: 62px; height: 62px; transform: rotate(5deg); filter: blur(2px); opacity: 0.35; }
-.page-designs .dz-float-c { left: 4.5%; top: 75%; width: 58px; height: 58px; filter: blur(2.5px); opacity: 0.3; }
-.page-designs .dz-float-d { right: 6.5%; top: 15%; width: 92px; height: 92px; transform: rotate(6deg); }
-.page-designs .dz-float-e { left: 76%; top: 59%; width: 74px; height: 74px; transform: rotate(-4deg); filter: blur(1.5px); opacity: 0.4; }
-.page-designs .dz-float-f { right: 3.5%; top: 74%; width: 55px; height: 55px; filter: blur(2.5px); opacity: 0.3; }
-.page-designs .dz-float-g { display: none; }
+.page-designs .dz-pill-tail {
+  font-weight: 500;
+  opacity: 0.8;
+}
+.page-designs .dz-up-pill {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: default;
+}
+.page-designs .dz-up-host:empty {
+  display: none;
+}
+.page-designs .dz-pill-up {
+  position: relative;
+  overflow: hidden;
+}
+.page-designs .dz-pill-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.18);
+}
+.page-designs .dz-pill-fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: #fff;
+  transition: width 0.2s var(--ease);
+}
+.page-designs .dz-pill-stop {
+  color: var(--text-2);
+}
 
-/* Setup chips under the drop zone */
+/* Designs already waiting in the folder: one pill, the list in a modal. */
+.page-designs .dz-wait-host {
+  margin-top: 18px;
+  transition: opacity 0.18s;
+}
+.page-designs .dz-wait-host:empty {
+  display: none;
+}
+.page-designs .dz-drop.is-over .dz-wait-host {
+  opacity: 0;
+  visibility: hidden;
+}
+.page-designs .dz-wait {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px;
+  border-radius: 999px;
+  background: rgba(24, 26, 33, 0.9);
+  border: 1px solid var(--border-2);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  cursor: default;
+}
+.page-designs .dz-wait-show {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px 0 3px;
+  border-radius: 999px;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+.page-designs .dz-wait-show:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.page-designs .dz-wait-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.page-designs .dz-wait-stack {
+  display: inline-flex;
+  flex: none;
+}
+.page-designs .dz-wait-stack .thumb {
+  background: var(--dz-checker);
+  border: 2px solid var(--panel-2);
+  box-sizing: content-box;
+}
+.page-designs .dz-wait-stack .thumb + .thumb {
+  margin-left: -10px;
+}
+.page-designs .dz-wait-bad {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.page-designs .dz-wait-bad:hover {
+  background: color-mix(in srgb, var(--warning) 22%, transparent);
+}
+.page-designs .dz-wait-start {
+  flex: none;
+  border-radius: 999px;
+}
+
+/* Setup chips under the drop zone (InfoChip: a tinted icon, "Mockup: 6 hazır") */
 .page-designs .dz-status {
   display: flex;
   align-items: center;
@@ -117,32 +459,31 @@
 .page-designs .dz-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 10.5px;
   min-width: 0;
 }
 .page-designs .dz-chip {
   display: inline-flex;
   align-items: center;
-  gap: 9px;
-  height: 42px;
-  max-width: 420px;
-  padding: 0 16px 0 8px;
-  border-radius: 12px;
+  gap: 10.5px;
+  height: 47px;
+  max-width: 440px;
+  padding: 0 16px 0 9px;
+  border-radius: 12.3px;
   background: var(--panel);
   border: 1px solid var(--border);
   color: var(--text);
   font: inherit;
-  font-size: 13.5px;
+  font-size: 14px;
   text-align: left;
+  white-space: nowrap;
+  transition: border-color 0.15s;
 }
-button.dz-chip {
+.page-designs button.dz-chip {
   cursor: pointer;
 }
-button.dz-chip:hover {
-  border-color: var(--border-2);
-}
-.page-designs .dz-chip.is-warn {
-  border-color: color-mix(in srgb, var(--warning) 35%, transparent);
+.page-designs button.dz-chip:hover {
+  border-color: #3a3f4d;
 }
 .page-designs .dz-chip-icon {
   display: grid;
@@ -150,9 +491,25 @@ button.dz-chip:hover {
   flex: none;
   width: 30px;
   height: 30px;
-  border-radius: 8px;
+  border-radius: 8.8px;
   background: var(--panel-3);
   color: var(--muted);
+}
+.page-designs .dz-chip-mockup .dz-chip-icon,
+.page-designs .dz-chip-type .dz-chip-icon {
+  background: var(--accent-soft);
+  color: var(--accent-2);
+}
+.page-designs .dz-chip-template .dz-chip-icon {
+  background: var(--dz-sky-soft);
+  color: var(--dz-sky);
+}
+.page-designs .dz-chip-shop .dz-chip-icon {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.page-designs .dz-chip.is-warn {
+  border-color: color-mix(in srgb, var(--warning) 35%, transparent);
 }
 .page-designs .dz-chip.is-warn .dz-chip-icon {
   color: var(--warning);
@@ -163,8 +520,9 @@ button.dz-chip:hover {
   white-space: nowrap;
 }
 .page-designs .dz-chip-value {
-  font-weight: 650;
   min-width: 0;
+  margin-left: -3.5px;
+  font-weight: 600;
 }
 .page-designs .dz-chip.is-warn .dz-chip-value {
   color: var(--warning);
@@ -175,20 +533,9 @@ button.dz-chip:hover {
   color: var(--warning);
   white-space: nowrap;
 }
-.page-designs .dz-chip-go {
-  display: inline-flex;
-  flex: none;
-  color: var(--muted);
-}
-.page-designs button.dz-chip:hover .dz-chip-go {
-  color: var(--accent-2);
-}
 /* A digital template adds a fourth chip ("Ürün: Dijital"). Below 1400 px the row keeps
    to one line: the type chip drops its label, the template's title ends in "…" sooner
    (the whole title is on hover). */
-.page-designs .dz-chip-type .dz-chip-icon {
-  color: var(--accent-2);
-}
 @media (max-width: 1400px) {
   .page-designs .dz-chips.has-type .dz-chip-template {
     max-width: 250px;
@@ -201,22 +548,22 @@ button.dz-chip:hover {
   display: grid;
   place-items: center;
   flex: none;
-  width: 18px;
-  height: 18px;
+  width: 17.5px;
+  height: 17.5px;
   border-radius: 50%;
   background: var(--success);
-  color: #0b2a20;
+  color: #062a1f;
 }
 .page-designs .dz-setup {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12.5px;
+  gap: 7px;
+  font-size: 12.3px;
   color: var(--muted);
   white-space: nowrap;
 }
 .page-designs .dz-setup.is-ok svg {
-  color: var(--muted);
+  color: var(--success);
 }
 .page-designs .dz-setup.is-missing {
   color: var(--warning);
@@ -234,19 +581,21 @@ button.dz-chip:hover {
   text-decoration: underline;
 }
 
-/* "Her tasarım için otomatik olarak" */
+/* "Her tasarım için otomatik olarak" (PipelineStrip) */
 .page-designs .dz-steps {
-  padding: 16px 20px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 21px 17.5px;
 }
 .page-designs .dz-steps-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 14px;
 }
 .page-designs .dz-steps-title {
-  font-size: 13px;
+  font-size: 13.2px;
   font-weight: 600;
   color: var(--text-2);
 }
@@ -254,53 +603,53 @@ button.dz-chip:hover {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  font-size: 12.5px;
+  font-size: 12.3px;
   color: var(--muted);
   text-align: right;
 }
 .page-designs .dz-steps-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 9px;
 }
 .page-designs .dz-step {
   display: flex;
   align-items: center;
-  gap: 11px;
+  flex: 1 1 0;
+  gap: 10.5px;
   min-width: 0;
 }
 .page-designs .dz-step-icon {
   display: grid;
   place-items: center;
   flex: none;
-  width: 38px;
-  height: 38px;
-  border-radius: 10px;
-  background: var(--panel-3);
-  border: 1px solid rgba(255, 255, 255, 0.04);
-  color: var(--muted);
+  width: 37px;
+  height: 37px;
+  border-radius: 10.5px;
+  background: var(--accent-soft);
+  border: 1px solid rgba(124, 108, 246, 0.28);
+  color: var(--accent-2);
 }
 .page-designs .dz-step-text {
   display: flex;
   flex-direction: column;
+  gap: 2px;
   min-width: 0;
 }
 .page-designs .dz-step-name {
-  display: flex;
-  align-items: baseline;
-  gap: 5px;
-  font-size: 13.5px;
-  font-weight: 650;
+  font-size: 13.6px;
+  font-weight: 600;
   white-space: nowrap;
 }
 .page-designs .dz-step-num {
-  font-size: 12px;
-  font-weight: 500;
+  margin-right: 5px;
+  font-family: var(--mono);
+  font-size: 11.4px;
+  font-weight: 400;
   color: var(--muted);
 }
 .page-designs .dz-step-sub {
-  font-size: 12px;
+  font-size: 11.9px;
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
@@ -308,16 +657,19 @@ button.dz-chip:hover {
 }
 .page-designs .dz-step-arrow {
   flex: none;
-  color: #454956;
+  color: #4a5163;
 }
 
-/* Designs waiting in the folder */
-.page-designs .dz-tiles {
+/* The waiting designs' modal (in <body>) */
+.dz-pending-modal .dz-tiles {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
   gap: 10px;
+  max-height: min(52vh, 460px);
+  overflow: auto;
+  padding: 2px;
 }
-.page-designs .dz-tile {
+.dz-pending-modal .dz-tile {
   position: relative;
   display: flex;
   flex-direction: column;
@@ -326,52 +678,53 @@ button.dz-chip:hover {
   min-width: 0;
   padding: 10px 8px 9px;
   border-radius: 12px;
-  background: var(--panel-2);
+  background: var(--panel);
   border: 1px solid var(--border);
 }
-.page-designs .dz-tile .thumb {
+.dz-pending-modal .dz-tile .thumb {
   margin-bottom: 5px;
-  background: #22242d;
+  background: repeating-conic-gradient(#eeedf2 0% 25%, #dfdee6 0% 50%) 0 0 / 10.5px 10.5px;
 }
-.page-designs .dz-tile.is-bad {
+.dz-pending-modal .dz-tile.is-bad {
   border-color: color-mix(in srgb, var(--danger) 35%, transparent);
 }
-.page-designs .dz-tile-name {
+.dz-pending-modal .dz-tile-name {
   max-width: 100%;
   font-size: 12px;
   font-weight: 600;
+  color: var(--text);
 }
-.page-designs .dz-tile-sub {
+.dz-pending-modal .dz-tile-sub {
   font-size: 11px;
   color: var(--muted);
 }
-.page-designs .dz-tile-bad {
+.dz-pending-modal .dz-tile-bad {
   display: inline-flex;
   align-items: center;
   gap: 3px;
   color: var(--danger);
 }
 /* A loose design of a digital template: the file itself is the download. */
-.page-designs .dz-tile-dl {
+.dz-pending-modal .dz-tile-dl {
   display: inline-flex;
   align-items: center;
   gap: 3px;
 }
-.page-designs .dz-tile-dl > svg {
+.dz-pending-modal .dz-tile-dl > svg {
   color: var(--accent-2);
 }
-.page-designs .dz-tile-x {
+.dz-pending-modal .dz-tile-x {
   position: absolute;
   top: 4px;
   right: 4px;
   opacity: 0;
   transition: opacity 0.12s;
 }
-.page-designs .dz-tile:hover .dz-tile-x,
-.page-designs .dz-tile-x:focus-visible {
+.dz-pending-modal .dz-tile:hover .dz-tile-x,
+.dz-pending-modal .dz-tile-x:focus-visible {
   opacity: 1;
 }
-.page-designs .dz-tile-more {
+.dz-pending-modal .dz-tile-more {
   justify-content: center;
   min-height: 118px;
   color: var(--text-2);
@@ -380,54 +733,26 @@ button.dz-chip:hover {
   font-weight: 600;
   cursor: pointer;
 }
-.page-designs .dz-tile-more:hover {
+.dz-pending-modal .dz-tile-more:hover {
   border-color: var(--border-2);
   color: var(--text);
 }
-.page-designs .dz-last {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 2px 4px;
-  font-size: 13px;
-  color: var(--muted);
+.dz-pending-modal .modal-actions .dz-open-folder {
+  margin-right: auto;
 }
 
-/* Uploading: while files go up, the list takes the drop zone's place */
-.page-designs .dz-drop[hidden] {
-  display: none;
-}
-.page-designs .dz-upload-host {
-  display: flex;
-  flex-direction: column;
-}
-.page-designs .dz-upload-host:has(.dz-up.is-active) {
-  flex: 1 0 auto;
-}
-.page-designs .dz-up.is-active {
-  flex: 1 0 auto;
-  min-height: 340px;
-}
-.page-designs .dz-up.is-active .dz-up-list {
-  flex: 1 1 0;
-  max-height: none;
-  min-height: 200px;
-}
+/* After an upload: the files that did not go in, and why */
 .page-designs .dz-up {
-  padding: 16px 18px;
   display: flex;
   flex-direction: column;
   gap: 12px;
+  padding: 16px 18px;
 }
 .page-designs .dz-up-head {
   display: flex;
   align-items: center;
   gap: 10px;
   font-size: 14px;
-}
-.page-designs .dz-up-count {
-  color: var(--muted);
-  font-size: 13px;
 }
 .page-designs .dz-up-done {
   display: grid;
@@ -442,6 +767,10 @@ button.dz-chip:hover {
   background: var(--warning-soft);
   color: var(--warning);
 }
+.page-designs .dz-up-done.is-none {
+  background: var(--panel-3);
+  color: var(--muted);
+}
 .page-designs .dz-up-failed {
   color: var(--danger);
   font-size: 13px;
@@ -451,13 +780,13 @@ button.dz-chip:hover {
   font-size: 13px;
 }
 .page-designs .dz-up-list {
-  max-height: 264px;
+  max-height: 150px;
   overflow: auto;
   border-top: 1px solid var(--border);
 }
 .page-designs .dz-up-row {
   display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) 70px 96px minmax(120px, 190px);
+  grid-template-columns: 16px minmax(0, 1fr) 70px minmax(140px, 320px);
   align-items: center;
   gap: 12px;
   padding: 7px 2px;
@@ -472,96 +801,70 @@ button.dz-chip:hover {
   color: var(--muted);
   text-align: right;
 }
-.page-designs .dz-up-bar {
-  height: 4px;
-  border-radius: 999px;
-  background: var(--panel-3);
-  overflow: hidden;
-}
-.page-designs .dz-up-fill {
-  display: block;
-  height: 100%;
-  width: 0;
-  border-radius: inherit;
-  background: var(--accent);
-  transition: width 0.2s var(--ease);
-}
-.page-designs .dz-up-row.is-done .dz-up-fill,
-.page-designs .dz-up-row.is-duplicate .dz-up-fill,
-.page-designs .dz-up-row.is-replaced .dz-up-fill {
-  background: var(--success);
-}
-.page-designs .dz-up-row.is-known .dz-up-fill,
-.page-designs .dz-up-row.is-ignored .dz-up-fill {
-  background: var(--muted-2);
-}
-.page-designs .dz-up-row.is-error .dz-up-fill {
-  background: var(--danger);
-}
 .page-designs .dz-up-status {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
   min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
   color: var(--muted);
-}
-.page-designs .dz-up-row.is-done .dz-up-status {
-  color: var(--success);
 }
 .page-designs .dz-up-row.is-error .dz-up-status {
   color: var(--danger);
 }
 .page-designs .dz-up-row.is-skipped {
-  opacity: 0.55;
+  opacity: 0.65;
 }
 
-/* Modals opened by this page live in <body>, outside .page-designs. */
+/* The start card (StepsScenes t210): title, one line, Başlat. The sidebar stays lit:
+   only the main area is dimmed, without blur. The backdrop still covers the whole
+   window (an aria-modal dialog), it is only transparent over the sidebar. */
 .modal.dz-ready {
-  border-color: rgba(124, 108, 246, 0.45);
-  box-shadow: 0 0 0 1px rgba(124, 108, 246, 0.15), 0 30px 80px -20px rgba(124, 108, 246, 0.45), var(--shadow-pop);
+  border: 1px solid var(--accent);
+  border-radius: 17.5px;
+  background: var(--panel-2);
+  box-shadow: 0 26px 70px rgba(0, 0, 0, 0.6);
+}
+.modal.dz-ready .modal-head {
+  padding: 23px 23px 0;
+}
+.modal.dz-ready .modal-x {
+  display: none;
 }
 .modal.dz-ready .modal-title {
-  font-size: 19px;
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+.modal.dz-ready .modal-sub {
+  margin-top: 12px;
+  font-size: 15px;
+  color: var(--muted);
+}
+.modal.dz-ready .modal-body {
+  padding: 14px 23px 0;
 }
 .modal.dz-ready .modal-actions {
-  align-items: center;
+  padding: 14px 23px 23px;
 }
-.modal.dz-ready .dz-dry {
-  margin-right: auto;
+.modal.dz-ready .dz-ready-start {
+  height: 45px;
+  padding: 0 23px;
+  gap: 9px;
+  border-radius: 10.5px;
+  font-size: 17.5px;
+  font-weight: 700;
+}
+@media (min-width: 641px) {
+  .modal-backdrop:has(> .modal.dz-ready) {
+    padding-left: calc(var(--sidebar-w) + 16px);
+    background: linear-gradient(90deg, transparent var(--sidebar-w), rgba(5, 6, 9, 0.55) var(--sidebar-w));
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
 }
 .dz-modal-hint {
   font-size: 12.5px;
   color: var(--muted);
-}
-/* "n mockup kullanılacak": which mockups the drafts get, with a link to Mockuplar. */
-.dz-modal-mockups {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  line-height: 1.45;
-  font-size: 12.5px;
-  color: var(--text-2);
-}
-.dz-modal-mockups > .icon {
-  flex: none;
-  margin-top: 2px;
-  color: var(--accent-2);
-}
-.dz-modal-mockups-text {
-  flex: 1;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.dz-modal-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  flex: none;
-  font-weight: 600;
-  color: var(--accent-2);
 }
 /* A digital template: "Dijital ürün · tasarım dosyası indirilebilir dosya olarak eklenir". */
 .dz-modal-type {
@@ -709,42 +1012,45 @@ button.dz-chip:hover {
   display: flex;
   align-items: center;
   gap: 18px;
-  padding: 18px 22px;
+  min-height: 88px;
+  padding: 14px 22px;
 }
 .page-designs .dr-tile {
   display: grid;
   place-items: center;
   flex: none;
-  width: 54px;
-  height: 54px;
-  border-radius: 15px;
+  width: 46px;
+  height: 46px;
+  border-radius: 13px;
   color: #fff;
-  background: linear-gradient(145deg, #8f80ff, #6a58f0);
-  box-shadow: 0 10px 30px -8px rgba(124, 108, 246, 0.7);
+  background: var(--dz-grad);
+  box-shadow: 0 9px 25px rgba(124, 108, 246, 0.4);
 }
 .page-designs .dr-head-text {
   min-width: 0;
   flex: 0 1 auto;
+}
+.page-designs .dr-head.is-running .dr-head-text {
+  flex: 0 1 316px;
 }
 .page-designs .dr-head.is-final .dr-head-text {
   flex: 0 1 auto;
   min-width: 220px;
 }
 .page-designs .dr-head-title {
-  font-size: 19px;
-  font-weight: 650;
+  font-size: 18.4px;
+  font-weight: 700;
   letter-spacing: -0.015em;
   line-height: 1.25;
 }
 .page-designs .dr-head-sub {
   margin-top: 3px;
-  font-size: 13px;
+  font-size: 12.7px;
   color: var(--muted);
 }
 .page-designs .dr-progress {
   flex: 1 1 260px;
   min-width: 180px;
-  margin-left: 12px;
   display: flex;
   flex-direction: column;
   gap: 9px;
@@ -755,50 +1061,59 @@ button.dz-chip:hover {
   gap: 7px;
 }
 .page-designs .dr-big {
-  font-size: 25px;
-  font-weight: 700;
+  font-size: 22.8px;
+  font-weight: 800;
   line-height: 1;
 }
 .page-designs .dr-total {
-  font-size: 15px;
+  font-size: 15.8px;
+  font-weight: 600;
   color: var(--muted);
 }
 .page-designs .dr-count-label {
   margin-left: 4px;
-  font-size: 14px;
+  font-size: 13.2px;
   color: var(--text-2);
 }
 .page-designs .dr-pct {
-  font-size: 13.5px;
-  font-weight: 650;
+  font-family: var(--mono);
+  font-size: 13.2px;
+  font-weight: 600;
   color: var(--accent-2);
 }
 .page-designs .dr-progress .progress {
-  height: 7px;
+  height: 8.8px;
 }
 .page-designs .dr-divider {
   flex: none;
   width: 1px;
-  height: 44px;
+  height: 45px;
   background: var(--border-2);
 }
-.page-designs .dr-elapsed {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--muted);
-}
-.page-designs .dr-elapsed > div {
+/* "~2 dk kaldı" / "Tahmini süre" (video t213) */
+.page-designs .dr-eta {
   display: flex;
   flex-direction: column;
+  flex: none;
+  gap: 3px;
+  min-width: 128px;
 }
-.page-designs .dr-elapsed-label {
-  font-size: 12px;
+.page-designs .dr-eta-top {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--accent-2);
 }
-.page-designs .dr-elapsed-value {
-  font-size: 14px;
+.page-designs .dr-eta-value {
+  font-size: 15.8px;
+  font-weight: 700;
   color: var(--text);
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.page-designs .dr-eta-label {
+  font-size: 11.9px;
+  color: var(--muted);
 }
 
 /* Finished: the banner (t240) */
@@ -949,11 +1264,14 @@ button.dz-chip:hover {
   column-gap: 0;
   padding: 0 20px;
 }
+/* The column names on their own lighter band (video: panel2, 42 px). */
 .page-designs .dr-thead {
-  height: 38px;
+  height: 37px;
+  background: var(--panel-2);
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   font-size: 12.5px;
+  font-weight: 600;
   color: var(--muted);
 }
 .page-designs .dr-th-step {
@@ -1000,8 +1318,12 @@ button.dz-chip:hover {
   gap: 12px;
   min-width: 0;
 }
-.page-designs .dr-file .thumb {
-  background: #f4f2ee;
+/* A transparent design reads as one on a checkerboard (video DesignTile). */
+.page-designs .dr-file .thumb,
+.page-designs .dr-stack .thumb,
+.page-designs .dr-side-head .thumb {
+  background: var(--dz-checker);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1), 0 3.5px 9px rgba(0, 0, 0, 0.35);
 }
 .page-designs .dr-file-text {
   display: flex;
@@ -1015,6 +1337,7 @@ button.dz-chip:hover {
 }
 .page-designs .dr-state {
   font-size: 12px;
+  font-weight: 500;
   color: var(--muted);
 }
 .page-designs .dr-state.is-success {
@@ -1064,7 +1387,7 @@ button.dz-chip:hover {
   color: var(--text-2);
   font: inherit;
   font-size: 13.5px;
-  font-weight: 550;
+  font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
 }
@@ -1075,12 +1398,10 @@ button.dz-chip:hover {
   display: inline-flex;
 }
 .page-designs .dr-stack .thumb {
-  background: #f4f2ee;
-  border: 2px solid var(--panel);
-  box-sizing: content-box;
+  box-shadow: 0 0 0 2px var(--panel), 0 3.5px 9px rgba(0, 0, 0, 0.4);
 }
 .page-designs .dr-stack .thumb + .thumb {
-  margin-left: -10px;
+  margin-left: -10.5px;
 }
 .page-designs .dr-foot-line {
   flex: 1 1 auto;
@@ -1115,10 +1436,10 @@ button.dz-chip:hover {
 
 /* The "being prepared" / "sample draft" card */
 .page-designs .dr-side {
-  padding: 18px 20px 16px;
+  padding: 16px 19px 14px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 13px;
 }
 .page-designs .dr-side-empty {
   padding: 40px 0;
@@ -1130,9 +1451,28 @@ button.dz-chip:hover {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
 }
-.page-designs .dr-side-head .thumb {
-  background: #f4f2ee;
+/* Once there is a draft the card's head opens it. */
+.page-designs .dr-side-link {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  gap: 12px;
+  min-width: 0;
+  border-radius: 10px;
+  color: inherit;
+  text-decoration: none;
+}
+.page-designs .dr-side-link:hover {
+  text-decoration: none;
+}
+.page-designs .dr-side-link:hover .dr-side-sub {
+  color: var(--accent-2);
+}
+.page-designs .dr-side-link:focus-visible {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 4px;
 }
 .page-designs .dr-side-titles {
   flex: 1;
@@ -1143,34 +1483,48 @@ button.dz-chip:hover {
   align-items: center;
   gap: 8px;
   font-size: 16.5px;
-  font-weight: 650;
+  font-weight: 700;
   letter-spacing: -0.01em;
+  line-height: 1.25;
 }
 .page-designs .dr-side-title.is-sample svg {
   color: var(--success);
 }
 .page-designs .dr-live-dot {
-  width: 10px;
-  height: 10px;
+  flex: none;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
   background: var(--accent-2);
-  box-shadow: 0 0 0 4px rgba(155, 140, 255, 0.18), 0 0 10px rgba(155, 140, 255, 0.8);
+  box-shadow: 0 0 0 3.5px rgba(124, 108, 246, 0.3);
   animation: dr-pulse 1.6s ease-in-out infinite;
 }
 @keyframes dr-pulse {
   50% {
-    box-shadow: 0 0 0 6px rgba(155, 140, 255, 0.08), 0 0 14px rgba(155, 140, 255, 0.9);
+    box-shadow: 0 0 0 5px rgba(124, 108, 246, 0.12), 0 0 12px rgba(155, 140, 255, 0.8);
   }
 }
 .page-designs .dr-side-sub {
   margin-top: 2px;
-  font-size: 12.5px;
+  font-size: 12.3px;
   color: var(--muted);
+}
+/* The step the product is in ("Başlık yazılıyor"): never wider than half the card. */
+.page-designs .dr-stage {
+  flex: none;
+  max-width: 48%;
+  overflow: hidden;
+}
+.page-designs .dr-stage > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .page-designs .dr-section {
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 8px;
 }
 .page-designs .dr-section-head {
   display: flex;
@@ -1183,13 +1537,19 @@ button.dz-chip:hover {
 .page-designs .dr-section-head > svg {
   color: var(--muted);
 }
+/* n/6, n/140, n/13 (video Count): mono, muted at 0, accent while the step runs. */
 .page-designs .dr-count {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 12.5px;
+  gap: 5px;
+  font-family: var(--mono);
+  font-size: 12.3px;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
   color: var(--muted);
+}
+.page-designs .dr-count.is-active {
+  color: var(--accent-2);
 }
 .page-designs .dr-count.is-ok {
   color: var(--success);
@@ -1211,15 +1571,42 @@ button.dz-chip:hover {
   border-radius: 10px;
   background: #efece6;
   border: 1px solid rgba(255, 255, 255, 0.06);
+  color: #3a4152;
 }
 .page-designs .dr-mockup img {
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
-.page-designs .dr-mockup.is-empty {
+.page-designs .dr-mockup.is-empty,
+.page-designs .dr-mockup.is-pending {
   background: var(--panel-2);
-  border: 1px dashed #2a2d37;
+  border: 1.5px dashed var(--border-2);
+}
+/* A tile waiting for its picture is still the empty slot (video MockCell): its icon
+   shows, the picture and "+2" come with the tile. */
+.page-designs .dr-mockup.is-pending > img,
+.page-designs .dr-mockup.is-pending > .dr-mockup-more {
+  opacity: 0;
+}
+.page-designs .dr-mockup-slot {
+  display: none;
+}
+.page-designs .dr-mockup.is-pending > .dr-mockup-slot {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+}
+.page-designs .dr-mockup.is-in,
+.page-designs .dr-tag.is-in {
+  animation: dr-pop 0.32s var(--ease) both;
+}
+@keyframes dr-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
 }
 .page-designs .dr-mockup-more {
   position: absolute;
@@ -1227,34 +1614,45 @@ button.dz-chip:hover {
   bottom: 6px;
   padding: 3px 7px;
   border-radius: 7px;
-  background: rgba(15, 16, 20, 0.82);
+  background: rgba(10, 12, 17, 0.78);
   color: #fff;
   font-size: 12px;
   font-weight: 700;
 }
+/* The title keeps three lines' room (it never pushes the tags down while it types, and
+   a fourth line still shows: it is never cut). */
 .page-designs .dr-titlebox {
-  min-height: 52px;
-  padding: 12px 14px;
-  border-radius: 10px;
+  min-height: 82px;
+  padding: 10px 12px;
+  border-radius: 10.5px;
   background: var(--panel-2);
   border: 1px solid var(--border);
+  color: var(--text);
   font-size: 14px;
-  font-weight: 550;
-  line-height: 1.55;
+  font-weight: 500;
+  line-height: 20px;
   overflow-wrap: anywhere;
+}
+.page-designs .dr-titlebox.is-final {
+  color: var(--text-2);
+}
+.page-designs .dr-titlebox .skeleton-group {
+  padding-top: 4px;
 }
 .page-designs .dr-titlebox.is-live,
 .page-designs .dr-side.is-live .dr-titlebox:has(.dr-caret) {
-  border-color: var(--accent-line);
-  box-shadow: 0 0 0 3px rgba(124, 108, 246, 0.12);
+  border-color: rgba(124, 108, 246, 0.6);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .page-designs .dr-caret {
   display: inline-block;
-  width: 1.5px;
-  height: 1.1em;
-  margin-left: 1px;
-  vertical-align: -0.18em;
-  background: var(--text);
+  width: 2px;
+  height: 16.7px;
+  margin-left: 2px;
+  vertical-align: -3.5px;
+  border-radius: 1px;
+  background: var(--accent-2);
+  box-shadow: 0 0 8px rgba(168, 156, 255, 0.8);
   animation: dr-blink 0.9s steps(1) infinite;
 }
 @keyframes dr-blink {
@@ -1265,16 +1663,41 @@ button.dz-chip:hover {
 .page-designs .dr-tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 7px;
+  gap: 6px;
 }
 .page-designs .dr-tags .tagchip {
   height: 29px;
   padding: 0 10px;
   border-radius: 8px;
-  font-size: 12.5px;
+  background: var(--panel-3);
+  border-color: var(--border);
+  color: var(--text-2);
+  font-size: 12.3px;
+  font-weight: 500;
 }
+/* Before the tags are known: dashed slots whose widths (set by the page) are fractions
+   of the row, four to a row at any card width (video t219). */
 .page-designs .dr-tags .tagchip.is-slot {
-  min-width: 88px;
+  flex: none;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  border: 1px dashed #30374a;
+}
+/* A tag about to pop in holds its own width as a dashed slot; the newest one is lit. */
+.page-designs .dr-tags .dr-tag.is-pending {
+  background: transparent;
+  border: 1px dashed #30374a;
+  color: transparent;
+}
+.page-designs .dr-tags .dr-tag.is-hot {
+  background: rgba(124, 108, 246, 0.24);
+  border-color: rgba(168, 156, 255, 0.7);
+  box-shadow: 0 5px 16px rgba(124, 108, 246, 0.35);
+  color: #fff;
+}
+.page-designs .dr-tags .dr-tag {
+  transition: background 0.3s, border-color 0.3s, box-shadow 0.3s, color 0.3s;
 }
 .page-designs .dr-notes {
   gap: 8px;
@@ -1369,19 +1792,8 @@ button.dz-chip:hover {
   color: var(--warning);
   border-color: color-mix(in srgb, var(--warning) 35%, transparent);
 }
-.page-designs .dr-open {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--accent-2);
-  font-weight: 600;
-  text-decoration: none;
-}
-.page-designs .dr-open:hover {
-  text-decoration: underline;
-}
 
-/* ------------------------------------------------------------------ narrower windows */
+/* ------------------------------------------------------------------ narrower / shorter windows */
 
 @media (max-width: 1400px) {
   .page-designs .dr-grid {
@@ -1399,6 +1811,12 @@ button.dz-chip:hover {
   }
   .page-designs .dr-head-sub {
     font-size: 12.5px;
+  }
+  .page-designs .dr-head.is-final .dr-chips {
+    margin-left: 6px;
+  }
+  .page-designs .dr-side-title {
+    font-size: 15.5px;
   }
 }
 @media (max-width: 1180px) {
@@ -1423,12 +1841,56 @@ button.dz-chip:hover {
     flex: 0 0 calc(33.3% - 8px);
   }
 }
+/* A short window (1280x720): a smaller tile, rings and title, so the idle page with its
+   three blocks still fits without scrolling. */
+@media (max-height: 760px) {
+  .page-designs .dz-drop {
+    min-height: 300px;
+    padding: 24px;
+  }
+  .page-designs .dz-icon-wrap {
+    width: 84px;
+    height: 84px;
+    margin-bottom: 42px;
+  }
+  .page-designs .dz-icon {
+    border-radius: 26px;
+  }
+  .page-designs .dz-icon svg {
+    width: 38px;
+    height: 38px;
+  }
+  .page-designs .dz-ring-a {
+    inset: -33px;
+  }
+  .page-designs .dz-ring-b {
+    inset: -15.5px;
+  }
+  .page-designs .dz-title {
+    font-size: 28px;
+  }
+  .page-designs .dz-title-over {
+    font-size: 31px;
+  }
+  .page-designs .dz-slot {
+    margin-top: 18px;
+  }
+  .page-designs .dz-wait-host {
+    margin-top: 14px;
+  }
+}
 @media (max-width: 760px) {
   .page-designs .dz-float {
     display: none;
   }
   .page-designs .dz-title {
     font-size: 22px;
+  }
+  .page-designs .dz-title-over {
+    font-size: 26px;
+  }
+  .page-designs .dz-pick-or {
+    display: none;
   }
   .page-designs .dr-thead,
   .page-designs .dr-row {
@@ -1442,18 +1904,34 @@ button.dz-chip:hover {
   .page-designs .dz-up-row {
     grid-template-columns: 16px minmax(0, 1fr) 60px;
   }
-  .page-designs .dz-up-bar,
   .page-designs .dz-up-status {
     display: none;
   }
   .page-designs .dr-divider,
-  .page-designs .dr-elapsed {
+  .page-designs .dr-eta {
     display: none;
   }
 }
+/* Less motion: the same states, without growing, sliding or popping. */
 @media (prefers-reduced-motion: reduce) {
+  .page-designs .dz-drop.is-over,
+  .page-designs .dz-drop.is-over .dz-icon-wrap,
+  .page-designs .dz-drop.is-over .dz-icon svg,
+  .page-designs .dz-drop.is-over .dz-ring-a,
+  .page-designs .dz-drop.is-over .dz-ring-b,
+  .page-designs .dz-title,
+  .page-designs .dz-title-over,
+  .page-designs .dz-drop.is-over .dz-title,
+  .page-designs .dz-pill-drag {
+    transform: none;
+  }
+  .page-designs .dz-drop.is-over .dz-float {
+    transform: translate(-50%, -50%) rotate(var(--r));
+  }
   .page-designs .dr-live-dot,
-  .page-designs .dr-caret {
+  .page-designs .dr-caret,
+  .page-designs .dr-mockup.is-in,
+  .page-designs .dr-tag.is-in {
     animation: none;
   }
 }
