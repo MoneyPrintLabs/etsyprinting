@@ -1,3 +1,17 @@
+**0.3.1 fixes drafts that Etsy refused because of the item weight.** A template listing
+whose weight or size was never filled in made every draft fail: Etsy reports that weight as
+0 but refuses 0 on a new listing. Such values are now left out.
+
+**0.3.1, taslakları reddettiren ağırlık hatasını düzeltir.** Ağırlığı ya da ölçüleri hiç
+girilmemiş bir şablon ilan, her taslağın Etsy'de hata vermesine yol açıyordu: Etsy bu
+ağırlığı 0 olarak bildiriyor ama yeni ilanda 0'ı kabul etmiyor. Artık bu değerler
+gönderilmiyor. 0.3.0 kullanıyorsanız uygulama bu sürümü üst çubukta **Yeni sürüm · İndir**
+olarak gösterir.
+
+The 0.3.0 notes follow.
+
+---
+
 **stallkit now opens in your browser.** Double-click it and it opens at
 `http://localhost:3000` with the screens from the video: Panel, Tasarım Yükle, İlanlar,
 SEO, Siparişler, Kâr-Zarar, Pinterest, Mockuplar, Şablon İlan, Mağaza Bağlantısı and
