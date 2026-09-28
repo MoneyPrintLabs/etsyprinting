@@ -6,8 +6,8 @@ read the whole thing in an afternoon, and that is a feature worth protecting.
 ## Getting set up
 
 ```bash
-git clone https://github.com/MoneyPrintLabs/etsyprinting.git
-cd etsyprinting
+git clone https://github.com/MoneyPrintLabs/stallkit.git
+cd stallkit
 python -m venv .venv
 source .venv/bin/activate       # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"

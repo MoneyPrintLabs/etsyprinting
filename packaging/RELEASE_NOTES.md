@@ -1,3 +1,17 @@
+**0.3.1 fixes drafts that Etsy refused because of the item weight.** A template listing
+whose weight or size was never filled in made every draft fail: Etsy reports that weight as
+0 but refuses 0 on a new listing. Such values are now left out.
+
+**0.3.1, taslakları reddettiren ağırlık hatasını düzeltir.** Ağırlığı ya da ölçüleri hiç
+girilmemiş bir şablon ilan, her taslağın Etsy'de hata vermesine yol açıyordu: Etsy bu
+ağırlığı 0 olarak bildiriyor ama yeni ilanda 0'ı kabul etmiyor. Artık bu değerler
+gönderilmiyor. 0.3.0 kullanıyorsanız uygulama bu sürümü üst çubukta **Yeni sürüm · İndir**
+olarak gösterir.
+
+The 0.3.0 notes follow.
+
+---
+
 **stallkit now opens in your browser.** Double-click it and it opens at
 `http://localhost:3000` with the screens from the video: Panel, Tasarım Yükle, İlanlar,
 SEO, Siparişler, Kâr-Zarar, Pinterest, Mockuplar, Şablon İlan, Mağaza Bağlantısı and
@@ -55,7 +69,7 @@ tab and it stops by itself about 90 seconds later.
 
 Running from source on Windows, macOS or Linux (Python 3.9–3.13): `pip install -e .`,
 then `stallkit desktop`. See the
-[README](https://github.com/MoneyPrintLabs/etsyprinting#run-from-source-windows-macos-linux).
+[README](https://github.com/MoneyPrintLabs/stallkit#run-from-source-windows-macos-linux).
 
 ## Troubleshooting
 
@@ -139,7 +153,7 @@ sekmeyi kapatın, yaklaşık 90 saniye sonra kendiliğinden kapanır.
 
 Kaynak koddan çalıştırmak için (Windows, macOS, Linux; Python 3.9–3.13): `pip install -e .`,
 sonra `stallkit desktop`. Ayrıntılar
-[README'de](https://github.com/MoneyPrintLabs/etsyprinting#kaynak-koddan-çalıştırma-windows-macos-linux).
+[README'de](https://github.com/MoneyPrintLabs/stallkit#kaynak-koddan-çalıştırma-windows-macos-linux).
 
 ## Sık karşılaşılan hatalar
 
@@ -165,4 +179,4 @@ Geri dönüş adresi Etsy uygulamanızda kayıtlı değil. <https://www.etsy.com
 
 ---
 
-What changed: see [CHANGELOG.md](https://github.com/MoneyPrintLabs/etsyprinting/blob/main/CHANGELOG.md).
+What changed: see [CHANGELOG.md](https://github.com/MoneyPrintLabs/stallkit/blob/main/CHANGELOG.md).

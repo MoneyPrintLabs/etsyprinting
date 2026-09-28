@@ -223,6 +223,36 @@ def validate_tags(tags: Sequence[str]) -> list[str]:
     return problems
 
 
+_WEIGHT_FIELDS = ("item_weight",)
+_DIMENSION_FIELDS = ("item_length", "item_width", "item_height")
+
+
+def _drop_unusable_measures(payload: dict[str, Any], warnings: list[str] | None) -> None:
+    """Leave out weight and size values Etsy would refuse, instead of failing the listing.
+
+    Etsy takes a weight or a size only when it is above 0 and comes with its unit (OAS:
+    "If set, the value must be greater than 0"). Listings made on etsy.com often report
+    0 for a weight nobody entered, and a template copied from one used to send that 0
+    on every draft, which Etsy refused. A value without its unit is left out too, and so
+    is a unit without any value.
+    """
+    notes: list[str] = []
+    for name in _WEIGHT_FIELDS + _DIMENSION_FIELDS:
+        if name in payload and not payload[name] > 0:
+            del payload[name]
+            notes.append(f"{name} 0 not sent (Etsy needs a value above 0)")
+    for fields, unit in ((_WEIGHT_FIELDS, "item_weight_unit"), (_DIMENSION_FIELDS, "item_dimensions_unit")):
+        present = [name for name in fields if name in payload]
+        if present and unit not in payload:
+            for name in present:
+                del payload[name]
+            notes.append(f"{', '.join(present)} not sent: {unit} is empty")
+        elif unit in payload and not present:
+            del payload[unit]
+    if notes and warnings is not None:
+        warnings.extend(notes)
+
+
 def build_payload(
     row: dict[str, str], *, is_update: bool, warnings: list[str] | None = None
 ) -> dict[str, Any]:
@@ -348,6 +378,8 @@ def build_payload(
         if dim_unit not in _DIMENSION_UNITS:
             problems.append(f"item_dimensions_unit must be one of {', '.join(sorted(_DIMENSION_UNITS))}")
         payload["item_dimensions_unit"] = dim_unit
+
+    _drop_unusable_measures(payload, warnings)
 
     tags = split_multi(row.get("tags", ""), allow_comma=True)
     if tags:

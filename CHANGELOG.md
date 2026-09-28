@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-09-28
+
+### Fixed
+
+- Drafts made from a template listing whose weight or size was never filled in were
+  refused by Etsy: Etsy reports such a weight as 0 but accepts only values above 0. A
+  weight or size of 0, or one without its unit, is now left out (with a note) instead
+  of failing every draft, both for templates and for CSV rows.
+
+### Changed
+
+- The repository is now `MoneyPrintLabs/stallkit`; the old address redirects.
+
 ## [0.3.0] — 2026-09-27
 
 ### Changed
@@ -330,7 +343,7 @@ Recorded here and in the code so nobody has to re-derive them:
 - There is no idempotency key, so non-idempotent writes are never retried on a timeout
   or a 5xx — a repeat would mean a duplicate listing, or a second email to a buyer.
 
-[Unreleased]: https://github.com/MoneyPrintLabs/etsyprinting/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/MoneyPrintLabs/etsyprinting/releases/tag/v0.3.0
-[0.2.0]: https://github.com/MoneyPrintLabs/etsyprinting/releases/tag/v0.2.0
-[0.1.0]: https://github.com/MoneyPrintLabs/etsyprinting/releases/tag/v0.1.0
+[Unreleased]: https://github.com/MoneyPrintLabs/stallkit/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/MoneyPrintLabs/stallkit/releases/tag/v0.3.0
+[0.2.0]: https://github.com/MoneyPrintLabs/stallkit/releases/tag/v0.2.0
+[0.1.0]: https://github.com/MoneyPrintLabs/stallkit/releases/tag/v0.1.0
