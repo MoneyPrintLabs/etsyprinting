@@ -192,6 +192,19 @@ def capture(listing: dict[str, Any]) -> Template:
         if value not in (None, ""):
             fields[name] = value
 
+    # Etsy reports 0 for a weight or size nobody entered, and refuses 0 on a new listing
+    # ("must be greater than 0"): an unset measure is not copied onto the drafts.
+    for name in ("item_weight", "item_length", "item_width", "item_height"):
+        try:
+            if name in fields and not float(fields[name]) > 0:
+                del fields[name]
+        except (TypeError, ValueError):
+            del fields[name]
+    if "item_weight" not in fields:
+        fields.pop("item_weight_unit", None)
+    if not any(name in fields for name in ("item_length", "item_width", "item_height")):
+        fields.pop("item_dimensions_unit", None)
+
     # Etsy will refuse anything outside these, and a bad template poisons every draft.
     if fields.get("who_made") not in WHO_MADE:
         fields.pop("who_made", None)

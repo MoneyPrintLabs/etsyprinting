@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-09-28
+
+### Fixed
+
+- Drafts made from a template listing whose weight or size was never filled in were
+  refused by Etsy: Etsy reports such a weight as 0 but accepts only values above 0. A
+  weight or size of 0, or one without its unit, is now left out (with a note) instead
+  of failing every draft, both for templates and for CSV rows.
+
+### Changed
+
+- The repository is now `MoneyPrintLabs/stallkit`; the old address redirects.
+
 ## [0.3.0] — 2026-09-27
 
 ### Changed
