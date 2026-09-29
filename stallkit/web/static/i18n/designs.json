@@ -416,7 +416,17 @@
     "ready.opaque.place": "Mockup'lara yerleştir",
     "ready.opaque.place_sub": "Düz zemin kaldırılır, tasarım her mockup'a yerleşir",
     "ready.opaque.as_is": "Hazır fotoğraf olarak yükle",
-    "ready.opaque.as_is_sub": "Dosya olduğu gibi, tek görsel olarak yüklenir"
+    "ready.opaque.as_is_sub": "Dosya olduğu gibi, tek görsel olarak yüklenir",
+    "ready.wm_label": "Filigran:",
+    "ready.wm_on": "açık",
+    "ready.wm_off": "kapalı",
+    "ready.wm_scope_digital": "dijital ürünlerde",
+    "ready.wm_scope_all": "tüm ilan görsellerinde",
+    "ready.wm_not_this": "bu şablon fiziksel, eklenmez",
+    "ready.wm_edit": "Ayarla",
+    "blocked.watermark": "Filigran dosyası okunamıyor; fotoğraflar filigransız gitmesin diye başlatılmadı. Mockuplar sayfasında yeniden yükleyin ya da kapatın.",
+    "blocked.go_watermark": "Filigran",
+    "problem.watermark_failed": "{name} fotoğrafına filigran eklenemedi; filigransız gönderilmedi"
   },
   "en": {
     "title": "Upload designs",
@@ -835,6 +845,16 @@
     "ready.opaque.place": "Place on the mockups",
     "ready.opaque.place_sub": "The solid background is removed and the design goes onto every mockup",
     "ready.opaque.as_is": "Upload as finished photos",
-    "ready.opaque.as_is_sub": "Each file goes up as it is, as one picture"
+    "ready.opaque.as_is_sub": "Each file goes up as it is, as one picture",
+    "ready.wm_label": "Watermark:",
+    "ready.wm_on": "on",
+    "ready.wm_off": "off",
+    "ready.wm_scope_digital": "digital products",
+    "ready.wm_scope_all": "every listing photo",
+    "ready.wm_not_this": "this template is physical, none is added",
+    "ready.wm_edit": "Edit",
+    "blocked.watermark": "The watermark file cannot be read; nothing starts, so no photo goes up without it. Upload it again on the Mockups page, or switch it off.",
+    "blocked.go_watermark": "Watermark",
+    "problem.watermark_failed": "The watermark could not be put on {name}; it was not sent without it"
   }
 }

@@ -1455,6 +1455,10 @@ class DesignsPage {
         ),
       );
     }
+    // "Filigran: açık · dijital ürünlerde" (or off): the watermark the run stamps on the
+    // listing photos, set on the Mockuplar page.
+    const wmLine = this.watermarkLine(p, () => m.close());
+    if (wmLine) notes.push(wmLine);
     const junk = p.items.filter((x) => x.junk_reason || x.too_many).length;
     if (junk) notes.push(infoNote({ tone: "warning", icon: "alert", text: t("ready.junk", { n: junk }) }));
     const noPhotos = p.items.filter((x) => x.no_photos && !x.junk_reason).length;
@@ -1568,6 +1572,43 @@ class DesignsPage {
     });
   }
 
+  /**
+   * The start card's watermark line (the pending view's `watermark`, drop.watermark
+   * describe): "Filigran: açık · dijital ürünlerde", "(bu şablon fiziksel, eklenmez)" when
+   * this template's run stamps nothing, or "Filigran: kapalı"; "Ayarla" opens its card.
+   */
+  watermarkLine(p, close) {
+    const { t } = this;
+    const w = p && p.watermark;
+    if (!w) return null;
+    const on = !!w.on;
+    const parts = [h("strong", null, t("ready.wm_label")), " ", t(on ? "ready.wm_on" : "ready.wm_off")];
+    if (on) {
+      parts.push(" · ", t(w.scope === "all" ? "ready.wm_scope_all" : "ready.wm_scope_digital"));
+      if (w.applies === false) parts.push(h("span", { class: "dz-modal-wm-skip" }, ` (${t("ready.wm_not_this")})`));
+    }
+    const path = "/kurulum/mockuplar#filigran";
+    return h(
+      "div",
+      { class: cx("dz-modal-wm", on && w.applies !== false && "is-on") },
+      h("span", { class: "dz-modal-wm-icon" }, icon("droplet", { size: 14 })),
+      h("span", { class: "dz-modal-wm-text" }, parts),
+      h(
+        "a",
+        {
+          class: "dz-modal-wm-edit",
+          href: path,
+          onClick: (e) => {
+            e.preventDefault();
+            close();
+            this.ctx.navigate(path);
+          },
+        },
+        t("ready.wm_edit"),
+      ),
+    );
+  }
+
   /** "Yalnızca kontrol et" (the waiting designs' modal): every step but the draft. */
   async startDry() {
     if (this.uploading) {
@@ -1596,6 +1637,7 @@ class DesignsPage {
       else if (b === "locked") action = button({ label: t("blocked.unlock"), size: "sm", onClick: () => { m.close(); this.unlock(); } });
       else if (b === "offline") action = button({ label: t("blocked.retry"), size: "sm", icon: "refresh", autoLoading: true, onClick: async () => { await this.ctx.refreshStatus(true).catch(() => null); m.close(); this.openStart(); } });
       else if (b === "running") action = button({ label: t("blocked.show_run"), size: "sm", onClick: async () => { m.close(); await this.showActive(); } });
+      else if (b === "watermark") action = button({ label: t("blocked.go_watermark"), size: "sm", iconRight: "arrow-right", onClick: go("/kurulum/mockuplar#filigran") });
       const text = b === "template_invalid" ? t("blocked.template_invalid", { message: (p.template && p.template.invalid) || "" }) : b === "locked" ? this.lockText(p) : t(`blocked.${b}`);
       return infoNote({ tone: b === "empty" ? "info" : "warning", icon: b === "empty" ? "info" : "alert", text, action });
     });

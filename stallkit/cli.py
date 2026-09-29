@@ -27,6 +27,7 @@ from .drop import automation, pipeline
 from .drop import catalog as catalog_mod
 from .drop import mockup as mockup_mod
 from .drop import template as template_mod
+from .drop import watermark as watermark_mod
 from .drop import workspace as workspace_mod
 from .errors import AuthError, StallKitError
 
@@ -1330,6 +1331,21 @@ def _drop_mockups(ws: workspace_mod.Workspace, count: Optional[int]) -> list[Pat
     return chosen
 
 
+_NO_WATERMARK_HELP = "Leave the workspace's watermark off the photos for this run."
+
+
+def _drop_watermark(ws: workspace_mod.Workspace, tmpl: template_mod.Template,
+                    use: bool) -> None:
+    """Say once whether the run stamps the workspace's watermark (drop watermark)."""
+    info = watermark_mod.describe(ws, tmpl.listing_type)
+    if not info["file"]:
+        return
+    if not use and info["applies"]:
+        console.print("[dim]Watermark: left off for this run (--no-watermark).[/]")
+        return
+    console.print(f"[dim]{watermark_mod.summary(info)}[/]")
+
+
 @drop_app.command("run")
 def drop_run(
     path: Optional[Path] = typer.Option(None, "--path"),
@@ -1337,6 +1353,7 @@ def drop_run(
     no_flat: bool = typer.Option(False, "--no-flat", help="Do not append the flat artwork."),
     sample: int = typer.Option(200, "--sample", help="Listings to sample per concept."),
     no_cache: bool = typer.Option(False, "--no-cache", help="Ignore cached research."),
+    no_watermark: bool = typer.Option(False, "--no-watermark", help=_NO_WATERMARK_HELP),
 ) -> None:
     """Turn the designs in your folder into a review CSV. Sends nothing to Etsy."""
     ws = _workspace(path).require()
@@ -1359,6 +1376,7 @@ def drop_run(
         _warn(f"Running without market research ({exc.args[0].splitlines()[0]}).")
 
     chosen = _drop_mockups(ws, mockups)
+    _drop_watermark(ws, tmpl, not no_watermark)
     images_each = len(chosen) + (0 if no_flat else 1)
     # A digital template's drafts also upload what the buyer downloads, one request each.
     to_order = pipeline.made_to_order(tmpl)  # a made-to-order draft may go without one
@@ -1386,6 +1404,7 @@ def drop_run(
                 sample=sample,
                 use_cache=not no_cache,
                 on_progress=lambda msg: status.update(msg),
+                watermark=not no_watermark,
             )
     finally:
         if client:
@@ -1645,16 +1664,20 @@ def drop_auto(
     path: Optional[Path] = typer.Option(None, "--path", help="Etsy Studio folder."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Prepare and validate offline, without uploading."),
     mockups: Optional[int] = typer.Option(None, "--mockups", min=0, help=_MOCKUPS_HELP),
+    no_watermark: bool = typer.Option(False, "--no-watermark", help=_NO_WATERMARK_HELP),
 ) -> None:
     """Prepare new products and upload Etsy drafts. Previously attempted products are skipped."""
     ws = _workspace(path).require()
     tmpl = template_mod.Template.from_dict(ws.read_template())
     chosen = _drop_mockups(ws, mockups)
+    _drop_watermark(ws, tmpl, not no_watermark)
     if dry_run:
-        report = automation.run(ws, tmpl, dry_run=True, mockups=chosen)
+        report = automation.run(ws, tmpl, dry_run=True, mockups=chosen,
+                                watermark=not no_watermark)
     else:
         with _client() as client:
-            report = automation.run(ws, tmpl, client=client, mockups=chosen)
+            report = automation.run(ws, tmpl, client=client, mockups=chosen,
+                                    watermark=not no_watermark)
     if report.prepared and report.prepared.csv_path:
         console.print(f"Review: {report.prepared.csv_path}")
         for product in report.prepared.ready:
@@ -1669,6 +1692,86 @@ def drop_auto(
         _warn(f"Needs Etsy review before retrying: {item}")
     if report.needs_review or report.uploaded.errors or report.uploaded.partial:
         raise typer.Exit(1)
+
+
+_WATERMARK_WHERE = {"center": "centre", "corner": "bottom-right corner",
+                    "tiled": "repeated diagonally"}
+
+
+@drop_app.command("watermark")
+def drop_watermark(
+    path: Optional[Path] = typer.Option(None, "--path", help="Etsy Studio folder."),
+    file: Optional[Path] = typer.Option(
+        None, "--file", help="A PNG (transparent background recommended), JPG or WebP, at "
+        "most 10 MB. Replaces the current watermark.",
+    ),
+    on: Optional[bool] = typer.Option(None, "--on/--off", help="Switch the watermark on or off."),
+    scope: Optional[str] = typer.Option(
+        None, "--scope", help="digital (only listings of a download/both template) or all."),
+    position: Optional[str] = typer.Option(
+        None, "--position", help="center, corner (bottom right) or tiled (repeated diagonally)."),
+    opacity: Optional[int] = typer.Option(None, "--opacity", help="10-90 (percent)."),
+    size: Optional[int] = typer.Option(
+        None, "--size", help="Percent of the photo width: 5-60 for center/corner, 5-40 for tiled."),
+    remove: bool = typer.Option(False, "--remove", help="Delete the watermark picture."),
+) -> None:
+    """Show or set the watermark stamped on listing photos (never on download files).
+
+    The same watermark.png and watermark.json the app's Mockups page sets, at the
+    workspace root; `drop run`, `drop auto` and the app's runs all use it.
+    """
+    ws = _workspace(path).require()
+    try:
+        if remove:
+            if watermark_mod.remove(ws):
+                _ok(f"Removed {watermark_mod.watermark_path(ws)}.")
+            else:
+                _warn("There is no watermark to remove.")
+        if file is not None:
+            try:
+                data = file.read_bytes()
+            except OSError as exc:
+                _fail(f"Cannot read {file}: {exc}")
+                raise typer.Exit(1) from exc
+            watermark_mod.save_upload(ws, file.name, data)
+            _ok(f"Watermark set from {file.name}.")
+        changes: dict[str, Any] = {}
+        if on is not None:
+            changes["enabled"] = on
+        if scope is not None:
+            changes["scope"] = scope
+        if position is not None:
+            changes["position"] = position
+        if opacity is not None:
+            changes["opacity"] = opacity
+        if size is not None:
+            target = position or watermark_mod.load_settings(ws).position
+            changes["tile_size" if target == watermark_mod.TILED else "size"] = size
+        if changes:
+            watermark_mod.update_settings(ws, **changes)
+    except watermark_mod.WatermarkError as exc:
+        _fail(str(exc))
+        raise typer.Exit(1) from exc
+    except StallKitError as exc:  # too many pixels
+        _fail(str(exc))
+        raise typer.Exit(1) from exc
+
+    info = watermark_mod.describe(ws)
+    settings = watermark_mod.load_settings(ws)
+    table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
+    table.add_row("picture", str(watermark_mod.watermark_path(ws)) if info["file"] else "none")
+    table.add_row("state", "on" if info["on"] else "off")
+    table.add_row("applies to", "digital products only" if settings.scope == "digital"
+                  else "every listing")
+    table.add_row("position", _WATERMARK_WHERE[settings.position])
+    table.add_row("opacity", f"{settings.opacity}%")
+    table.add_row("size", f"{settings.size}% of the photo width (center/corner), "
+                  f"{settings.tile_size}% each (tiled)")
+    console.print(table)
+    if info["problem"]:
+        _warn("The watermark picture cannot be read; set it again with --file.")
+    elif not info["file"]:
+        console.print("[dim]Set one with: stallkit drop watermark --file logo.png[/]")
 
 
 # --- pinterest -----------------------------------------------------------------

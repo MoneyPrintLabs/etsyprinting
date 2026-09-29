@@ -1,11 +1,13 @@
 // Mockuplar (frames t170, t180) and the print-area editor (frame t190).
 //
-//   /kurulum/mockuplar         grid of mockup cards, type filter chips, upload by picker or drop
+//   /kurulum/mockuplar         grid of mockup cards, type filter chips, upload by picker or drop,
+//                              and under it the Filigran card (#filigran): the seller's watermark
 //   /kurulum/mockuplar/:name   editor: library list, canvas with the print-area rectangle,
 //                              X / Y / width / height fields, same-size apply, preview design
 //
 // Everything is local (1-MOCKUPS in the products folder); no Etsy call is made, so the
-// page works before any key is saved. Endpoints: stallkit/web/api/mockups.py.
+// page works before any key is saved. Endpoints: stallkit/web/api/mockups.py and
+// stallkit/web/api/watermark.py.
 
 import {
   badge,
@@ -28,6 +30,7 @@ import {
   select,
   skeleton,
   spinner,
+  svg,
   textInput,
   toggle,
   uid,
@@ -253,7 +256,8 @@ function installPageDrop(el, ctx, onFiles) {
   el.appendChild(overlay);
   let timer = null;
   const hasFiles = (e) => !!e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files");
-  const inZone = (e) => !!(e.target && e.target.closest && e.target.closest(".dropzone"));
+  // A dropzone takes its own files; so does the Filigran card (a watermark, not a mockup).
+  const inZone = (e) => !!(e.target && e.target.closest && e.target.closest(".dropzone, .mk-wm"));
   const onOver = (e) => {
     if (!hasFiles(e) || inZone(e)) return;
     e.preventDefault();
@@ -456,7 +460,11 @@ async function mountGrid(el, ctx) {
   toolsHost.hidden = true;
   const notes = h("div", { class: "mk-notes" });
   const grid = h("div", { class: "mk-grid", role: "list" });
-  el.append(toolbar, usageHost, toolsHost, notes, grid);
+  // Filigran: under the grid, so the page opens as the video's; "#filigran" scrolls to it.
+  const wmCtl = watermarkSection(ctx, { labelFor: (name) => (byName.get(name) ? itemLabel(t, byName.get(name)) : stem(name)) });
+  wmCtl.el.hidden = true;
+  el.append(toolbar, usageHost, toolsHost, notes, grid, wmCtl.el);
+  cleanups.push(() => wmCtl.flush());
   const offDrop = installPageDrop(el, ctx, (files) => queueUpload(files));
   cleanups.push(offDrop);
 
@@ -495,6 +503,7 @@ async function mountGrid(el, ctx) {
     notes.hidden = true;
     usageHost.hidden = true;
     toolsHost.hidden = true;
+    wmCtl.el.hidden = true;
     mount(
       grid,
       h(
@@ -1175,6 +1184,9 @@ async function mountGrid(el, ctx) {
       return;
     }
     renderGrid();
+    // The mockups a preview can use follow the grid's (switched on, in order).
+    wmCtl.el.hidden = false;
+    wmCtl.load({ quiet: true });
     // Never silently: a mockup that was just switched on or added but does not fit says so.
     const over = warnOver.map((n) => byName.get(n)).filter((it) => it && it.over_limit);
     if (over.length === 1) ctx.toast({ tone: "warning", title: t("enabled.over_title"), message: t("enabled.over", { max: max(), label: itemLabel(t, over[0]) }), timeout: 8000 });
@@ -1191,6 +1203,579 @@ async function mountGrid(el, ctx) {
       }
     }
   };
+}
+
+// ------------------------------------------------------------------ Filigran (watermark)
+//
+// The seller's own mark (a logo, the shop name). Tasarım Yükle and `drop run/auto` stamp
+// it on a copy of every listing PHOTO (the composited mockups, the flat image, a product
+// folder's own photos), never on the files buyers download. The picture and its
+// settings live at the workspace root (drop/watermark.py): watermark.png, watermark.json.
+
+const WM_ACCEPT = ".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp";
+const WM_RE = /\.(png|jpe?g|webp)$/i;
+const WM_FLAT = "flat";
+const WM_PREVIEW_MAX = 1000;
+const WM_POSITIONS = ["center", "corner", "tiled"];
+const WM_SCOPES = ["digital", "all"];
+
+/** A position tile's picture: a photo frame with the mark where it goes. */
+function wmPositionArt(pos) {
+  const marks = [];
+  if (pos === "center") marks.push(svg("rect", { x: 13, y: 13, width: 18, height: 6, rx: 1.6 }));
+  else if (pos === "corner") marks.push(svg("rect", { x: 27, y: 22.5, width: 12, height: 5, rx: 1.4 }));
+  else {
+    const spots = [[3, 8], [19, 4], [35, 0], [11, 17], [27, 13], [3, 26], [19, 22], [35, 18]];
+    for (const [x, y] of spots) {
+      marks.push(svg("rect", { x, y, width: 9, height: 3.4, rx: 1, transform: `rotate(-30 ${x + 4.5} ${y + 1.7})` }));
+    }
+  }
+  return svg(
+    "svg",
+    { class: "mk-wm-pos-art", viewBox: "0 0 44 32", "aria-hidden": "true" },
+    svg("rect", { class: "mk-wm-pos-frame", x: 0.75, y: 0.75, width: 42.5, height: 30.5, rx: 4 }),
+    svg("g", { class: "mk-wm-pos-marks" }, marks),
+  );
+}
+
+/**
+ * The Filigran card. -> {el, load({quiet}), flush()}. Changes save on their own (PATCH
+ * /api/watermark, a moment after the last one); the preview is drawn by the server on a
+ * real mockup with the unsaved values, the same way the drafts get it.
+ */
+function watermarkSection(ctx, { labelFor }) {
+  const t = ctx.t;
+  const titleId = uid("wm");
+  const el = h("section", { class: "card mk-wm", id: "filigran", "aria-labelledby": titleId, dataset: { drop: t("wm.drop") } });
+  let wm = null; // GET /api/watermark
+  let draft = null; // the settings on screen (saved or about to be)
+  let pending = {}; // fields changed on screen and not saved yet
+  let saveTimer = null;
+  let saving = null;
+  let busy = false; // an upload, a removal or a background removal is running
+  let target = null; // the mockup the preview shows (or WM_FLAT)
+  let loadSeq = 0;
+  let previewSeq = 0;
+  let depth = 0;
+  let scrolled = false;
+  const refs = {};
+
+  const limits = () => (wm && wm.limits) || { opacity: [10, 90], size: [5, 60], tile_size: [5, 40], max_mb: 10 };
+  const sizeKey = () => (draft && draft.position === "tiled" ? "tile_size" : "size");
+  const pct = (v) => percent(v / 100);
+
+  // ---- data
+
+  async function load({ quiet = false } = {}) {
+    if (quiet && busy) return; // the upload or removal redraws the card itself
+    const seq = ++loadSeq;
+    if (!wm) renderSkeleton();
+    let next;
+    try {
+      next = await ctx.api.get("/api/watermark", null, { signal: ctx.signal });
+    } catch (err) {
+      if (ctx.api.isAbort(err) || seq !== loadSeq) return;
+      if (!wm) {
+        mount(el, infoNote({ tone: "danger", icon: "alert", text: [h("strong", null, t("wm.load_error")), " ", ctx.api.errorText(err, t)] }));
+      }
+      return;
+    }
+    if (seq !== loadSeq) return;
+    const sameFile = wm && wm.file && next.file && wm.file.version === next.file.version;
+    const settle = quiet && sameFile && refs.side && refs.side.isConnected;
+    wm = next;
+    if (settle) {
+      // Only what the grid can change: the mockups the preview can use, and whether the
+      // next run stamps. The sliders keep their place (and focus).
+      if (!Object.keys(pending).length) draft = { ...wm.settings };
+      renderTargets();
+      renderApplies();
+      return;
+    }
+    draft = { ...wm.settings, ...pending };
+    render();
+    if (!scrolled && location.hash === "#filigran") {
+      scrolled = true;
+      requestAnimationFrame(() => el.scrollIntoView({ block: "start", behavior: "smooth" }));
+    }
+  }
+
+  function take(res) {
+    wm = res;
+    pending = {};
+    draft = { ...wm.settings };
+    render();
+  }
+
+  function queueSave(fields, { now = false } = {}) {
+    Object.assign(draft, fields);
+    Object.assign(pending, fields);
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => save(), now ? 0 : 550);
+    renderApplies();
+    renderState();
+  }
+
+  async function save() {
+    clearTimeout(saveTimer);
+    if (!Object.keys(pending).length) return;
+    if (saving) {
+      // One PATCH at a time; the next one goes when this one is answered.
+      saveTimer = setTimeout(() => save(), 120);
+      return;
+    }
+    const body = pending;
+    pending = {};
+    saving = ctx.api.patch("/api/watermark", body);
+    try {
+      const res = await saving;
+      wm = res;
+      // What changed on screen meanwhile stays on screen (it is queued).
+      draft = { ...wm.settings, ...pending };
+      renderApplies();
+      renderState();
+    } catch (err) {
+      if (ctx.api.isAbort(err)) return;
+      ctx.toast({ tone: "danger", title: t("wm.save_failed"), message: ctx.api.errorText(err, t) });
+      pending = {};
+      if (ctx.isActive()) await load();
+    } finally {
+      saving = null;
+    }
+  }
+
+  /** What is still waiting goes now (not tied to the page's signal: it also runs when the
+   *  page is left). Resolves when it is saved. */
+  function flush() {
+    clearTimeout(saveTimer);
+    const before = (saving || Promise.resolve()).catch(() => null);
+    if (!Object.keys(pending).length) return before;
+    const body = pending;
+    pending = {};
+    // After the PATCH already on its way, so an older value never lands last.
+    return before.then(() => ctx.api.patch("/api/watermark", body)).catch(() => null);
+  }
+
+  async function uploadMark(file) {
+    if (!file || busy) return;
+    if (!WM_RE.test(file.name || "")) {
+      ctx.toast({ tone: "danger", title: t("wm.upload_failed"), message: t("errors.watermark_type", { name: file.name || "" }) });
+      return;
+    }
+    const maxMb = limits().max_mb || 10;
+    if (file.size > maxMb * 1024 * 1024) {
+      ctx.toast({ tone: "danger", title: t("wm.upload_failed"), message: t("errors.watermark_too_large", { name: file.name, max_mb: maxMb }) });
+      return;
+    }
+    const had = !!(wm && wm.file);
+    busy = true;
+    el.classList.add("is-busy");
+    renderBusy(t("wm.uploading"));
+    try {
+      await flush();
+      const res = await ctx.api.upload("/api/watermark/file", file, { query: { name: file.name }, signal: ctx.signal });
+      take(res);
+      ctx.toast({ tone: "success", title: t(had ? "wm.replaced" : "wm.uploaded"), message: res.file ? res.file.name : file.name, timeout: 3500 });
+    } catch (err) {
+      if (ctx.api.isAbort(err)) return;
+      ctx.toast({ tone: "danger", title: t("wm.upload_failed"), message: ctx.api.errorText(err, t), timeout: 9000 });
+      render();
+    } finally {
+      busy = false;
+      el.classList.remove("is-busy");
+    }
+  }
+
+  async function pickMark() {
+    const input = h("input", { type: "file", accept: WM_ACCEPT, class: "sr-only", tabindex: "-1", "aria-hidden": "true" });
+    const file = await new Promise((resolve) => {
+      const done = (f) => {
+        input.remove();
+        resolve(f);
+      };
+      input.addEventListener("change", () => done((input.files || [])[0] || null), { once: true });
+      input.addEventListener("cancel", () => done(null), { once: true });
+      document.body.appendChild(input);
+      input.click();
+    });
+    if (file && ctx.isActive()) await uploadMark(file);
+  }
+
+  async function removeMark() {
+    if (busy || !wm || !wm.file) return;
+    const ok = await ctx.confirm({
+      title: t("wm.remove_title"),
+      message: t("wm.remove_msg", { name: wm.file.name }),
+      confirmLabel: t("wm.remove"),
+      danger: true,
+    });
+    if (!ok) return;
+    busy = true;
+    try {
+      await flush();
+      take(await ctx.api.del("/api/watermark/file", null, { signal: ctx.signal }));
+      ctx.toast({ tone: "success", title: t("wm.removed"), timeout: 3000 });
+    } catch (err) {
+      if (!ctx.api.isAbort(err)) ctx.toast({ tone: "danger", title: ctx.api.errorText(err, t) });
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function clearGround(btn) {
+    if (busy) return;
+    busy = true;
+    if (btn) btn.setLoading(true);
+    try {
+      take(await ctx.api.post("/api/watermark/remove-ground", null, { signal: ctx.signal }));
+      ctx.toast({ tone: "success", title: t("wm.ground_done"), timeout: 3000 });
+    } catch (err) {
+      if (btn) btn.setLoading(false);
+      if (!ctx.api.isAbort(err)) ctx.toast({ tone: "danger", title: ctx.api.errorText(err, t) });
+    } finally {
+      busy = false;
+    }
+  }
+
+  // ---- drag and drop onto the card: the dropped picture becomes the watermark
+
+  const hasFiles = (e) => !!e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files");
+  // The empty card's drop area takes its own files (ui.dropzone).
+  const inDropzone = (e) => !!(e.target && e.target.closest && e.target.closest(".dropzone"));
+  // The page's own drop overlay leaves this card alone (installPageDrop), so a file
+  // dropped here is always taken here, never opened by the browser.
+  el.addEventListener("dragenter", (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    depth += 1;
+    if (wm && wm.file) el.classList.add("is-over");
+  });
+  el.addEventListener("dragover", (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = wm ? "copy" : "none";
+  });
+  el.addEventListener("dragleave", () => {
+    depth = Math.max(0, depth - 1);
+    if (!depth) el.classList.remove("is-over");
+  });
+  el.addEventListener("drop", (e) => {
+    depth = 0;
+    el.classList.remove("is-over");
+    if (!hasFiles(e) || inDropzone(e)) return;
+    e.preventDefault();
+    const file = [...(e.dataTransfer.files || [])][0];
+    if (file && wm) uploadMark(file);
+  });
+
+  // ---- drawing
+
+  function renderSkeleton() {
+    mount(
+      el,
+      h("div", { class: "mk-wm-head" }, h("span", { class: "icon-tile" }, icon("droplet", { size: 16 })), h("div", { class: "mk-wm-titles" }, h("h2", { class: "mk-wm-title", id: titleId }, t("wm.title")), skeleton({ lines: 1, height: 10, widths: ["280px"] }))),
+    );
+  }
+
+  function renderBusy(text) {
+    if (refs.stageWait) {
+      refs.stageWait.hidden = false;
+      refs.stageWait.lastChild.textContent = text;
+    } else if (refs.drop) {
+      refs.drop.classList.add("is-reading");
+    }
+  }
+
+  function head() {
+    const file = wm && wm.file;
+    refs.state = h("span", { class: "mk-wm-state" });
+    refs.toggle = file
+      ? toggle({
+          checked: !!draft.enabled,
+          ariaLabel: t("wm.toggle"),
+          onChange: (on) => {
+            queueSave({ enabled: on }, { now: true });
+            if (refs.stage) refs.stage.classList.toggle("is-off", !on);
+          },
+        })
+      : null;
+    return h(
+      "header",
+      { class: "mk-wm-head" },
+      h("span", { class: "icon-tile" }, icon("droplet", { size: 16 })),
+      h("div", { class: "mk-wm-titles" }, h("h2", { class: "mk-wm-title", id: titleId }, t("wm.title")), h("p", { class: "mk-wm-sub" }, t("wm.sub"))),
+      file ? h("div", { class: "mk-wm-switch" }, refs.state, refs.toggle) : null,
+    );
+  }
+
+  function renderState() {
+    if (!refs.state || !wm || !wm.file) return;
+    const on = !!draft.enabled;
+    mount(refs.state, h("span", { class: cx("mk-wm-dot", on && "is-on"), "aria-hidden": "true" }), t(on ? "wm.state_on" : "wm.state_off"));
+    refs.state.classList.toggle("is-on", on);
+    if (refs.toggle && refs.toggle.checked !== on) refs.toggle.update(on);
+  }
+
+  function render() {
+    for (const k of Object.keys(refs)) delete refs[k];
+    if (!wm) return;
+    const body = wm.file ? fullBody() : emptyBody();
+    mount(el, head(), body);
+    el.classList.toggle("is-empty", !wm.file);
+    renderState();
+    renderApplies();
+    if (wm.file) drawPreview();
+  }
+
+  function emptyBody() {
+    const lim = limits();
+    refs.drop = dropzone({
+      accept: WM_ACCEPT,
+      multiple: false,
+      class: "mk-wm-drop",
+      title: t("wm.empty_title"),
+      onFiles: (list) => uploadMark(list[0] && list[0].file),
+      onReject: (bad) => ctx.toast({ tone: "danger", title: t("wm.upload_failed"), message: t("errors.watermark_type", { name: (bad[0] && bad[0].file.name) || "" }) }),
+      content: [
+        h("span", { class: "mk-wm-drop-icon" }, icon("upload", { size: 22 })),
+        h("p", { class: "mk-wm-drop-title" }, t("wm.empty_title")),
+        h("p", { class: "mk-wm-drop-sub" }, t("wm.empty_sub")),
+        h("p", { class: "mk-wm-drop-types" }, t("wm.empty_types", { mb: lim.max_mb || 10 })),
+      ],
+    });
+    const fact = (ic, text) => h("li", { class: "mk-wm-fact" }, h("span", { class: "mk-wm-fact-icon" }, icon(ic, { size: 15 })), h("span", null, text));
+    return h(
+      "div",
+      { class: "mk-wm-body is-empty" },
+      refs.drop,
+      h(
+        "div",
+        { class: "mk-wm-about" },
+        h("p", { class: "mk-wm-about-title" }, t("wm.about_title")),
+        h("ul", { class: "mk-wm-facts" }, fact("image", t("wm.fact_photos")), fact("download", t("wm.fact_downloads")), fact("layers", t("wm.fact_settings"))),
+      ),
+    );
+  }
+
+  function fullBody() {
+    const file = wm.file;
+    // The preview: a real mockup (the first one the drafts use), or the flat image.
+    refs.img = h("img", { class: "mk-wm-img", alt: t("wm.preview_alt"), decoding: "async", draggable: "false" });
+    refs.stageWait = h("span", { class: "mk-wm-wait" }, spinner({ size: 18, tone: "accent" }), h("span", null, t("wm.preview_drawing")));
+    refs.stageWait.hidden = true;
+    refs.stageErr = h("span", { class: "mk-wm-stage-err" }, icon("alert", { size: 14 }), h("span", null, t("wm.preview_failed")));
+    refs.stageErr.hidden = true;
+    refs.stage = h("div", { class: cx("mk-wm-stage", !draft.enabled && "is-off") }, refs.img, refs.stageWait, refs.stageErr);
+    refs.targets = h("div", { class: "mk-wm-target" });
+    renderTargets();
+    const previewCol = h("div", { class: "mk-wm-preview" }, refs.stage, h("div", { class: "mk-wm-under" }, refs.targets, h("span", { class: "mk-wm-under-note" }, icon("check", { size: 13 }), t("wm.preview_note"))));
+
+    // The picture itself.
+    const size = file.width && file.height ? `${file.width}×${file.height}` : "";
+    const ground = file.readable === false ? "unreadable" : file.ground || "";
+    const meta = [
+      size ? h("span", { class: "mono" }, size) : null,
+      ground && ground !== "unreadable" ? h("span", { class: cx("mk-wm-ground", `is-${ground}`) }, t(`wm.ground.${ground}`)) : null,
+    ].filter(Boolean);
+    const fileRow = h(
+      "div",
+      { class: "mk-wm-file" },
+      h("span", { class: "mk-wm-file-thumb checker" }, file.readable === false ? icon("alert", { size: 18 }) : h("img", { src: ctx.api.url("/api/watermark/image", { v: file.version }), alt: "" })),
+      h(
+        "div",
+        { class: "mk-wm-file-text" },
+        h("span", { class: "mk-wm-file-name ellipsis", title: file.name }, file.name),
+        h("span", { class: "mk-wm-file-meta" }, meta),
+      ),
+      button({ label: t("wm.replace"), size: "sm", variant: "secondary", onClick: () => pickMark() }),
+      iconButton({ icon: "trash", title: t("wm.remove"), variant: "ghost", size: "sm", class: "mk-wm-remove", onClick: () => removeMark() }),
+    );
+    let groundNote = null;
+    if (ground === "unreadable") {
+      groundNote = infoNote({ tone: "danger", icon: "alert", text: t("wm.unreadable") });
+    } else if (ground === "flat") {
+      const fix = button({ label: t("wm.ground_action"), size: "sm", variant: "secondary", onClick: () => clearGround(fix) });
+      groundNote = infoNote({ tone: "info", icon: "image", text: t("wm.ground_flat_note"), action: fix });
+    } else if (ground === "photo") {
+      groundNote = infoNote({ tone: "warning", icon: "alert", text: t("wm.ground_photo_note") });
+    }
+
+    // Where it goes (scope), where on the photo (position), how strong and how big.
+    const option = (group, id, title, sub) =>
+      h(
+        "button",
+        {
+          type: "button",
+          role: "radio",
+          class: cx("mk-wm-opt", draft[group] === id && "is-selected"),
+          "aria-checked": draft[group] === id ? "true" : "false",
+          dataset: { group, id },
+          onClick: () => choose(group, id),
+        },
+        group === "position" ? wmPositionArt(id) : h("span", { class: "mk-wm-radio", "aria-hidden": "true" }),
+        h("span", { class: "mk-wm-opt-text" }, h("strong", null, title), sub ? h("span", null, sub) : null),
+      );
+    refs.scope = h(
+      "div",
+      { class: "mk-wm-opts mk-wm-scope", role: "radiogroup", "aria-label": t("wm.scope") },
+      WM_SCOPES.map((id) => option("scope", id, t(`wm.scope.${id}`), t(`wm.scope.${id}_sub`))),
+    );
+    refs.positions = h(
+      "div",
+      { class: "mk-wm-opts mk-wm-positions", role: "radiogroup", "aria-label": t("wm.position") },
+      WM_POSITIONS.map((id) => option("position", id, t(`wm.position.${id}`), null)),
+    );
+    refs.opacity = slider("opacity", t("wm.opacity"));
+    refs.size = slider(sizeKey(), t("wm.size"));
+    refs.applies = h("div", { class: "mk-wm-applies" });
+    const side = h(
+      "div",
+      { class: "mk-wm-side" },
+      fileRow,
+      groundNote,
+      h("div", { class: "mk-wm-group" }, h("p", { class: "mk-wm-label" }, t("wm.scope")), refs.scope),
+      h("div", { class: "mk-wm-group" }, h("p", { class: "mk-wm-label" }, t("wm.position")), refs.positions),
+      h("div", { class: "mk-wm-sliders" }, refs.opacity.el, refs.size.el),
+      refs.applies,
+    );
+    refs.side = side;
+    return h("div", { class: "mk-wm-body" }, previewCol, side);
+  }
+
+  /** A labelled range: -> {el, key, set(value)}. */
+  function slider(key, label) {
+    const [lo, hi] = limits()[key] || [0, 100];
+    const value = h("span", { class: "mk-wm-slider-value num" });
+    const hint = h("span", { class: "mk-wm-slider-hint" });
+    const input = h("input", { type: "range", class: "mk-wm-range", min: String(lo), max: String(hi), step: "1", "aria-label": label });
+    const ctl = { key, el: null, input };
+    const paint = () => {
+      const v = Number(input.value);
+      value.textContent = pct(v);
+      input.style.setProperty("--fill", `${((v - lo) / (hi - lo || 1)) * 100}%`);
+      input.setAttribute("aria-valuetext", pct(v));
+    };
+    ctl.set = (v, k = ctl.key) => {
+      ctl.key = k;
+      const [l, u] = limits()[k] || [lo, hi];
+      input.min = String(l);
+      input.max = String(u);
+      input.value = String(v);
+      if (k !== "opacity") hint.textContent = t(k === "tile_size" ? "wm.size_hint_tiled" : "wm.size_hint");
+      paint();
+    };
+    input.addEventListener("input", () => {
+      paint();
+      draft[ctl.key] = Number(input.value);
+      schedulePreview();
+    });
+    input.addEventListener("change", () => queueSave({ [ctl.key]: Number(input.value) }));
+    ctl.el = h("label", { class: "mk-wm-slider" }, h("span", { class: "mk-wm-slider-row" }, h("span", { class: "mk-wm-label" }, label), hint, h("span", { class: "spacer" }), value), input);
+    ctl.set(draft[key], key);
+    return ctl;
+  }
+
+  function choose(group, id) {
+    if (draft[group] === id) return;
+    const box = group === "scope" ? refs.scope : refs.positions;
+    for (const b of box.querySelectorAll(".mk-wm-opt")) {
+      const on = b.dataset.id === id;
+      b.classList.toggle("is-selected", on);
+      b.setAttribute("aria-checked", on ? "true" : "false");
+    }
+    queueSave({ [group]: id });
+    if (group === "position") {
+      refs.size.set(draft[sizeKey()], sizeKey());
+      drawPreview();
+    }
+  }
+
+  function renderTargets() {
+    if (!refs.targets || !wm) return;
+    const names = wm.preview_mockups || [];
+    if (target !== WM_FLAT && !names.includes(target)) target = wm.preview_default || WM_FLAT;
+    const options = names.map((n) => ({ value: n, label: labelFor(n) }));
+    options.push({ value: WM_FLAT, label: t("wm.preview_flat") });
+    mount(
+      refs.targets,
+      select({
+        options,
+        value: target,
+        size: "sm",
+        prefix: t("wm.preview_on"),
+        onChange: (v) => {
+          target = v;
+          drawPreview();
+        },
+      }),
+    );
+  }
+
+  const schedulePreview = debounce(() => drawPreview(), 160);
+
+  function drawPreview() {
+    if (!refs.img || !wm || !wm.file || wm.file.readable === false) return;
+    schedulePreview.cancel();
+    const seq = ++previewSeq;
+    const src = ctx.api.url("/api/watermark/preview", {
+      mockup: target || WM_FLAT,
+      design: wm.preview_design || undefined,
+      position: draft.position,
+      opacity: draft.opacity,
+      size: draft.size,
+      tile_size: draft.tile_size,
+      max: WM_PREVIEW_MAX,
+      v: wm.file.version,
+    });
+    const slow = setTimeout(() => {
+      if (seq === previewSeq && refs.stageWait) {
+        refs.stageWait.lastChild.textContent = t("wm.preview_drawing");
+        refs.stageWait.hidden = false;
+      }
+    }, 180);
+    const probe = new Image();
+    probe.decoding = "async";
+    probe.onload = () => {
+      clearTimeout(slow);
+      if (seq !== previewSeq || !refs.img) return;
+      refs.img.src = src;
+      refs.stageWait.hidden = true;
+      refs.stageErr.hidden = true;
+      refs.stage.classList.add("has-image");
+    };
+    probe.onerror = () => {
+      clearTimeout(slow);
+      if (seq !== previewSeq || !refs.stageErr) return;
+      refs.stageWait.hidden = true;
+      refs.stageErr.hidden = false;
+    };
+    probe.src = src;
+  }
+
+  /** What the next Tasarım Yükle run does with it, and where it never goes. */
+  function renderApplies() {
+    if (!refs.applies || !wm) return;
+    const type = wm.listing_type;
+    const digital = type === "download" || type === "both";
+    let tone = "muted";
+    let text;
+    if (!draft.enabled) text = t("wm.applies.off");
+    else if (!type) text = t("wm.applies.no_template");
+    else if (draft.scope === "all") {
+      tone = "on";
+      text = t("wm.applies.all");
+    } else if (digital) {
+      tone = "on";
+      text = t("wm.applies.digital");
+    } else text = t("wm.applies.physical");
+    mount(
+      refs.applies,
+      h("p", { class: cx("mk-wm-applies-line", `is-${tone}`) }, icon(tone === "on" ? "check-circle" : "info", { size: 14 }), h("span", null, text)),
+      h("p", { class: "mk-wm-applies-line is-never" }, icon("download", { size: 14 }), h("span", null, t("wm.never_downloads"))),
+    );
+  }
+
+  return { el, load, flush };
 }
 
 // ------------------------------------------------------------------ editor

@@ -33,6 +33,13 @@ folder with only its `dosyalar` and no photos fails step 5 at once (no_photos), 
 the template. A file that fails after the draft exists leaves the product `partial`,
 and the history records `files_uploaded` next to `images_uploaded`.
 
+The workspace's watermark (drop.watermark), when it is on and its scope takes this
+template, is stamped on a copy of every picture a draft shows buyers: the mockups, the
+flat render or preview, a folder's own photos, a photo uploaded as it is. The copies go
+to the product's `watermarked` folder in the batch; the seller's files and the download
+files are never touched, and Etsy is told each stamped picture is watermarked. A picture
+the mark cannot be put on fails its product (watermark_failed): it never goes up bare.
+
 A loose design without see-through pixels is a finished photo and goes up as it is,
 with an `as_is` warning (never silently). With `opaque="place"` (the page's choice for
 the batch), one saved on a solid background (all four borders one colour,
@@ -79,6 +86,7 @@ from ..errors import AuthError, AuthUnreachable, EtsyApiError, ValidationError
 from ..listings import DIGITAL_TYPES
 from ..seo import MarketReport
 from . import automation, catalog, generate, mockup, pipeline, seeds
+from . import watermark as watermark_mod
 from .template import Template
 from .workspace import Workspace
 
@@ -179,6 +187,8 @@ class StreamItem:
     market: MarketReport | None = None
     alts: dict[str, str] = field(default_factory=dict)  # image path -> its alt text
     upscale: float = 0.0  # the most a design was enlarged onto a mockup or flat render
+    stamped: set[str] = field(default_factory=set)  # watermarked images (_image_key)
+    unstamped: list[Path] = field(default_factory=list)  # what they were stamped from
 
     @property
     def kind(self) -> str:
@@ -258,6 +268,7 @@ def run_stream(
     use_cache: bool = True,
     dry_run: bool = False,
     opaque: str = OPAQUE_AS_IS,
+    watermark: bool = True,
 ) -> StreamReport:
     """Create a draft for every product in 2-PRODUCTS the history has not seen yet.
 
@@ -266,13 +277,16 @@ def run_stream(
     draft is created; the draft being created finishes. `dry_run` stops every product
     after the check step and needs no client (research is then skipped or cached).
     `opaque` says what becomes of a loose design without see-through pixels (OPAQUE_*).
+    `watermark`: stamp the workspace's watermark when it is on and takes this template
+    (drop.watermark.for_run); False never stamps. A watermark that is on but cannot be
+    read stops the run before anything is sent.
     Raises ValidationError / UploadLocked for problems that stop the whole run before
     anything is sent; everything that concerns one product lands on that product.
     """
     return _Run(
         workspace, template, client, mockups=list(mockups), on_event=on_event, cancel=cancel,
         concurrency=concurrency, include_flat=include_flat, sample=sample,
-        use_cache=use_cache, dry_run=dry_run, opaque=opaque,
+        use_cache=use_cache, dry_run=dry_run, opaque=opaque, watermark=watermark,
     ).run()
 
 
@@ -394,8 +408,8 @@ class _Recorder(automation.RecordedClient):
     """automation's history-writing client, plus what the stream needs to know."""
 
     def __init__(self, client, path, state, entry, on_image, on_file=None,
-                 alts=None) -> None:
-        super().__init__(client, path, state, entry)
+                 alts=None, stamped=None) -> None:
+        super().__init__(client, path, state, entry, stamped=stamped)
         self.on_image = on_image
         self.on_file = on_file
         self.alts: dict[str, str] = dict(alts or {})
@@ -443,7 +457,7 @@ class _Run:
     def __init__(self, workspace: Workspace, template: Template, client: Any, *,
                  mockups: list[Path], on_event: OnEvent | None, cancel: Any,
                  concurrency: int, include_flat: bool, sample: int, use_cache: bool,
-                 dry_run: bool, opaque: str = OPAQUE_AS_IS) -> None:
+                 dry_run: bool, opaque: str = OPAQUE_AS_IS, watermark: bool = True) -> None:
         self.ws = workspace
         self.template = template
         self.listing_type = template.fields.get("type") or "physical"
@@ -466,6 +480,8 @@ class _Run:
         if opaque not in OPAQUE_CHOICES:
             raise ValueError(f"opaque must be one of {OPAQUE_CHOICES}")
         self.opaque = opaque
+        self.use_watermark = watermark
+        self.mark: watermark_mod.Watermark | None = None
         batch = pipeline._batch_name()
         self.report = StreamReport(batch=batch, out_dir=workspace.drafts / batch, dry_run=dry_run)
         self.out_dir = self.report.out_dir
@@ -491,6 +507,9 @@ class _Run:
         if self.client is None and not self.dry_run:
             raise ValidationError("Connect your Etsy shop before uploading drafts.")
         check_template(self.template)
+        if self.use_watermark:
+            # Loaded once: a mark replaced during the run does not change its pictures.
+            self.mark = watermark_mod.for_run(self.ws, self.listing_type)
         planned = len(self.mockups) + (1 if self.include_flat else 0)
         if planned > MAX_LISTING_IMAGES:
             raise ValidationError(
@@ -683,6 +702,7 @@ class _Run:
             "deliverables": [self._rel(p) for p in item.deliverables],
             "files_uploaded": item.files_uploaded,
             "files_total": len(item.deliverables),
+            "watermarked": len(item.stamped),
             "warnings": [w.to_dict() for w in item.warnings],
             "problem": item.error.to_dict() if item.error else None,
         }
@@ -878,6 +898,8 @@ class _Run:
         # Etsy takes JPG, PNG and GIF only; anything else is converted, and said so. A
         # file over Etsy's 20 MB limit is made smaller, and said so too.
         convert_dir = self.out_dir / (item.source.name if item.photos else item.source.stem)
+        stamped_dir = convert_dir / watermark_mod.STAMPED_DIR
+        stamped_names: set[str] = set()
         uploadable: list[Path] = []
         for image in images:
             try:
@@ -892,9 +914,24 @@ class _Run:
                            f"{image.name} was converted to {converted.name}: Etsy accepts only "
                            "JPG, PNG and GIF listing images", "mockup",
                            name=image.name, to=converted.name)
+            fit_dir = convert_dir
+            if self.mark is not None:
+                # A copy with the mark: the picture itself (a seller's photo in
+                # 2-PRODUCTS, a composite) stays as it is. Never up without the mark.
+                self._check_halt()
+                try:
+                    stamped = self.mark.stamp(converted, stamped_dir, stamped_names)
+                except Exception as exc:  # noqa: BLE001 — this product only
+                    raise _ProductFailed(Problem(
+                        "watermark_failed",
+                        f"The watermark could not be put on {image.name}: {exc}",
+                        "mockup", {"name": image.name},
+                    )) from exc
+                item.unstamped.append(converted)
+                converted, fit_dir = stamped, stamped_dir
             try:
                 size = converted.stat().st_size
-                fitted = pipeline.fit_for_etsy(converted, convert_dir)
+                fitted = pipeline.fit_for_etsy(converted, fit_dir)
             except Exception as exc:  # noqa: BLE001
                 self._warn(item, "convert_failed",
                            f"{converted.name} could not be made smaller for Etsy: {exc}",
@@ -910,6 +947,8 @@ class _Run:
             if alts.get(image):
                 item.alts[_image_key(fitted)] = alts[image]
                 item.alts[fitted.name] = alts[image]
+            if self.mark is not None:
+                item.stamped.add(_image_key(fitted))
             uploadable.append(fitted)
         if not uploadable:
             raise _ProductFailed(Problem(
@@ -921,7 +960,8 @@ class _Run:
         item.images = uploadable
         self._step(item, "mockup", WARN if len(item.warnings) > warned else DONE,
                    images=[self._rel(p) for p in uploadable], mode=item.mode,
-                   flat=self._rel(item.flat) if item.flat is not None else None)
+                   flat=self._rel(item.flat) if item.flat is not None else None,
+                   watermarked=len(item.stamped))
 
     def _market(self, concept: str) -> tuple[MarketReport | None, Problem | None]:
         """One research per concept, however many products share it."""
@@ -1043,8 +1083,9 @@ class _Run:
         warned = False
         if self.digital:
             files, issue = pipeline.deliverables(item.source, made_to_order=self.made_to_order)
-            # A listing photo that is also the download would give the product away.
-            issue = issue or pipeline.photo_is_download(item.images, files)
+            # A listing photo that is also the download would give the product away (the
+            # pictures a watermarked copy was made from are checked too).
+            issue = issue or pipeline.photo_is_download([*item.images, *item.unstamped], files)
             if issue is not None:
                 code, message, params = issue
                 raise _ProductFailed(Problem(code, message, "check", dict(params)))
@@ -1168,7 +1209,7 @@ class _Run:
                        files_uploaded=rank, **counts)
 
         recorder = _Recorder(self.client, self.history_file, self.state, entry, on_image,
-                             on_file, alts=item.alts)
+                             on_file, alts=item.alts, stamped=item.stamped)
         try:
             result = listings.push(recorder, [item.row], base_dir=self.out_dir,
                                    inventory=self.inventory).results[0]
@@ -1258,6 +1299,7 @@ def item_summary(item: StreamItem, root: Path) -> dict[str, Any]:
         "listing_id": item.listing_id,
         "deliverables": [rel(p) for p in item.deliverables],
         "files_uploaded": item.files_uploaded,
+        "watermarked": len(item.stamped),
         "warnings": [w.to_dict() for w in item.warnings],
         "error": item.error.to_dict() if item.error else None,
     }

@@ -179,6 +179,19 @@ What the screens say (the English wording in italics):
   says **Dijital ürün: her taslağa tasarım dosyası indirilebilir dosya olarak eklenir**
   (*Digital product: each draft gets its design file as the download*).
 
+#### Watermark
+
+Etsy shows listing photos large, so the **Filigran** (*Watermark*) card at the bottom of
+**Mockuplar** lets you stamp your own mark (a logo or the shop name; a PNG with a
+transparent background works best, JPG or WebP up to 10 MB) on every listing photo: the
+mockups, the flat image and a product folder's photos. It goes on copies in `3-DRAFTS`;
+your files stay as they are, and **the files buyers download never get it**. Choose
+*Digital products only* (the default) or *Every listing photo*, the position (center,
+bottom-right corner or a diagonal repeat), the opacity (10-90 %) and the size, with a live
+preview on one of your mockups. The **Başlat** window says **Filigran: açık · dijital
+ürünlerde** (*Watermark: on · digital products*) or *off*. `stallkit drop watermark` sets
+the same one for the command line.
+
 ---
 
 ## Download and first run
@@ -511,6 +524,18 @@ Ekranlarda gördükleriniz:
   klasörün kendisinden geldiği yazar.
 - **Şablon İlan** listede dijital ilanı **Dijital** diye işaretler, seçili ilanın altında
   **Dijital ürün: her taslağa tasarım dosyası indirilebilir dosya olarak eklenir** yazar.
+
+#### Filigran
+
+Etsy ilan fotoğraflarını büyük gösterir; **Mockuplar**'ın altındaki **Filigran** kartıyla
+kendi işaretinizi (logonuz ya da mağaza adınız; şeffaf arka planlı PNG önerilir, JPG veya
+WebP de olur, en fazla 10 MB) her ilan fotoğrafına basabilirsiniz: mockup'lara, düz
+görsele ve ürün klasörünün fotoğraflarına. Filigran `3-DRAFTS`'taki kopyalara basılır;
+kendi dosyalarınız değişmez ve **alıcının indirdiği dosyalara asla eklenmez**. *Yalnızca
+dijital ürünler* (varsayılan) ya da *Tüm ilan görselleri*, konum (orta, sağ alt köşe ya da
+çapraz tekrar), opaklık (%10-90) ve boyut seçilir; mockup'larınızdan biri üzerinde canlı
+önizlenir. **Başlat** penceresi **Filigran: açık · dijital ürünlerde** ya da **kapalı**
+yazar. Komut satırında aynı ayarı `stallkit drop watermark` yapar.
 
 ## İndirme ve ilk açılış
 

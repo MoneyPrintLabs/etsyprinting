@@ -34,6 +34,7 @@ from ..listings import (
 )
 from ..seo import MarketReport, research
 from . import cache, catalog, generate, mockup, seeds
+from . import watermark as watermark_mod
 from .template import Template
 from .workspace import FILES_DIRS, Workspace
 
@@ -79,6 +80,7 @@ class DropRow:
     warnings: list[str] = field(default_factory=list)
     skipped: bool = False
     files: list[Path] = field(default_factory=list)  # a digital product's downloads
+    stamped: list[Path] = field(default_factory=list)  # images carrying the watermark
 
     @property
     def ok(self) -> bool:
@@ -482,12 +484,19 @@ def run(
     on_progress: Callable[[str], None] | None = None,
     exclude_products: set[str] | None = None,
     mockups: Sequence[Path] | None = None,
+    watermark: bool = True,
 ) -> DropReport:
     """Composite, research, write copy, and emit review.csv. Nothing is sent to Etsy.
 
     `mockups` are the templates to composite onto, first (the main image) to last —
     normally `catalog.enabled_mockups(workspace)`, the Mockuplar page's selection and
     order. Without it the first `mockups_per_product` files of 1-MOCKUPS are used.
+
+    `watermark`: stamp the workspace's watermark (drop.watermark) on a copy of every
+    listing photo when it is on and takes this template; False never stamps. The copies
+    go to the product's `watermarked` folder; originals and download files are never
+    changed. A product whose photo cannot take the mark is skipped, never sent bare, and
+    a mark that is on but cannot be read stops the run (ValidationError).
     """
     workspace.require()
     # download / both: every row also carries the files a buyer downloads.
@@ -507,6 +516,8 @@ def run(
 
     if not groups:
         return report
+    mark = (watermark_mod.for_run(workspace, template.fields.get("type") or "physical")
+            if watermark else None)
 
     available = workspace.mockup_files()
     if mockups is not None:
@@ -707,6 +718,10 @@ def run(
         convert_dir = report.out_dir / (
             row.source.name if row.source.is_dir() else row.source.stem
         )
+        stamped_dir = convert_dir / watermark_mod.STAMPED_DIR
+        stamped_names: set[str] = set()
+        unstamped: list[Path] = []
+        unmarked: str | None = None
         uploadable: list[Path] = []
         for image in row.images:
             try:
@@ -719,8 +734,19 @@ def run(
                     f"{image.name} was converted to {converted.name}: Etsy accepts only "
                     "JPG, PNG and GIF listing images"
                 )
+            fit_dir = convert_dir
+            if mark is not None:
+                # A stamped copy; the picture itself stays as it is. A photo the mark
+                # cannot be put on stops this product: it never goes up without it.
+                try:
+                    stamped = mark.stamp(converted, stamped_dir, stamped_names)
+                except Exception as exc:  # noqa: BLE001
+                    unmarked = f"the watermark could not be put on {image.name}: {exc}"
+                    break
+                unstamped.append(converted)
+                converted, fit_dir = stamped, stamped_dir
             try:
-                fitted = fit_for_etsy(converted, convert_dir)
+                fitted = fit_for_etsy(converted, fit_dir)
             except Exception as exc:  # noqa: BLE001
                 row.warnings.append(f"{converted.name} could not be made smaller for Etsy: {exc}")
                 continue
@@ -729,10 +755,18 @@ def run(
                     f"{converted.name} was over Etsy's 20MB image limit; made smaller as "
                     f"{fitted.name}"
                 )
+            if mark is not None:
+                row.stamped.append(fitted)
             uploadable.append(fitted)
+        if unmarked is not None:
+            row.skipped = True
+            row.warnings.append(unmarked)
+            say(f"skipped {row.source.name}")
+            continue
         row.images = uploadable
 
-        clash = photo_is_download(row.images, row.files) if row.files else None
+        # The pictures a watermarked copy was made from are checked too.
+        clash = photo_is_download([*row.images, *unstamped], row.files) if row.files else None
         if clash is not None:
             row.skipped = True
             row.warnings.append(clash[1])

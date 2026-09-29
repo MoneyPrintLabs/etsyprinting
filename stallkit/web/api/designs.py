@@ -28,7 +28,10 @@ The pending view also says, for the start card:
   read yet): an opaque one goes up as it is unless the seller asks (start's `opaque`) to
   place those on a solid background onto the mockups (drop.stream);
 - the template's product as a mockup type (`template.product`) and the main mockup's
-  (`mockups.main_type`), so a mug template with a T-shirt main image is pointed out.
+  (`mockups.main_type`), so a mug template with a T-shirt main image is pointed out;
+- the workspace's watermark (`watermark`: drop.watermark.describe for the template's
+  type): whether the run stamps it, and where. A mark that is on but cannot be read
+  blocks the start ("watermark"): its photos must never go up without it.
 """
 
 from __future__ import annotations
@@ -624,6 +627,7 @@ def used_mockups(ws: Any, listing_type: str | None,
 def _pending_info(ctx: AppContext) -> dict[str, Any]:
     from ...config import MAX_LISTING_IMAGES
     from ...drop import automation, catalog, pipeline, seeds
+    from ...drop import watermark as watermark_mod
 
     if not ctx.wait_first_status(0):
         ctx.set_status_soon(0.0)
@@ -712,6 +716,9 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
         blockers.append(template_problem)
     if history_problem:
         blockers.append(history_problem)
+    mark = watermark_mod.describe(ws, template.get("listing_type") if template else None)
+    if mark["on"] and mark["problem"] and mark["applies"] is not False:
+        blockers.append("watermark")
     lock = automation.lock_info(ws.root)
     if _active_job(ctx) is not None:
         blockers.append("running")
@@ -801,6 +808,7 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
         },
         "opaque": {"flat": grounds.get("flat", 0), "photo": grounds.get("photo", 0),
                    "unknown": grounds.get("unknown", 0)},
+        "watermark": mark,
         "template": template,
         "shop": {"connected": state == "connected", "name": shop.get("name"),
                  "state": state},

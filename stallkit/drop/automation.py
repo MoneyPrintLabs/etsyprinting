@@ -358,11 +358,24 @@ _save = save_history
 _lock = upload_lock
 
 
-class RecordedClient:
-    """Save the draft id before uploading its first image."""
+def _image_key(path: Any) -> str:
+    """A picture's key in RecordedClient.stamped: its resolved path."""
+    try:
+        return str(Path(path).resolve())
+    except OSError:
+        return str(path)
 
-    def __init__(self, client, path, state, entry):
+
+class RecordedClient:
+    """Save the draft id before uploading its first image.
+
+    `stamped`: the pictures that carry the workspace's watermark (resolved paths); Etsy
+    is told so when they are uploaded (uploadListingImage's is_watermarked).
+    """
+
+    def __init__(self, client, path, state, entry, stamped=None):
         self.client, self.path, self.state, self.entry = client, path, state, entry
+        self.stamped = {_image_key(p) for p in stamped or ()}
 
     def create_draft_listing(self, fields):
         result = self.client.create_draft_listing(fields)
@@ -393,7 +406,9 @@ class RecordedClient:
 
     def upload_listing_image(self, listing_id, image, *, rank, alt_text=""):
         # alt_text only when there is one: a client that takes no alt text still works.
-        extra = {"alt_text": alt_text} if alt_text else {}
+        extra: dict[str, Any] = {"alt_text": alt_text} if alt_text else {}
+        if self.stamped and _image_key(image) in self.stamped:
+            extra["is_watermarked"] = True
         result = self.client.upload_listing_image(listing_id, image, rank=rank, **extra)
         self.entry["images_uploaded"] = rank
         # Which file each picture on the draft is: a mockup's name says its product and
@@ -416,7 +431,8 @@ _RecordedClient = RecordedClient
 
 
 def run(workspace: Workspace, template: Template, *, client: EtsyClient | None = None,
-        dry_run: bool = False, mockups: Sequence[Path] | None = None) -> AutoReport:
+        dry_run: bool = False, mockups: Sequence[Path] | None = None,
+        watermark: bool = True) -> AutoReport:
     """Run once. Existing or uncertain products are never automatically recreated.
 
     The local history is scoped to a shop and product path. An interrupted POST
@@ -428,6 +444,8 @@ def run(workspace: Workspace, template: Template, *, client: EtsyClient | None =
     `mockups` are the templates to composite onto, first (the main image) to last;
     by default the ones chosen on the Mockuplar page, in that order
     (`catalog.enabled_mockups`), exactly as the app's own runs use them.
+    `watermark`: stamp the workspace's watermark on the photos when it is on and takes
+    this template (pipeline.run); Etsy is told which pictures carry it.
     """
     workspace.require()
     if mockups is None:
@@ -451,7 +469,7 @@ def run(workspace: Workspace, template: Template, *, client: EtsyClient | None =
         names = {p.name.casefold() for p, _ in workspace.product_groups()}
         report.already_done, report.needs_review = known_products(history, names)
         prepared = pipeline.run(workspace, template, client=client, exclude_products=set(history),
-                                mockups=mockups)
+                                mockups=mockups, watermark=watermark)
         report.prepared = prepared
         if prepared.skipped:
             details = "; ".join(f"{row.source.name}: {', '.join(row.warnings)}" for row in prepared.skipped)
@@ -494,7 +512,7 @@ def run(workspace: Workspace, template: Template, *, client: EtsyClient | None =
             history[product.source.name] = entry
             # Persist intent BEFORE the request, including ambiguous network failures.
             save_history(path, state)
-            recorder = RecordedClient(client, path, state, entry)
+            recorder = RecordedClient(client, path, state, entry, stamped=product.stamped)
             result = listings.push(
                 recorder, [row], base_dir=prepared.csv_path.parent, inventory=inventory
             ).results[0]
