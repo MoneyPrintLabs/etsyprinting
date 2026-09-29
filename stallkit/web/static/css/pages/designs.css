@@ -1005,6 +1005,50 @@
   font-size: 14px;
   color: var(--text);
 }
+/* The start card's "Mağaza bölümü": the label above the select, so a long choice such
+   as "Şablondaki gibi (silinmiş bölüm)" keeps the card's width; notes below. */
+.dz-ready-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.dz-section-label {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 8px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.dz-section-label svg {
+  flex: none;
+  color: var(--accent-2);
+}
+.dz-ready-section .dz-section-select {
+  width: 100%;
+  height: 38px;
+}
+.dz-section-select.is-loading .select-native {
+  color: var(--muted);
+}
+.dz-section-note {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 2px;
+}
+.dz-section-note[hidden] {
+  display: none;
+}
+.dz-section-note .dz-modal-hint {
+  margin: 0;
+  line-height: 1.45;
+}
 .dz-review {
   display: flex;
   flex-direction: column;

@@ -363,6 +363,7 @@
     "errors.not_deliverable": "Bu dosya indirilebilir ürün olarak satılamaz (program ya da uzantısız dosya).",
     "errors.reserved_folder": "Bir ürün klasörü 1-MOCKUPS, 2-PRODUCTS ya da 3-DRAFTS adını taşıyamaz; klasörün adını değiştirin ya da görsellerini ayrı tasarımlar olarak yükleyin.",
     "errors.not_digital": "Şablon ilan fiziksel bir ürün, bu yüzden indirilebilir dosya alınmaz; 'dosyalar' klasörü yalnızca dijital bir şablon içindir.",
+    "errors.section_gone": "Seçtiğiniz mağaza bölümü artık Etsy'de yok. Liste yeniden okundu; başka bir bölüm seçin.",
     "mode.digital": "Dijital ürün",
     "upload.downloads_skipped": "{n} indirilebilir dosya yüklenmedi: 'dosyalar' klasöründeki dosyalar yalnızca \"Her klasör tek ürün\" seçilince eklenir.",
     "upload.downloads_skipped_one": "{n} indirilebilir dosya yüklenmedi: 'dosyalar' klasöründeki dosyalar yalnızca \"Her klasör tek ürün\" seçilince eklenir.",
@@ -439,7 +440,18 @@
     "warn.description_design_one": "Açıklamada şablon ilanın desenine özel 1 cümle kaldı ({words}); Şablon İlan'da açıklama şablonunu düzenleyin",
     "ready.description_flagged": "Şablon ilanın açıklamasında desenine özel {n} cümle var; her taslağa kopyalanır.",
     "ready.description_flagged_one": "Şablon ilanın açıklamasında desenine özel 1 cümle var; her taslağa kopyalanır.",
-    "ready.go_template": "Şablon İlan"
+    "ready.go_template": "Şablon İlan",
+    "ready.section_label": "Mağaza bölümü",
+    "ready.section.loading": "Bölümler okunuyor…",
+    "ready.section.template": "Şablondaki gibi ({name})",
+    "ready.section.template_plain": "Şablondaki gibi",
+    "ready.section.no_section": "bölümsüz",
+    "ready.section.deleted": "silinmiş bölüm",
+    "ready.section.none": "Bölüm yok",
+    "ready.section_empty": "Mağazanızda bölüm yok, taslaklar bölümsüz oluşturulur. Bölümleri Etsy'de Mağaza Yöneticisi'nden ekleyebilirsiniz.",
+    "ready.section_unavailable": "Mağaza bölümleri şu an okunamadı: taslaklar şablondaki bölüme gider.",
+    "ready.section_template_gone": "Şablon ilanın bölümü artık mağazanızda yok: taslaklar bölümsüz oluşturulur. İsterseniz bir bölüm seçin.",
+    "ready.section_remembered_gone": "Son seçtiğiniz bölüm ({name}) artık mağazanızda yok; şablondaki kullanılacak."
   },
   "en": {
     "title": "Upload designs",
@@ -805,6 +817,7 @@
     "errors.not_deliverable": "This file can't be sold as a download (a program, or no extension).",
     "errors.reserved_folder": "A product folder cannot be named 1-MOCKUPS, 2-PRODUCTS or 3-DRAFTS; rename it, or upload its images as separate designs.",
     "errors.not_digital": "The template listing is a physical product, so no download files are taken; a 'dosyalar' folder is only for a digital template.",
+    "errors.section_gone": "The shop section you picked no longer exists on Etsy. The list was read again; pick another section.",
     "mode.digital": "Digital product",
     "upload.downloads_skipped": "{n} download files were not uploaded: files in a 'dosyalar' folder go up only with \"Every folder is one product\".",
     "upload.downloads_skipped_one": "{n} download file was not uploaded: files in a 'dosyalar' folder go up only with \"Every folder is one product\".",
@@ -881,6 +894,17 @@
     "warn.description_design_one": "The description still has 1 sentence about the template listing's own design ({words}); edit the description template on Template listing",
     "ready.description_flagged": "The template listing's description has {n} sentences about its own design; they are copied onto every draft.",
     "ready.description_flagged_one": "The template listing's description has 1 sentence about its own design; it is copied onto every draft.",
-    "ready.go_template": "Template listing"
+    "ready.go_template": "Template listing",
+    "ready.section_label": "Shop section",
+    "ready.section.loading": "Reading sections…",
+    "ready.section.template": "As in the template ({name})",
+    "ready.section.template_plain": "As in the template",
+    "ready.section.no_section": "no section",
+    "ready.section.deleted": "deleted section",
+    "ready.section.none": "No section",
+    "ready.section_empty": "Your shop has no sections, so the drafts get none. You can add sections in Etsy's Shop Manager.",
+    "ready.section_unavailable": "The shop's sections could not be read right now: the drafts go into the template's section.",
+    "ready.section_template_gone": "The template listing's section is no longer in your shop: the drafts get no section. Pick one if you like.",
+    "ready.section_remembered_gone": "The section you picked last time ({name}) is no longer in your shop; the template's is used."
   }
 }

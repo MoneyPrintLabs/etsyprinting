@@ -120,7 +120,7 @@ After that there is one thing to do each time: drop your designs.
 | Screen | What it is for |
 |---|---|
 | **Panel** (Dashboard) | Your shop today: active listings, drafts, orders to ship, average SEO score, this month's revenue, and Etsy requests left for today. |
-| **Tasarım Yükle** (Upload designs) | Drag in PNG or JPG designs, or folders of finished photos. Each design goes through six steps: mockups, Etsy search research, a title of up to 140 characters, 13 tags, a check against Etsy's rules, and a draft on Etsy. Physical products and [digital downloads](#digital-products) both work. |
+| **Tasarım Yükle** (Upload designs) | Drag in PNG or JPG designs, or folders of finished photos. Each design goes through six steps: mockups, Etsy search research, a title of up to 140 characters, 13 tags, a check against Etsy's rules, and a draft on Etsy. Physical products and [digital downloads](#digital-products) both work. The **Başlat** (*Start*) window lets you pick the **Mağaza bölümü** (*Shop section*) for the whole batch; it starts on the template listing's and remembers your last choice. |
 | **İlanlar** (Listings) | Your drafts and live listings. Open a draft to check or edit its title, tags and description, then publish the ones you want. You can also download listings as a CSV or update them from one. |
 | **SEO** | Every listing scored out of 100, weakest first, with what to improve. Includes tag research for any keyword. **Fix** sends the suggested change. |
 | **Siparişler** (Orders) | Orders waiting to ship, shipped and delivered. Type tracking numbers or load them from a CSV, then send them to Etsy. |
@@ -341,12 +341,13 @@ The app's log is `~/.stallkit/logs/web-<date>.log`.
   servers); Pinterest only if you connect it; the Central Bank of Turkey's public
   exchange-rate file (at most once a day) so **Kâr-Zarar** can show TRY amounts; and
   GitHub, to see whether a new version is out.
-- **New versions.** About 10 seconds after it starts, and then once a day, the app asks
-  GitHub (`api.github.com`) for the latest stallkit release. Nothing is sent but the
-  request itself, with a `stallkit/<version>` User-Agent. A newer version shows as a small
+- **New versions.** About 10 seconds after each start (unless it asked less than an hour
+  ago), and then once a day while it stays open, the app asks GitHub (`api.github.com`)
+  for the latest stallkit release. Nothing is sent but the request itself, with a
+  `stallkit/<version>` User-Agent. A newer version shows as a small
   pill at the top ("New version v0.3.1 · Download", with **What's new?**) and once in the
   bell; the × hides it for that version. **Ayarlar** shows your version, when it last
-  checked and a **Check now** button. Turn the daily check off there, or set
+  checked and a **Check now** button. Turn the automatic check off there, or set
   `STALLKIT_NO_UPDATE_CHECK=1` to stop every check.
 - Your Etsy password is never seen by stallkit; you approve access on Etsy's own page.
   The keys and the sign-in are stored in `~/.stallkit` and shown only in part.
@@ -371,6 +372,10 @@ stallkit pinterest post                       # post today's Pins
 The downloaded app runs commands too when you give it arguments, for example
 `stallkit.exe pinterest post` from Windows Task Scheduler. Without a terminal, its output
 goes to `~/.stallkit/logs/`.
+
+New in 0.3.2: `stallkit drop auto` and `drop run` take `--section NAME_OR_ID` (or
+`none`), which puts every draft of the batch in one shop section instead of the template
+listing's.
 
 New in 0.3.0:
 
@@ -467,7 +472,7 @@ ilan seçersiniz. Sonrasında her seferinde tek bir iş kalır: tasarımlarını
 | Ekran | Ne işe yarar |
 |---|---|
 | **Panel** | Mağazanızın bugünü: aktif ilanlar, taslaklar, kargolanacak siparişler, ortalama SEO puanı, bu ayın geliri ve bugün kalan Etsy istek hakkı. |
-| **Tasarım Yükle** | PNG ya da JPG tasarımları veya hazır fotoğraf klasörlerini sürükleyip bırakın. Her tasarım altı adımdan geçer: mockup, Etsy aramasında araştırma, en fazla 140 karakterlik başlık, 13 etiket, Etsy kurallarına göre kontrol ve Etsy'de taslak. Fiziksel ürünler de [dijital ürünler](#dijital-ürünler) de olur. |
+| **Tasarım Yükle** | PNG ya da JPG tasarımları veya hazır fotoğraf klasörlerini sürükleyip bırakın. Her tasarım altı adımdan geçer: mockup, Etsy aramasında araştırma, en fazla 140 karakterlik başlık, 13 etiket, Etsy kurallarına göre kontrol ve Etsy'de taslak. Fiziksel ürünler de [dijital ürünler](#dijital-ürünler) de olur. **Başlat** penceresinde partinin **Mağaza bölümü**nü seçersiniz; şablon ilanınkiyle başlar ve son seçiminizi hatırlar. |
 | **İlanlar** | Taslak ve yayındaki ilanlarınız. Bir taslağı açıp başlığını, etiketlerini ve açıklamasını kontrol edebilir, düzenleyebilir, sonra istediklerinizi yayınlayabilirsiniz. İlanları CSV olarak indirebilir ya da CSV'den güncelleyebilirsiniz. |
 | **SEO** | Her ilan 100 üzerinden puanlanır, en zayıf en üstte; neyin iyileşeceği yazar. Herhangi bir kelime için etiket araştırması da vardır. **Düzelt** önerilen değişikliği gönderir. |
 | **Siparişler** | Kargo bekleyen, kargoya verilen ve teslim edilen siparişler. Takip numaralarını yazın ya da CSV'den yükleyin, sonra Etsy'ye gönderin. |
@@ -681,12 +686,13 @@ ortam değişkenini ayarlayın. Uygulamanın kaydı `~/.stallkit/logs/web-<tarih
   sunucularından yüklenir); yalnızca bağlarsanız Pinterest; **Kâr-Zarar** TL tutarlarını
   gösterebilsin diye günde en fazla bir kez TCMB'nin herkese açık kur dosyası; yeni sürüm
   çıkıp çıkmadığını görmek için GitHub.
-- **Yeni sürümler.** Uygulama açıldıktan yaklaşık 10 saniye sonra ve sonra günde bir kez
-  GitHub'a (`api.github.com`) stallkit'in son sürümünü sorar. İsteğin kendisinden başka
-  hiçbir şey gönderilmez (yalnızca `stallkit/<sürüm>` User-Agent başlığı). Yeni bir sürüm
-  üstte küçük bir etiket olarak (“Yeni sürüm v0.3.1 · İndir”, yanında **Neler yeni?**) ve
+- **Yeni sürümler.** Uygulama her açılışından yaklaşık 10 saniye sonra (son bakışın
+  üzerinden bir saat geçtiyse) ve açık kaldıkça günde bir kez GitHub'a (`api.github.com`)
+  stallkit'in son sürümünü sorar. İsteğin kendisinden başka hiçbir şey gönderilmez
+  (yalnızca `stallkit/<sürüm>` User-Agent başlığı). Yeni bir sürüm üstte küçük bir etiket
+  olarak (“Yeni sürüm v0.3.1 · İndir”, yanında **Neler yeni?**) ve
   bir kez de bildirimlerde görünür; × o sürüm için gizler. **Ayarlar** sürümünüzü, son
-  kontrolün ne zaman yapıldığını ve **Şimdi kontrol et** düğmesini gösterir. Günlük
+  kontrolün ne zaman yapıldığını ve **Şimdi kontrol et** düğmesini gösterir. Otomatik
   denetimi oradan kapatabilir, `STALLKIT_NO_UPDATE_CHECK=1` ile tüm denetimleri
   durdurabilirsiniz.
 - Etsy şifrenizi stallkit hiç görmez; izni Etsy'nin kendi sayfasında verirsiniz.
@@ -702,6 +708,9 @@ kaynak koddan kurulumla gelir; örnekler ve tüm komutlar [CLI.md](CLI.md)'de (�
 Zamanlayıcı'dan `stallkit.exe pinterest post`. Kurulum kontrol listesinin tamamı
 [SETUP.md](SETUP.md#kurulum-türkçe)'de; uygulamada **Ayarlar → Her şeyi kontrol et** aynı
 listeyi çalıştırır.
+
+0.3.2'de yeni: `stallkit drop auto` ve `drop run`, `--section AD_YA_DA_ID` (ya da
+`none`) alır; partideki her taslak şablon ilanınki yerine o mağaza bölümüne gider.
 
 0.3.0'da yeni:
 

@@ -21,7 +21,8 @@ The listing's description is about its own design, so a draft does not copy it a
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Iterable
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ..client import unescape_text
@@ -179,6 +180,25 @@ class Template:
         return str(self.fields.get("type") or "physical")
 
     @property
+    def section_id(self) -> int | None:
+        """The shop section the template listing is in (None: none, or not a usable id)."""
+        return section_number(self.fields.get("shop_section_id"))
+
+    def with_section(self, section_id: int | None) -> Template:
+        """A copy whose drafts go into shop section `section_id` (None: into none).
+
+        The run's choice (the app's Başlat window, `drop auto/run --section`) for every
+        draft of that run; the template itself (product.json) is not changed.
+        """
+        fields = dict(self.fields)
+        if section_id is None:
+            fields.pop("shop_section_id", None)
+        else:
+            fields["shop_section_id"] = int(section_id)
+        return replace(self, fields=fields, materials=list(self.materials),
+                       tags=list(self.tags))
+
+    @property
     def digital(self) -> bool:
         """Its drafts carry download files: type download or both."""
         return self.listing_type in DIGITAL_TYPES
@@ -217,6 +237,59 @@ class Template:
             ("Its tags", ", ".join(self.tags) or "—"),
         ]
         return rows
+
+
+# `--section none` (and the app's "Bölüm yok"): the drafts go into no section.
+NO_SECTION = "none"
+
+
+def section_number(value: Any) -> int | None:
+    """A shop section id (a positive int, or its digits as text); None for anything else."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str) and value.strip().isdigit():
+        value = int(value.strip())
+    return value if isinstance(value, int) and value > 0 else None
+
+
+def resolve_section(sections: Iterable[dict[str, Any]], wanted: str) -> dict[str, Any] | None:
+    """The shop section `wanted` names, from the shop's list (getShopSections).
+
+    `wanted` is a section's id or its title (case-insensitive, surrounding spaces
+    ignored); `none` means no section (None), unless a section is called that. Raises
+    ValidationError for a name or id the shop does not have (a deleted section), for a
+    title two sections share (use the id then), and for a shop without sections.
+    """
+    items = [s for s in sections if isinstance(s, dict)]
+    text = str(wanted or "").strip()
+    if not text:
+        raise ValidationError("--section needs a section name or id (or none).")
+    number = section_number(text)
+    if number is not None:
+        for section in items:
+            if section_number(section.get("shop_section_id")) == number:
+                return section
+    folded = text.casefold()
+    matches = [s for s in items if str(s.get("title") or "").strip().casefold() == folded]
+    if len(matches) == 1:
+        return matches[0]
+    if matches:
+        raise ValidationError(
+            f"More than one shop section is called {text!r}; use its id instead "
+            "(see `stallkit shop profiles`)."
+        )
+    if folded == NO_SECTION:
+        return None
+    if not items:
+        raise ValidationError(
+            "Your shop has no sections. Add one in Etsy (Shop Manager → your shop → "
+            "sections), or leave out --section."
+        )
+    names = ", ".join(f"{s.get('title') or '?'} ({s.get('shop_section_id')})" for s in items)
+    what = f"id {number}" if number is not None else repr(text)
+    raise ValidationError(
+        f"Your shop has no section {what} (it may have been deleted). Its sections: {names}"
+    )
 
 
 def money(value: Any) -> float | None:

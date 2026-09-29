@@ -31,7 +31,7 @@ from .drop import mockup as mockup_mod
 from .drop import template as template_mod
 from .drop import watermark as watermark_mod
 from .drop import workspace as workspace_mod
-from .errors import AuthError, StallKitError
+from .errors import AuthError, StallKitError, ValidationError
 
 
 def _force_utf8(stream: Any) -> None:
@@ -1325,6 +1325,31 @@ _MOCKUPS_HELP = (
     "app's Mockups page, in its order (the first is the main image), at most 19 less one "
     "per info image."
 )
+_SECTION_HELP = (
+    "Put every draft of this run in this shop section: its name or id (see `stallkit shop "
+    "profiles`), or `none` for no section. Default: the template listing's section."
+)
+
+
+def _drop_section(
+    tmpl: template_mod.Template, wanted: Optional[str], client: Optional[EtsyClient]
+) -> template_mod.Template:
+    """The template with `--section` applied: the named section (checked against the
+    shop's sections, so a deleted one is refused before anything runs), or none."""
+    if wanted is None:
+        return tmpl
+    if client is None:
+        raise ValidationError(
+            "--section reads your shop's sections, which needs your Etsy keys and the "
+            "sign-in. Run: stallkit auth login"
+        )
+    found = template_mod.resolve_section(client.shop_sections(), wanted)
+    if found is None:
+        console.print("[dim]Shop section: none (the drafts go into no section).[/]")
+        return tmpl.with_section(None)
+    section_id = template_mod.section_number(found.get("shop_section_id"))
+    console.print(f"[dim]Shop section: {_hide(found.get('title') or '')} ({section_id}).[/]")
+    return tmpl.with_section(section_id)
 
 
 def _drop_info_images(ws: workspace_mod.Workspace) -> list[infoimages_mod.InfoImage]:
@@ -1401,6 +1426,7 @@ def drop_run(
     sample: int = typer.Option(200, "--sample", help="Listings to sample per concept."),
     no_cache: bool = typer.Option(False, "--no-cache", help="Ignore cached research."),
     no_watermark: bool = typer.Option(False, "--no-watermark", help=_NO_WATERMARK_HELP),
+    section: Optional[str] = typer.Option(None, "--section", help=_SECTION_HELP),
 ) -> None:
     """Turn the designs in your folder into a review CSV. Sends nothing to Etsy."""
     ws = _workspace(path).require()
@@ -1420,7 +1446,16 @@ def drop_run(
     try:
         client = EtsyClient(Config.load(), require_auth=False)
     except StallKitError as exc:
+        if section is not None:
+            raise
         _warn(f"Running without market research ({exc.args[0].splitlines()[0]}).")
+
+    try:
+        tmpl = _drop_section(tmpl, section, client)
+    except BaseException:
+        if client:
+            client.close()
+        raise
 
     chosen = _drop_mockups(ws, mockups)
     _drop_watermark(ws, tmpl, not no_watermark)
@@ -1714,6 +1749,7 @@ def drop_auto(
     dry_run: bool = typer.Option(False, "--dry-run", help="Prepare and validate offline, without uploading."),
     mockups: Optional[int] = typer.Option(None, "--mockups", min=0, help=_MOCKUPS_HELP),
     no_watermark: bool = typer.Option(False, "--no-watermark", help=_NO_WATERMARK_HELP),
+    section: Optional[str] = typer.Option(None, "--section", help=_SECTION_HELP),
 ) -> None:
     """Prepare new products and upload Etsy drafts. Previously attempted products are skipped."""
     ws = _workspace(path).require()
@@ -1722,10 +1758,15 @@ def drop_auto(
     _drop_watermark(ws, tmpl, not no_watermark)
     _drop_info_images(ws)
     if dry_run:
+        if section is not None:
+            # A check sends nothing, but the section is still looked up (read only).
+            with _client(require_auth=False) as client:
+                tmpl = _drop_section(tmpl, section, client)
         report = automation.run(ws, tmpl, dry_run=True, mockups=chosen,
                                 watermark=not no_watermark)
     else:
         with _client() as client:
+            tmpl = _drop_section(tmpl, section, client)
             report = automation.run(ws, tmpl, client=client, mockups=chosen,
                                     watermark=not no_watermark)
     if report.prepared and report.prepared.csv_path:

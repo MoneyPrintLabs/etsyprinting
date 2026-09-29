@@ -342,6 +342,11 @@ CSV-only review workflow and now also understands ready-photo folders.
 - The template listing's type is kept: `physical`, `download` or `both`. Its variations
   (options, prices, quantities, processing profile) are copied onto every draft. Source
   files remain in place; there is no automatic archive move.
+- `--section NAME_OR_ID` (on `drop auto` and `drop run`) puts every draft of that run in
+  one shop section instead of the template listing's: its title (any case) or its id
+  from `stallkit shop profiles`, or `none` for no section. The section is looked up in
+  your shop first (a read, also in a dry run), so a deleted or misspelled one stops the
+  run before anything is sent; `product.json` keeps its own section.
 
 ### Digital products
 

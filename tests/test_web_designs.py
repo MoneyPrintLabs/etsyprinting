@@ -1013,3 +1013,279 @@ def test_a_folder_with_only_dosyalar_is_listed_and_fails_the_check(web, fast_ima
     assert folder["error"]["code"] == "no_photos"
     assert folder["error"]["params"] == {"name": "boho planner", "folder": "dosyalar"}
     assert items["retro-mountain-sunset.png"]["status"] == "ok"
+
+
+# --- the shop section (the start card's "Mağaza bölümü") -------------------------------------------
+
+SECTIONS_PATH = f"/shops/{ETSY_SHOP_ID}/sections"
+TEES, MUGS, GIFTS = 9001, 9002, 9003
+
+
+def _sections(fake, *records):
+    """getShopSections answers with these (id, title, rank) sections."""
+    fake.add("GET", SECTIONS_PATH, {"count": len(records), "results": [
+        {"shop_section_id": sid, "title": title, "rank": rank, "user_id": 7654321,
+         "active_listing_count": 3} for sid, title, rank in records]})
+
+
+def _template_section(ws, section_id):
+    data = json.loads(ws.template_path.read_text(encoding="utf-8"))
+    if section_id is None:
+        data["fields"].pop("shop_section_id", None)
+    else:
+        data["fields"]["shop_section_id"] = section_id
+    ws.write_template(data)
+
+
+def _section_run(web, fake, **body):
+    fake.created.clear()
+    job = web.client.post("/api/designs/start", json=body)
+    assert job.status_code == 200, job.text
+    final = wait_for_job(web, job.json()["id"], timeout=30)
+    assert final["status"] == "done", final
+    return final
+
+
+def _sections_calls(fake):
+    return sum(1 for call in fake.calls if call == ("GET", SECTIONS_PATH))
+
+
+def test_the_start_card_lists_the_shops_sections_and_starts_on_the_templates(web):
+    fake, ws = _setup_shop(web)
+    _template_section(ws, TEES)
+    # Etsy's rank decides the order (Tişörtler first), and its titles arrive escaped.
+    _sections(fake, (MUGS, "Mugs &amp; Cups", 2), (TEES, "Tişörtler", 1))
+    data = web.client.get("/api/designs/sections").json()
+    assert data == {
+        "available": True, "error": None,
+        "sections": [{"id": TEES, "title": "Tişörtler", "count": 3},
+                     {"id": MUGS, "title": "Mugs & Cups", "count": 3}],
+        "template": {"id": TEES, "title": "Tişörtler", "missing": False},
+        "choice": "template", "remembered": None, "remembered_missing": False,
+    }
+    # Kept a minute per Etsy client; refresh=1 reads them again.
+    web.client.get("/api/designs/sections")
+    assert _sections_calls(fake) == 1
+    web.client.get("/api/designs/sections", params={"refresh": 1})
+    assert _sections_calls(fake) == 2
+
+
+def test_a_chosen_section_goes_on_every_draft_and_is_remembered(web, fast_images):
+    fake, ws = _setup_shop(web)
+    _template_section(ws, TEES)
+    _sections(fake, (TEES, "Tişörtler", 1), (MUGS, "Kupalar", 2))
+    _put(web, "retro-mountain-sunset.png", _png())
+    _put(web, "but-first-coffee.png", _png((90, 60, 30)))
+    final = _section_run(web, fake, section=MUGS)
+    assert [form["shop_section_id"] for form in fake.created] == [str(MUGS)] * 2
+    assert final["state"]["section"] == {"choice": MUGS, "id": MUGS, "title": "Kupalar",
+                                         "template_gone": None}
+    last = web.client.get("/api/designs/last").json()["run"]
+    assert last["section"]["id"] == MUGS
+    # The template itself is not changed; the choice is the shop's for the next card.
+    assert json.loads(ws.template_path.read_text(encoding="utf-8"))["fields"][
+        "shop_section_id"] == TEES
+    assert web.ctx.shop_prefs()["drop_section"] == {
+        "choice": MUGS, "title": "Kupalar", "etsy_shop_id": ETSY_SHOP_ID}
+    data = web.client.get("/api/designs/sections").json()
+    assert data["choice"] == MUGS and data["remembered"] == {"choice": MUGS, "title": "Kupalar"}
+
+
+def test_no_section_leaves_it_off_every_draft(web, fast_images):
+    fake, ws = _setup_shop(web)
+    _template_section(ws, TEES)
+    _sections(fake, (TEES, "Tişörtler", 1))
+    _put(web, "retro-mountain-sunset.png", _png())
+    final = _section_run(web, fake, section="none")
+    assert fake.created and all("shop_section_id" not in form for form in fake.created)
+    assert final["state"]["section"]["choice"] == "none"
+    assert web.client.get("/api/designs/sections").json()["choice"] == "none"
+
+
+def test_the_templates_section_is_copied_as_before(web, fast_images):
+    fake, ws = _setup_shop(web)
+    _template_section(ws, TEES)
+    _sections(fake, (TEES, "Tişörtler", 1))
+    _put(web, "retro-mountain-sunset.png", _png())
+    final = _section_run(web, fake, section="template")
+    assert fake.created[0]["shop_section_id"] == str(TEES)
+    assert final["state"]["section"] == {"choice": "template", "id": TEES,
+                                         "title": "Tişörtler", "template_gone": None}
+    # A start that names no section (an older page) is exactly the old run: the
+    # template's section, not even checked, and nothing remembered.
+    _put(web, "but-first-coffee.png", _png((90, 60, 30)))
+    calls = _sections_calls(fake)
+    final = _section_run(web, fake)
+    assert fake.created[0]["shop_section_id"] == str(TEES)
+    assert final["state"]["section"] is None and _sections_calls(fake) == calls
+
+
+def test_a_deleted_template_section_makes_drafts_without_one(web, fast_images):
+    fake, ws = _setup_shop(web)
+    _template_section(ws, GIFTS)  # deleted on Etsy since the template was picked
+    _sections(fake, (TEES, "Tişörtler", 1))
+    data = web.client.get("/api/designs/sections").json()
+    assert data["template"] == {"id": GIFTS, "title": None, "missing": True}
+    _put(web, "retro-mountain-sunset.png", _png())
+    final = _section_run(web, fake, section="template")
+    assert fake.created and "shop_section_id" not in fake.created[0]
+    assert final["state"]["section"] == {"choice": "template", "id": None, "title": None,
+                                         "template_gone": GIFTS}
+    assert final["state"]["items"][0]["status"] == "ok"
+
+
+def test_a_section_deleted_before_the_start_is_refused_and_nothing_is_sent(web, fast_images):
+    fake, ws = _setup_shop(web)
+    _sections(fake, (TEES, "Tişörtler", 1), (MUGS, "Kupalar", 2))
+    _put(web, "retro-mountain-sunset.png", _png())
+    assert web.client.get("/api/designs/sections").json()["sections"][1]["id"] == MUGS
+    _sections(fake, (TEES, "Tişörtler", 1))  # the seller deletes Kupalar on Etsy
+    resp = web.client.post("/api/designs/start", json={"section": MUGS})
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "section_gone"
+    assert resp.json()["error"]["params"] == {"id": MUGS}
+    assert not fake.created and web.ctx.jobs.list(kind="designs") == []
+    assert "drop_section" not in web.ctx.shop_prefs()
+
+
+def test_a_remembered_section_that_is_gone_falls_back_to_the_template(web):
+    fake, ws = _setup_shop(web)
+    web.ctx.update_shop_prefs(drop_section={"choice": MUGS, "title": "Kupalar",
+                                            "etsy_shop_id": ETSY_SHOP_ID})
+    _sections(fake, (TEES, "Tişörtler", 1))
+    data = web.client.get("/api/designs/sections").json()
+    assert data["choice"] == "template" and data["remembered_missing"] is True
+    assert data["remembered"] == {"choice": MUGS, "title": "Kupalar"}
+    # A choice made while the keys signed in to another Etsy shop is not this shop's.
+    web.ctx.update_shop_prefs(drop_section={"choice": TEES, "title": "Tişörtler",
+                                            "etsy_shop_id": 999})
+    data = web.client.get("/api/designs/sections").json()
+    assert data["remembered"] is None and data["choice"] == "template"
+
+
+def test_a_shop_without_sections(web, fast_images):
+    fake, ws = _setup_shop(web)
+    _sections(fake)
+    web.ctx.update_shop_prefs(drop_section={"choice": "none", "title": None,
+                                            "etsy_shop_id": ETSY_SHOP_ID})
+    data = web.client.get("/api/designs/sections").json()
+    assert data["available"] is True and data["sections"] == []
+    assert data["template"] == {"id": None, "title": None, "missing": False}
+    assert data["choice"] == "template"  # nothing else to offer
+    _put(web, "retro-mountain-sunset.png", _png())
+    _section_run(web, fake, section="template")
+    assert fake.created and "shop_section_id" not in fake.created[0]
+
+
+def test_sections_that_cannot_be_read_leave_the_template_and_no_section(web):
+    fake, ws = _setup_shop(web)
+    _template_section(ws, TEES)
+    fake.error("GET", SECTIONS_PATH, 400, "Sections are not available")
+    web.ctx.update_shop_prefs(drop_section={"choice": "none", "title": None,
+                                            "etsy_shop_id": ETSY_SHOP_ID})
+    data = web.client.get("/api/designs/sections").json()
+    assert data["available"] is False and data["error"] == "etsy_error"
+    assert data["sections"] == [] and data["template"]["missing"] is False
+    assert data["choice"] == "none"
+
+
+def test_without_keys_the_sections_say_what_is_missing(web):
+    data = web.client.get("/api/designs/sections").json()
+    assert data["available"] is False and data["error"] == "setup_needed"
+    assert data["choice"] == "template" and data["template"]["id"] is None
+
+
+@pytest.mark.parametrize("section", ["mugs", 0, -4, True, 1.5, [], {"id": 1}])
+def test_the_section_must_be_template_none_or_an_id(web, section):
+    _setup_shop(web)
+    resp = web.client.post("/api/designs/start", json={"section": section})
+    assert resp.status_code == 422
+    assert resp.json()["error"]["params"] == {"field": "section"}
+
+
+def test_a_check_ignores_the_section(web, fast_images):
+    fake, ws = _setup_shop(web)
+    _sections(fake, (TEES, "Tişörtler", 1))
+    _put(web, "retro-mountain-sunset.png", _png())
+    job = web.client.post("/api/designs/start", json={"dry_run": True, "section": 424242})
+    assert job.status_code == 200, job.text
+    final = wait_for_job(web, job.json()["id"], timeout=30)
+    assert final["status"] == "done" and final["state"]["section"] is None
+    assert _sections_calls(fake) == 0 and "drop_section" not in web.ctx.shop_prefs()
+
+
+SECTION_KEYS = ("ready.section_label", "ready.section.loading", "ready.section.template",
+                "ready.section.template_plain", "ready.section.no_section",
+                "ready.section.deleted", "ready.section.none", "ready.section_empty",
+                "ready.section_unavailable", "ready.section_template_gone",
+                "ready.section_remembered_gone", "errors.section_gone")
+
+
+def test_the_section_strings_are_there_in_both_languages():
+    from test_vp_upload import _strings
+
+    strings = _strings("designs")
+    for lang in ("tr", "en"):
+        for key in SECTION_KEYS:
+            assert strings[lang].get(key), (lang, key)
+        assert "{name}" in strings[lang]["ready.section.template"]
+        assert "{name}" in strings[lang]["ready.section_remembered_gone"]
+    assert strings["tr"]["ready.section_label"] == "Mağaza bölümü"
+    assert strings["tr"]["ready.section.template"] == "Şablondaki gibi ({name})"
+
+
+def test_the_section_select_and_its_notes():
+    from test_vp_upload import NODE, _run
+
+    if NODE is None:
+        pytest.skip("node is not installed")
+    got = _run("designs", """
+      const t = (k, p) => (p ? k + ' ' + JSON.stringify(p) : k);
+      const base = { available: true, error: null,
+        sections: [{ id: 9001, title: 'Tees', count: 3 }, { id: 9002, title: '', count: 1 }],
+        template: { id: 9001, title: 'Tees', missing: false }, choice: 'template',
+        remembered: null, remembered_missing: false };
+      const gone = { ...base, sections: [base.sections[1]], template: { id: 9001, title: null, missing: true },
+        remembered: { choice: 9003, title: 'Mugs' }, remembered_missing: true };
+      const empty = { ...base, sections: [], template: { id: null, title: null, missing: false } };
+      return {
+        normal: m.sectionChoices(base, t),
+        remembered: m.sectionChoices({ ...base, choice: 9002 }, t).start,
+        stale: m.sectionChoices({ ...base, choice: 4242 }, t).start,
+        gone: m.sectionChoices(gone, t),
+        empty: m.sectionChoices(empty, t),
+        unread: m.sectionChoices(null, t),
+        unavailable: m.sectionChoices({ ...empty, available: false, error: 'offline', choice: 'none' }, t),
+        notes: [m.sectionNotes(base, 'template'), m.sectionNotes(gone, 'template'),
+                m.sectionNotes(gone, '9002'), m.sectionNotes(empty, 'template'),
+                m.sectionNotes(null, 'template'), m.sectionNotes({ ...gone, sections: [] }, 'template')],
+        values: [m.sectionValue('template'), m.sectionValue('none'), m.sectionValue('9002')],
+      };""")
+    template = 'ready.section.template {"name":"%s"}'
+    none = {"value": "none", "label": "ready.section.none"}
+    assert got["normal"] == {"options": [
+        {"value": "template", "label": template % "Tees"}, none,
+        {"value": "9001", "label": "Tees"}, {"value": "9002", "label": "#9002"},
+    ], "start": "template"}
+    assert got["remembered"] == "9002" and got["stale"] == "template"
+    assert got["gone"] == {"options": [
+        {"value": "template", "label": template % "ready.section.deleted"}, none,
+        {"value": "9002", "label": "#9002"},
+    ], "start": "template"}
+    # A shop without sections: only the template's (no section), nothing to pick.
+    assert got["empty"] == {"options": [
+        {"value": "template", "label": template % "ready.section.no_section"}], "start": "template"}
+    # Not read: the template's (unnamed) and "no section" can still be picked.
+    plain = {"value": "template", "label": "ready.section.template_plain"}
+    assert got["unread"] == {"options": [plain, none], "start": "template"}
+    assert got["unavailable"] == {"options": [plain, none], "start": "none"}
+    assert got["notes"] == [
+        [],
+        [["warning", "ready.section_remembered_gone", {"name": "Mugs"}],
+         ["warning", "ready.section_template_gone"]],
+        [],
+        [["hint", "ready.section_empty"]],
+        [["hint", "ready.section_unavailable"]],
+        [["hint", "ready.section_empty"]],
+    ]
+    assert got["values"] == ["template", "none", 9002]

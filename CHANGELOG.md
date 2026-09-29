@@ -35,6 +35,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Mockuplar counter and the Tasarım Yükle start card show the real numbers, and a product
   folder whose photos leave too little room gets the first ones that fit, with a warning.
   At most 10.
+- **Şablon İlan → Açıklama şablonu** (description template): the text every new draft's
+  description is written from, starting as the template listing's own description with
+  its title turned into `{başlık}`. `{başlık}` is each draft's title and `{tasarım}` its
+  design's name (English: `{title}`, `{design}`). Sentences holding a word of the template
+  listing's own design (from its title and tags, such as "lemon"; never a product
+  word such as "wallpaper" or "sample") are highlighted: they would be copied onto every
+  draft. It is saved in `product.json`; saving the same listing again keeps it.
+- Until such sentences are gone, each product of a run warns ("Açıklamada şablon ilanın
+  desenine özel 1 cümle kaldı"), and the start card says so once, with a link that opens
+  the description template. `stallkit drop template` lists them too.
+- **Tasarım Yükle → Başlat** has a **Mağaza bölümü** (*Shop section*) choice: your
+  shop's sections, starting on **Şablondaki gibi (…)** (the template listing's). Every
+  draft of that run goes into the section you pick, or into none; the template itself
+  is not changed. The choice is remembered per shop. A shop without sections says so; a
+  template or remembered section deleted on Etsy is pointed out (the template's then
+  gives drafts without a section instead of failing them), and a section deleted just
+  before Başlat stops the run before anything is sent.
+- `stallkit drop auto` and `drop run` take `--section NAME_OR_ID` (or `none`) for the
+  same, checked against your shop's sections first.
 - **The video's fonts are bundled**: Inter, Plus Jakarta Sans and JetBrains Mono (SIL
   Open Font License 1.1, see NOTICE.md) ship with the app, so every computer draws the
   same text. On Windows a medium weight no longer looks as bold as a semibold one (the
@@ -52,26 +71,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Siparişler**: for a shop that ships from Türkiye, a note before the first send says
   that Etsy may refuse tracking numbers from newer API keys, with the CSV download and
   Etsy's orders page. It goes for good once Etsy has accepted a number.
-- **Şablon İlan → Açıklama şablonu** (description template): the text every new draft's
-  description is written from, starting as the template listing's own description with
-  its title turned into `{başlık}`. `{başlık}` is each draft's title and `{tasarım}` its
-  design's name (English: `{title}`, `{design}`). Sentences holding a word of the template
-  listing's own design (from its title and tags, such as "lemon"; never a product
-  word such as "wallpaper" or "sample") are highlighted: they would be copied onto every
-  draft. It is saved in `product.json`; saving the same listing again keeps it.
-- Until such sentences are gone, each product of a run warns ("Açıklamada şablon ilanın
-  desenine özel 1 cümle kaldı"), and the start card says so once, with a link that opens
-  the description template. `stallkit drop template` lists them too.
-
-### Fixed
-
-- A new draft's description no longer carries the template listing's own title: the
-  title, and a line made of its `|`- or `,`-separated parts, become the draft's title
-  (a "Sage Lemon Wallpaper | Olive Citrus Mural" line no longer reaches a woodland
-  mural's draft).
 
 ### Changed
 
+- The new-version check now looks at every start of the app, unless it already looked
+  less than an hour ago, and then once a day while the app stays open. A failed look is
+  still followed by the next one an hour later, a restart included.
 - **Şablon İlan** shows how many of each listing sold, best sellers first, counted from
   the months **Kâr-Zarar** has already read (no extra Etsy calls; the tooltip names the
   months). Without those months it shows the favourites in Etsy's order, as before.
@@ -94,6 +99,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The bell's badge stays clear after a connect the page itself already announced.
 - Font weights are the video's 400/500/600/700/800 only; table column heads are 11.4 px,
   and a few labels were tightened so Inter fits a 1280 px window.
+
+### Fixed
+
+- A new draft's description no longer carries the template listing's own title: the
+  title, and a line made of its `|`- or `,`-separated parts, become the draft's title
+  (a "Sage Lemon Wallpaper | Olive Citrus Mural" line no longer reaches a woodland
+  mural's draft).
 
 ## [0.3.1] — 2026-09-28
 

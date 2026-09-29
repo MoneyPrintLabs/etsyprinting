@@ -8,7 +8,7 @@
 
 import {
   h, cx, mount, button, iconButton, badge, infoNote, thumb, dropzone, progressBar,
-  stepDots, tagChip, spinner, skeleton,
+  stepDots, tagChip, spinner, skeleton, select, uid,
 } from "../ui.js";
 import { icon } from "../icons.js";
 import { money, duration, relative, bytes, number } from "../format.js";
@@ -257,6 +257,51 @@ export function warnKey(w) {
   if (!w) return "";
   if (w.code === "check_warning" && MEASURE_NOTE.test(String(w.message || ""))) return "warn.measure_not_sent";
   return `warn.${w.code}`;
+}
+
+/**
+ * The start card's "Mağaza bölümü" select from GET /api/designs/sections (`d`; null when
+ * it could not be read): {options: [{value, label}], start}. "Şablondaki gibi (…)" names
+ * the template's section; "Bölüm yok" and the shop's sections follow when there are
+ * any (or when they could not be read, "Bölüm yok" still can be picked). It starts on
+ * the server's choice (the shop's last one) when that is still offered.
+ */
+export function sectionChoices(d, t) {
+  const sections = (d && d.sections) || [];
+  let template = t("ready.section.template_plain");
+  if (d && d.available) {
+    const own = d.template || {};
+    const name = own.id == null ? t("ready.section.no_section") : own.missing ? t("ready.section.deleted") : own.title || `#${own.id}`;
+    template = t("ready.section.template", { name });
+  }
+  const options = [{ value: "template", label: template }];
+  if (!d || !d.available || sections.length) options.push({ value: "none", label: t("ready.section.none") });
+  for (const s of sections) options.push({ value: String(s.id), label: s.title || `#${s.id}` });
+  const start = d && options.some((o) => o.value === String(d.choice)) ? String(d.choice) : "template";
+  return { options, start };
+}
+
+/**
+ * What the card says under the select while it shows `value`: [kind ("hint" |
+ * "warning"), i18n key, params] each. Sections that cannot be read, or a shop without
+ * any, is one hint (that line already says where the drafts go); on "template", a last
+ * choice or a template section that is gone on Etsy is a warning.
+ */
+export function sectionNotes(d, value) {
+  if (!d || !d.available) return [["hint", "ready.section_unavailable"]];
+  if (!(d.sections || []).length) return [["hint", "ready.section_empty"]];
+  const notes = [];
+  if (value !== "template") return notes;
+  if (d.remembered_missing && d.remembered) {
+    notes.push(["warning", "ready.section_remembered_gone", { name: d.remembered.title || `#${d.remembered.choice}` }]);
+  }
+  if (d.template && d.template.missing) notes.push(["warning", "ready.section_template_gone"]);
+  return notes;
+}
+
+/** The start request's `section` for the select's value: "template", "none" or an id. */
+export function sectionValue(value) {
+  return value === "template" || value === "none" ? value : Number(value);
 }
 
 /** How long typeTitle() takes to type `text` from character `from` on (ms). */
@@ -1418,7 +1463,7 @@ class DesignsPage {
 
   // ------------------------------------------------------------------ starting a run
 
-  async openStart(given) {
+  async openStart(given, { refreshSections = false } = {}) {
     const { t } = this;
     if (this.uploading) {
       this.ctx.toast({ tone: "info", title: t("ready.wait_upload") });
@@ -1434,6 +1479,8 @@ class DesignsPage {
       this.openBlocked(p, blockers);
       return;
     }
+    // The shop section every draft of this run goes into: read while the card opens.
+    const section = this.sectionField({ refresh: refreshSections });
     const notes = [];
     const kind = listingType(p.template && p.template.listing_type);
     const digital = DIGITAL.has(kind);
@@ -1570,8 +1617,10 @@ class DesignsPage {
         notes.push(box);
       }
     }
+    notes.push(section.el);
     // The video's start card (t210): a title, one line and Başlat. No ×: Escape or a
-    // click outside still closes it.
+    // click outside still closes it. Başlat waits for the sections (a spinner) so the
+    // run gets the choice the select shows.
     const m = this.ctx.modal({
       title: t("ready.title", { n: p.runnable ?? p.count }),
       subtitle: infoN
@@ -1579,7 +1628,8 @@ class DesignsPage {
         : t("ready.sub", { n: mk.enabled, mockups: mk.enabled, template: templateTitle }),
       width: 456,
       class: "dz-ready",
-      body: notes.length ? notes : null,
+      body: notes,
+      onClose: () => section.close(),
       actions: [
         button({
           label: t("ready.start"),
@@ -1587,9 +1637,12 @@ class DesignsPage {
           variant: "primary",
           size: "lg",
           class: "dz-ready-start",
-          onClick: () => {
+          autoLoading: true,
+          onClick: async () => {
+            const choice = await section.value();
+            if (section.closed) return;
             m.close();
-            this.startRun(false, { opaque });
+            this.startRun(false, { opaque, section: choice });
           },
         }),
       ],
@@ -1631,6 +1684,72 @@ class DesignsPage {
         t("ready.wm_edit"),
       ),
     );
+  }
+
+  /**
+   * The start card's "Mağaza bölümü": the shop's sections, starting on the template's
+   * (or this shop's last choice). {el, value(): Promise<"template" | "none" | id>, close()}.
+   * Notes under it: a shop without sections, a template or remembered section that is
+   * gone, sections that cannot be read now (the template's is used then).
+   */
+  sectionField({ refresh = false } = {}) {
+    const { t } = this;
+    const id = uid("dz-section");
+    const sel = select({
+      options: [{ value: "template", label: t("ready.section.loading") }],
+      value: "template",
+      disabled: true,
+      class: "dz-section-select",
+    });
+    sel.input.id = id;
+    sel.classList.add("is-loading");
+    const note = h("div", { class: "dz-section-note" });
+    const el = h(
+      "div",
+      { class: "dz-ready-section" },
+      h("label", { class: "dz-section-label", for: id }, icon("store", { size: 15 }), h("span", null, t("ready.section_label"))),
+      sel,
+      note,
+    );
+    const controller = new AbortController();
+    const state = { closed: false, data: null };
+    const say = () => {
+      const lines = sectionNotes(state.data, sel.value).map(([kind, key, params]) =>
+        kind === "hint" ? h("p", { class: "dz-modal-hint" }, t(key, params)) : infoNote({ tone: "warning", icon: "alert", text: t(key, params) }),
+      );
+      mount(note, lines);
+      note.hidden = !lines.length;
+    };
+    const fill = (d) => {
+      state.data = d;
+      const { options, start } = sectionChoices(d, t);
+      sel.setOptions(options, start);
+      sel.input.disabled = options.length < 2;
+      sel.classList.toggle("is-disabled", options.length < 2);
+      sel.classList.remove("is-loading");
+      say();
+    };
+    sel.input.addEventListener("change", say);
+    note.hidden = true;
+    const loaded = this.api
+      .get("/api/designs/sections", refresh ? { refresh: 1 } : null, { signal: controller.signal })
+      .then(fill, (err) => {
+        if (!this.api.isAbort(err)) fill(null);
+      });
+    return {
+      el,
+      get closed() {
+        return state.closed;
+      },
+      async value() {
+        await loaded;
+        return sectionValue(sel.value);
+      },
+      close() {
+        state.closed = true;
+        controller.abort();
+      },
+    };
   }
 
   /** "Yalnızca kontrol et" (the waiting designs' modal): every step but the draft. */
@@ -1720,15 +1839,25 @@ class DesignsPage {
     }
   }
 
-  /** opaque: what becomes of loose designs with nothing to see through ("as_is" | "place"). */
-  async startRun(dryRun, { opaque } = {}) {
+  /**
+   * opaque: what becomes of loose designs with nothing to see through ("as_is" | "place").
+   * section: the start card's shop section ("template" | "none" | a section id).
+   */
+  async startRun(dryRun, { opaque, section } = {}) {
     this.starting = true;
     try {
       const body = { dry_run: !!dryRun };
       if (opaque === "place" || opaque === "as_is") body.opaque = opaque;
+      if (section === "template" || section === "none" || (Number.isInteger(section) && section > 0)) body.section = section;
       const job = await this.api.post("/api/designs/start", body);
       await this.showJob(job.id, job);
     } catch (err) {
+      if (err && err.code === "section_gone") {
+        // Deleted on Etsy since the card opened: the card again, with the list read afresh.
+        this.ctx.toast({ tone: "warning", title: this.errorText(err) });
+        this.openStart(null, { refreshSections: true });
+        return;
+      }
       if (err && err.code === "setup_incomplete" && this.pending) {
         const blockers = (err.params && err.params.blockers) || [];
         await this.loadPending();

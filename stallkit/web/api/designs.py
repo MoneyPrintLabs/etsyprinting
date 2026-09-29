@@ -5,7 +5,11 @@
            a digital product's download file (any type but programs), raw body
     DELETE /api/designs/files?path=<name | folder | folder/name>       -> moved to archive/
     GET    /api/designs/pending        what the next run would do, and what blocks it
-    POST   /api/designs/start          {"dry_run"?: bool, "opaque"?: "as_is" | "place"}
+    GET    /api/designs/sections[?refresh=1]
+                                       the shop's sections for the start card's "Mağaza
+                                       bölümü" select, and what it starts on
+    POST   /api/designs/start          {"dry_run"?: bool, "opaque"?: "as_is" | "place",
+                                        "section"?: "template" | "none" | <section id>}
                                        -> job "designs" (drop.stream)
     GET    /api/designs/last           the last finished run (3-DRAFTS/last-run.json)
     POST   /api/designs/review/forget  {"name", "confirm": true}: try a product again
@@ -32,6 +36,17 @@ The pending view also says, for the start card:
 - the workspace's watermark (`watermark`: drop.watermark.describe for the template's
   type): whether the run stamps it, and where. A mark that is on but cannot be read
   blocks the start ("watermark"): its photos must never go up without it.
+
+The shop section (the start card's "Mağaza bölümü"): every draft of a run goes into the
+section chosen there, whatever the template listing's is. `section` on start:
+- "template": the template listing's section, as always. When Etsy no longer has it (the
+  seller deleted it), the drafts go into no section instead of failing one by one.
+- "none": no section.
+- a section id: that section, checked against the shop's sections first; one that is gone
+  is 409 section_gone (the page reads the list again).
+Left out, the run is what it was before there was a choice (the template's, unchecked).
+A real run remembers the choice for the open shop (shop pref `drop_section`); the card
+starts on it next time, unless its section is gone. A check (dry run) ignores it.
 """
 
 from __future__ import annotations
@@ -46,9 +61,11 @@ import shutil
 import threading
 import time
 import unicodedata
+import weakref
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ...errors import StallKitError
 from ..router import ApiError, Request
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -92,11 +109,24 @@ _claims_lock = threading.Lock()
 _claims: collections.OrderedDict[tuple[str, str, str], str] = collections.OrderedDict()
 _KEEP_CLAIMS = 2000
 
+# The start card's shop section: the choice ("template" | "none" | a section id), the
+# shop pref it is remembered in, and how long the shop's sections are kept in memory
+# (per Etsy client, so per shop and sign-in; a start always reads them afresh).
+SECTION_TEMPLATE = "template"
+SECTION_NONE = "none"
+SECTION_PREF = "drop_section"
+SECTIONS_TTL = 60.0
+_sections_lock = threading.Lock()
+_sections_cache: weakref.WeakKeyDictionary[Any, tuple[float, list[dict[str, Any]]]] = (
+    weakref.WeakKeyDictionary()
+)
+
 
 def register(r: Router, ctx: AppContext) -> None:
     r.put("/api/designs/files", upload_file)
     r.delete("/api/designs/files", delete_file)
     r.get("/api/designs/pending", pending)
+    r.get("/api/designs/sections", sections)
     r.post("/api/designs/start", start)
     r.get("/api/designs/last", last_run)
     r.post("/api/designs/review/forget", forget)
@@ -876,6 +906,188 @@ def pending(req: Request) -> dict[str, Any]:
     return _pending_info(_ctx(req))
 
 
+# --- the shop section (the start card's "Mağaza bölümü") --------------------------------------
+
+
+def _shop_sections(ctx: AppContext, *, fresh: bool = False) -> list[dict[str, Any]]:
+    """The open shop's sections, in the shop's order: [{id, title, count}].
+
+    getShopSections (read only; the OAS asks for the API key alone). Kept SECTIONS_TTL
+    seconds per Etsy client; `fresh` reads them again. Errors propagate (ApiError
+    setup_needed, EtsyApiError, AuthError, ...).
+    """
+    from ...drop.template import section_number
+
+    client = ctx.client()
+    now = time.monotonic()
+    if not fresh:
+        with _sections_lock:
+            found = _sections_cache.get(client)
+        if found is not None and now - found[0] < SECTIONS_TTL:
+            return [dict(s) for s in found[1]]
+    with client.attempts(2):
+        raw = client.shop_sections()
+    ranked: list[tuple[int, int, dict[str, Any]]] = []
+    for n, record in enumerate(raw or []):
+        if not isinstance(record, dict):
+            continue
+        section_id = section_number(record.get("shop_section_id"))
+        if section_id is None:
+            continue
+        count = record.get("active_listing_count")
+        rank = record.get("rank")
+        ranked.append((
+            rank if isinstance(rank, int) and not isinstance(rank, bool) else 1 << 30, n,
+            {"id": section_id, "title": str(record.get("title") or "").strip(),
+             "count": count if isinstance(count, int) and not isinstance(count, bool) else None},
+        ))
+    items = [entry for _rank, _n, entry in sorted(ranked, key=lambda r: (r[0], r[1]))]
+    with _sections_lock:
+        _sections_cache[client] = (now, items)
+    return [dict(s) for s in items]
+
+
+def _section_choice(value: Any) -> str | int:
+    """"template" | "none" | a section id, from a request body; 422 for anything else."""
+    from ...drop.template import section_number
+
+    if value in (SECTION_TEMPLATE, SECTION_NONE):
+        return value
+    number = section_number(value)
+    if number is None:
+        raise ApiError(422, "invalid", 'section must be "template", "none" or a section id',
+                       field="section")
+    return number
+
+
+def _etsy_shop_id(ctx: AppContext) -> int | None:
+    value = (ctx.status.get("shop") or {}).get("etsy_shop_id")
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _remembered_section(ctx: AppContext) -> dict[str, Any] | None:
+    """The open shop's last choice ({choice, title}), or None. A choice made while the
+    shop's keys signed in to another Etsy shop is not this shop's."""
+    from ...drop.template import section_number
+
+    saved = ctx.shop_prefs().get(SECTION_PREF)
+    if not isinstance(saved, dict):
+        return None
+    choice = saved.get("choice")
+    if choice not in (SECTION_TEMPLATE, SECTION_NONE):
+        choice = section_number(choice)
+        if choice is None:
+            return None
+    owner, current = saved.get("etsy_shop_id"), _etsy_shop_id(ctx)
+    if isinstance(owner, int) and current is not None and owner != current:
+        return None
+    title = saved.get("title")
+    return {"choice": choice, "title": title if isinstance(title, str) else None}
+
+
+def _template_section(ctx: AppContext) -> int | None:
+    """The saved template listing's section id (None: none, or no usable template)."""
+    from ...drop.template import Template
+    from ...errors import ValidationError
+
+    ws = ctx.workspace()
+    if not ws.template_path.is_file():
+        return None
+    try:
+        return Template.from_dict(ws.read_template()).section_id
+    except (ValidationError, OSError):
+        return None
+
+
+def sections(req: Request) -> dict[str, Any]:
+    """What the start card's "Mağaza bölümü" select offers and starts on.
+
+    {"available": bool, "error": code | null, "sections": [{id, title, count}],
+     "template": {"id", "title", "missing"}, "choice": "template" | "none" | id,
+     "remembered": {"choice", "title"} | null, "remembered_missing": bool}
+
+    `template.missing`: the template listing's section is no longer in the shop (its
+    drafts would go into no section). `remembered_missing`: the last choice was a
+    section that is gone; the select starts on "template" instead. When the sections
+    cannot be read (`available` false, `error` the reason), "template" and "none" are
+    all it offers.
+    """
+    ctx = _ctx(req)
+    fresh = req.bool_query("refresh", False)
+    template_id = _template_section(ctx)
+    remembered = _remembered_section(ctx)
+    error = None
+    try:
+        items = _shop_sections(ctx, fresh=fresh)
+    except (ApiError, StallKitError) as exc:
+        from ..errors import describe
+
+        error = describe(exc)["code"]
+        log.info("designs: could not read the shop's sections (%s)", error)
+        items = []
+    available = error is None
+    by_id = {s["id"]: s for s in items}
+    template_found = by_id.get(template_id) if template_id is not None else None
+    choice: str | int = SECTION_TEMPLATE
+    remembered_missing = False
+    if remembered is not None:
+        wanted = remembered["choice"]
+        if wanted == SECTION_NONE and (items or not available):
+            choice = SECTION_NONE
+        elif isinstance(wanted, int):
+            if wanted in by_id:
+                choice = wanted
+            elif available:
+                remembered_missing = True
+    return {
+        "available": available,
+        "error": error,
+        "sections": items,
+        "template": {
+            "id": template_id,
+            "title": template_found["title"] if template_found else None,
+            "missing": available and template_id is not None and template_found is None,
+        },
+        "choice": choice,
+        "remembered": remembered,
+        "remembered_missing": remembered_missing,
+    }
+
+
+def _run_section(ctx: AppContext, template: Any, choice: str | int) -> tuple[Any, dict[str, Any]]:
+    """(the template this run's drafts copy, the run's section {choice, id, title,
+    template_gone}) for the start card's choice; 409 section_gone for a chosen section
+    the shop no longer has."""
+    run = {"choice": choice, "id": None, "title": None, "template_gone": None}
+    if choice == SECTION_NONE:
+        return template.with_section(None), run
+    if choice == SECTION_TEMPLATE:
+        own = template.section_id
+        if own is None:
+            return template, run
+        run["id"] = own
+        try:
+            items = _shop_sections(ctx, fresh=True)
+        except (ApiError, StallKitError) as exc:
+            # Not known now: the template's section goes as it is (as before the choice).
+            log.info("designs: could not check the template's section (%s)", exc)
+            return template, run
+        found = next((s for s in items if s["id"] == own), None)
+        if found is None:
+            # Deleted in Etsy: no section, rather than every draft failing on it.
+            run.update(id=None, template_gone=own)
+            return template.with_section(None), run
+        run["title"] = found["title"]
+        return template, run
+    items = _shop_sections(ctx, fresh=True)
+    found = next((s for s in items if s["id"] == choice), None)
+    if found is None:
+        raise ApiError(409, "section_gone", "That shop section no longer exists on Etsy.",
+                       id=choice)
+    run.update(id=choice, title=found["title"])
+    return template.with_section(choice), run
+
+
 # --- the run -------------------------------------------------------------------------------------
 
 
@@ -934,7 +1146,7 @@ class _Tracker:
     """Turns drop.stream events into job state, SSE item events and progress."""
 
     def __init__(self, job: Job, *, dry_run: bool, template: dict[str, Any] | None,
-                 mockups: dict[str, Any]) -> None:
+                 mockups: dict[str, Any], section: dict[str, Any] | None = None) -> None:
         self.job = job
         self.lock = threading.RLock()
         self.items: list[dict[str, Any]] = []
@@ -944,6 +1156,9 @@ class _Tracker:
             "cancelled_items": 0, "started_at": self.started, "finished_at": None,
             "items": [], "current": None, "dry_run": dry_run, "batch": None,
             "out_dir": None, "template": template, "mockups": mockups,
+            # The start card's shop section for this run ({choice, id, title,
+            # template_gone}); None when the drafts simply copy the template's.
+            "section": section,
             "concurrency": CONCURRENCY, "already_done": 0, "needs_review": [],
             "result": None, "listing_type": (template or {}).get("listing_type") or "physical",
         }
@@ -1099,6 +1314,7 @@ def _write_last_run(ws: Any, job: Job, tracker: _Tracker, summary: dict[str, Any
         "summary": summary,
         "template": tracker.state.get("template"),
         "mockups": tracker.state.get("mockups"),
+        "section": tracker.state.get("section"),
         "items": [_copy_item(item) for item in tracker.items],
     }
     path = ws.drafts / LAST_RUN_FILE
@@ -1139,11 +1355,13 @@ def start(req: Request) -> dict[str, Any]:
     opaque = body.get("opaque", stream.OPAQUE_AS_IS)
     if opaque not in stream.OPAQUE_CHOICES:
         raise ApiError(422, "invalid", "opaque must be as_is or place", field="opaque")
+    section = _section_choice(body["section"]) if body.get("section") is not None else None
     with _start_lock:
-        return _start(ctx, dry_run, opaque)
+        return _start(ctx, dry_run, opaque, section)
 
 
-def _start(ctx: AppContext, dry_run: bool, opaque: str = "as_is") -> dict[str, Any]:
+def _start(ctx: AppContext, dry_run: bool, opaque: str = "as_is",
+           section: str | int | None = None) -> dict[str, Any]:
     from ...drop import automation, catalog, stream
     from ...drop.template import Template
 
@@ -1156,6 +1374,13 @@ def _start(ctx: AppContext, dry_run: bool, opaque: str = "as_is") -> dict[str, A
                        blockers=blockers)
     ws = ctx.workspace()
     template = Template.from_dict(ws.read_template())
+    run_section = None
+    if section is not None and not dry_run:
+        # The start card's "Mağaza bölümü": every draft of this run goes there.
+        template, run_section = _run_section(ctx, template, section)
+        ctx.update_shop_prefs(**{SECTION_PREF: {
+            "choice": section, "title": run_section["title"],
+            "etsy_shop_id": _etsy_shop_id(ctx)}})
     mockups_info = dict(info["mockups"])
     # The mockups the start card named (a download-only template's without the physical
     # ones), in catalog.enabled_mockups' order.
@@ -1164,7 +1389,7 @@ def _start(ctx: AppContext, dry_run: bool, opaque: str = "as_is") -> dict[str, A
 
     def work(job: Job) -> dict[str, Any]:
         tracker = _Tracker(job, dry_run=dry_run, template=info["template"],
-                           mockups=mockups_info)
+                           mockups=mockups_info, section=run_section)
         try:
             if dry_run:
                 try:
