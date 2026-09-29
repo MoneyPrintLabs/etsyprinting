@@ -1715,6 +1715,606 @@
   gap: 14px;
 }
 
+/* ------------------------------------------------------------------ Filigran (watermark) */
+
+/* Not in the video: a card in its language (the Şablon İlan cards' 14 px radius, panel
+   fill, 34 px icon tile, the editor's field labels and option rows). */
+.page-mockups .mk-wm {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 20px;
+  border-radius: 14px;
+  scroll-margin-top: 16px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.page-mockups .mk-wm[hidden] {
+  display: none;
+}
+.page-mockups .mk-wm.is-over {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px rgba(123, 108, 255, 0.12);
+}
+.page-mockups .mk-wm.is-over::after {
+  content: attr(data-drop);
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: inherit;
+  background: rgba(10, 12, 17, 0.72);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  pointer-events: none;
+}
+.page-mockups .mk-wm-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.page-mockups .mk-wm-head .icon-tile {
+  --tone: var(--accent-2);
+  --tone-soft: var(--accent-soft);
+}
+.page-mockups .mk-wm-titles {
+  flex: 1;
+  min-width: 0;
+}
+.page-mockups .mk-wm-title {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+.page-mockups .mk-wm-sub {
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.page-mockups .mk-wm-switch {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+}
+.page-mockups .mk-wm-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+}
+.page-mockups .mk-wm-state.is-on {
+  color: var(--success);
+}
+.page-mockups .mk-wm-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted-2);
+}
+.page-mockups .mk-wm-dot.is-on {
+  background: var(--success);
+}
+
+.page-mockups .mk-wm-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  gap: 22px;
+  align-items: start;
+}
+
+/* the preview: a real mockup with the mark on it, drawn by the server */
+.page-mockups .mk-wm-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.page-mockups .mk-wm-stage {
+  position: relative;
+  height: clamp(300px, 56vh, 520px);
+  border-radius: 12px;
+  background: var(--panel-2);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  overflow: hidden;
+}
+.page-mockups .mk-wm-img {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  max-width: calc(100% - 28px);
+  max-height: calc(100% - 28px);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+  transition: opacity 0.2s, filter 0.2s;
+}
+.page-mockups .mk-wm-stage:not(.has-image) .mk-wm-img {
+  visibility: hidden;
+}
+.page-mockups .mk-wm-stage.is-off .mk-wm-img {
+  opacity: 0.45;
+  filter: grayscale(0.5);
+}
+.page-mockups .mk-wm-wait,
+.page-mockups .mk-wm-stage-err {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 11px;
+  border-radius: 999px;
+  background: rgba(10, 12, 17, 0.82);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-2);
+}
+.page-mockups .mk-wm-stage-err {
+  color: var(--danger);
+}
+.page-mockups .mk-wm-wait[hidden],
+.page-mockups .mk-wm-stage-err[hidden] {
+  display: none;
+}
+.page-mockups .mk-wm-under {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  min-width: 0;
+}
+.page-mockups .mk-wm-target {
+  min-width: 0;
+  max-width: 100%;
+}
+.page-mockups .mk-wm-target .select {
+  max-width: 100%;
+}
+.page-mockups .mk-wm-under-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.page-mockups .mk-wm-under-note .icon {
+  flex: none;
+  color: var(--success);
+}
+
+/* the settings column */
+.page-mockups .mk-wm-side {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.page-mockups .mk-wm-file {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 10px 9px 9px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  min-width: 0;
+}
+.page-mockups .mk-wm-file-thumb {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 48px;
+  height: 48px;
+  border-radius: 9px;
+  overflow: hidden;
+  color: var(--danger);
+}
+.page-mockups .mk-wm-file-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 4px;
+}
+/* A mid-grey checker: a white mark and a black one both show on it. */
+.page-mockups .mk-wm-file-thumb.checker {
+  background-color: #8b909c;
+  background-image: linear-gradient(45deg, #737885 25%, transparent 25%),
+    linear-gradient(-45deg, #737885 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #737885 75%),
+    linear-gradient(-45deg, transparent 75%, #737885 75%);
+  background-size: 10px 10px;
+  background-position: 0 0, 0 5px, 5px -5px, -5px 0;
+}
+.page-mockups .mk-wm-file-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.page-mockups .mk-wm-file-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+.page-mockups .mk-wm-file-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.page-mockups .mk-wm-file-meta > span {
+  white-space: nowrap;
+}
+.page-mockups .mk-wm-file-meta .mono {
+  font-size: 11.5px;
+}
+.page-mockups .mk-wm-ground {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.page-mockups .mk-wm-ground::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warning);
+}
+.page-mockups .mk-wm-ground.is-transparent::before {
+  background: var(--success);
+}
+.page-mockups .mk-wm-file .btn {
+  flex: none;
+}
+.page-mockups .mk-wm-remove {
+  flex: none;
+  color: var(--muted);
+}
+.page-mockups .mk-wm-remove:hover {
+  color: var(--danger);
+}
+.page-mockups .mk-wm-side .note {
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+}
+/* a narrow column puts the note's button under its text rather than squeezing both */
+.page-mockups .mk-wm-side .note-text {
+  flex: 1 1 170px;
+}
+.page-mockups .mk-wm-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.page-mockups .mk-wm-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.page-mockups .mk-wm-opts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+.page-mockups .mk-wm-scope .mk-wm-opt {
+  align-items: center;
+  padding: 9px 12px;
+}
+.page-mockups .mk-wm-scope .mk-wm-radio {
+  margin-top: 0;
+}
+.page-mockups .mk-wm-scope .mk-wm-opt-text {
+  flex-direction: row;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+}
+.page-mockups .mk-wm-positions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.page-mockups .mk-wm-opt {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 11px;
+  border-radius: 11px;
+  border: 1px solid var(--border-2);
+  background: var(--panel-2);
+  text-align: left;
+  color: var(--text);
+  transition: border-color 0.15s, background 0.15s;
+}
+.page-mockups .mk-wm-opt:hover {
+  border-color: #3d4150;
+}
+.page-mockups .mk-wm-opt:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 2px;
+}
+.page-mockups .mk-wm-opt.is-selected {
+  border-color: rgba(123, 108, 255, 0.6);
+  background: var(--accent-soft);
+}
+.page-mockups .mk-wm-opt-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+.page-mockups .mk-wm-opt-text strong {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+/* SablonEkrani.tsx's Radio: a 2 px ring, accent when chosen, with the accent2 dot. */
+.page-mockups .mk-wm-radio {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  border-radius: 50%;
+  border: 2px solid #474e60;
+}
+.page-mockups .mk-wm-opt.is-selected .mk-wm-radio {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(123, 108, 255, 0.14);
+}
+.page-mockups .mk-wm-opt.is-selected .mk-wm-radio::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-2);
+}
+.page-mockups .mk-wm-positions .mk-wm-opt {
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 6px 9px;
+  text-align: center;
+}
+.page-mockups .mk-wm-positions .mk-wm-opt-text {
+  align-items: center;
+}
+.page-mockups .mk-wm-positions .mk-wm-opt-text strong {
+  font-size: 12.5px;
+}
+.page-mockups .mk-wm-pos-art {
+  display: block;
+  width: 52px;
+  height: 38px;
+}
+.page-mockups .mk-wm-pos-frame {
+  fill: var(--panel-3);
+  stroke: var(--border-2);
+  stroke-width: 1.5;
+}
+.page-mockups .mk-wm-pos-marks {
+  fill: var(--muted);
+}
+.page-mockups .mk-wm-opt.is-selected .mk-wm-pos-frame {
+  stroke: rgba(123, 108, 255, 0.55);
+}
+.page-mockups .mk-wm-opt.is-selected .mk-wm-pos-marks {
+  fill: var(--accent-2);
+}
+
+/* opacity and size */
+.page-mockups .mk-wm-sliders {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.page-mockups .mk-wm-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.page-mockups .mk-wm-slider-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.page-mockups .mk-wm-slider-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+.page-mockups .mk-wm-slider-value {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text);
+}
+.page-mockups .mk-wm-range {
+  --fill: 50%;
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 18px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.page-mockups .mk-wm-range:focus {
+  outline: none;
+}
+.page-mockups .mk-wm-range::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(to right, var(--accent) var(--fill), var(--panel-3) var(--fill));
+}
+.page-mockups .mk-wm-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: #fff;
+  border: 0;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  transition: box-shadow 0.15s;
+}
+.page-mockups .mk-wm-range:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45), 0 0 0 4px rgba(123, 108, 255, 0.35);
+}
+.page-mockups .mk-wm-range::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--panel-3);
+}
+.page-mockups .mk-wm-range::-moz-range-progress {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+.page-mockups .mk-wm-range::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  border: 0;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+}
+.page-mockups .mk-wm-range:focus-visible::-moz-range-thumb {
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45), 0 0 0 4px rgba(123, 108, 255, 0.35);
+}
+
+/* what the next run does, and where the mark never goes */
+.page-mockups .mk-wm-applies {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.page-mockups .mk-wm-applies-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.page-mockups .mk-wm-applies-line .icon {
+  flex: none;
+  margin-top: 1px;
+}
+.page-mockups .mk-wm-applies-line.is-on {
+  color: var(--text-2);
+}
+.page-mockups .mk-wm-applies-line.is-on .icon {
+  color: var(--success);
+}
+
+/* no watermark yet: a drop area and what it does */
+.page-mockups .mk-wm-body.is-empty {
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  align-items: stretch;
+}
+.page-mockups .mk-wm-drop.dropzone {
+  min-height: 200px;
+  gap: 6px;
+  padding: 24px;
+  border: 2px dashed var(--border-2);
+  border-radius: 12px;
+  background: radial-gradient(ellipse 60% 70% at 50% 45%, rgba(123, 108, 255, 0.08), rgba(123, 108, 255, 0) 70%),
+    rgba(255, 255, 255, 0.012);
+}
+.page-mockups .mk-wm-drop.dropzone:hover {
+  border-color: var(--accent-line);
+}
+.page-mockups .mk-wm-drop.dropzone.is-over {
+  border-color: var(--accent);
+}
+.page-mockups .mk-wm-drop-icon {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 4px;
+  border-radius: 14px;
+  background: var(--accent-soft);
+  border: 1px solid rgba(123, 108, 255, 0.35);
+  color: var(--accent-2);
+}
+.page-mockups .mk-wm-drop-title {
+  font-size: 15.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.page-mockups .mk-wm-drop-sub {
+  font-size: 13px;
+  color: var(--text-2);
+}
+.page-mockups .mk-wm-drop-types {
+  font-size: 12px;
+  color: var(--muted);
+}
+.page-mockups .mk-wm-about {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 12px;
+  padding: 6px 4px;
+}
+.page-mockups .mk-wm-about-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+.page-mockups .mk-wm-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.page-mockups .mk-wm-fact {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.page-mockups .mk-wm-fact-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
 /* ------------------------------------------------------------------ narrower windows */
 
 @media (max-width: 1360px) {
@@ -1755,8 +2355,16 @@
   .page-mockups .mk-divider {
     margin: 14px 0 16px;
   }
+  .page-mockups .mk-wm-body {
+    grid-template-columns: minmax(0, 1fr) 340px;
+    gap: 18px;
+  }
 }
 @media (max-width: 1080px) {
+  .page-mockups .mk-wm-body,
+  .page-mockups .mk-wm-body.is-empty {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .page-mockups.mk-page-editor {
     height: auto;
   }

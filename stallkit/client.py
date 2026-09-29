@@ -556,8 +556,11 @@ class EtsyClient:
         )
 
     def upload_listing_image(
-        self, listing_id: int, image: Path, *, rank: int = 1, alt_text: str = ""
+        self, listing_id: int, image: Path, *, rank: int = 1, alt_text: str = "",
+        is_watermarked: bool = False,
     ) -> dict[str, Any]:
+        """uploadListingImage: `is_watermarked` tells Etsy the picture carries a
+        watermark (OAS: boolean form field, default false; sent only when true)."""
         # Refuse before reading. A file Etsy will not take should not be pulled into
         # memory first, and the refusal has to land before the request, not after —
         # by upload time the draft already exists and the row can only be "partial".
@@ -567,6 +570,8 @@ class EtsyClient:
         data = {"rank": str(rank)}
         if alt_text:
             data["alt_text"] = alt_text[:250]
+        if is_watermarked:
+            data["is_watermarked"] = "true"
         return self.request(
             "POST",
             f"/shops/{self.shop_id()}/listings/{listing_id}/images",

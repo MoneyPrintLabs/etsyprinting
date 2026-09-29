@@ -617,6 +617,15 @@ def _has_alpha(path: Path) -> bool:
         return False
 
 
+def default_design(ws: Workspace) -> str:
+    """The design a preview starts with: the first transparent one in 2-PRODUCTS (of the
+    first DEFAULT_SCAN), else the bundled sample."""
+    for path in ws.product_files()[:DEFAULT_SCAN]:
+        if _has_alpha(path):
+            return path.relative_to(ws.products).as_posix()
+    return SAMPLE
+
+
 def list_designs(req: Request) -> dict[str, Any]:
     """GET /api/mockups/designs: loose designs in 2-PRODUCTS to preview on a mockup."""
     ws = _ws(req)

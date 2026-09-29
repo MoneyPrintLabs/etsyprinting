@@ -381,6 +381,31 @@ Etsy Studio/
   and the message says whether they went up.
 - `drop run` counts the download files in its request estimate.
 
+### Watermark
+
+A listing photo of a digital product is the product at up to 3000 px, so you can stamp
+your own mark on the photos. The app's Mockups page sets it (with a live preview), or:
+
+```bash
+stallkit drop watermark --file logo.png                  # a transparent PNG works best
+stallkit drop watermark --position tiled --opacity 35     # center | corner | tiled
+stallkit drop watermark --scope all                       # digital (default) | all
+stallkit drop watermark --off                             # keep it, stamp nothing
+stallkit drop watermark                                   # show what is set
+```
+
+- It lives beside the folders, as `watermark.png` and `watermark.json`, so `drop run`,
+  `drop auto` and the app's runs all use the same one; `--no-watermark` leaves it off
+  for one run.
+- `--scope digital` stamps only when the template is a `download` or `both` listing;
+  `all` stamps every listing's photos. The size is a share of the photo's width (30 % for
+  one mark, 15 % for each repeated one), opacity 10-90 % (35 % by default).
+- It goes on copies of every listing photo: the mockups, the flat render or preview, a
+  folder product's own photos. The copies land in the product's `watermarked` folder in
+  `3-DRAFTS`; your files in `2-PRODUCTS` stay as they are, and **the files buyers
+  download are never stamped**. Etsy is told which pictures carry a watermark.
+- A photo the mark cannot be put on stops its product; it never goes up without it.
+
 ### Compositing loose designs
 
 For print-on-demand: put designs in a folder, get composited mockups and a ready-to-push
@@ -658,6 +683,7 @@ Task Scheduler or cron.
 | `stallkit drop template` | Copy settings from a listing you built by hand |
 | `stallkit drop run` | Designs → mockups (the Mockuplar selection), titles, tags → `review.csv` |
 | `stallkit drop calibrate` | Move a mockup's print area, with a preview image to check it |
+| `stallkit drop watermark` | Show or set the watermark stamped on listing photos (`--file`, `--on/--off`, `--position`, `--opacity`, `--size`, `--scope`) |
 | `stallkit drop auto` | Designs and product folders → Etsy drafts (with their download files for a digital template), with upload history |
 | `stallkit listings template` | Write a starter CSV |
 | `stallkit listings pull` | Export listings to CSV |

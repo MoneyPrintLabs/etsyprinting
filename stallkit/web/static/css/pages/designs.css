@@ -904,6 +904,54 @@
   color: var(--muted);
   font-size: 12px;
 }
+/* "Filigran: açık · dijital ürünlerde" (not in the video: the watermark of the Mockuplar
+   page): one quiet line, the drop in accent2 while the run stamps. */
+.dz-modal-wm {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+.dz-modal-wm-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  background: var(--panel-3);
+  color: var(--muted);
+}
+.dz-modal-wm.is-on .dz-modal-wm-icon {
+  background: var(--accent-soft);
+  color: var(--accent-2);
+}
+.dz-modal-wm-text {
+  flex: 1;
+  min-width: 0;
+}
+.dz-modal-wm-text strong {
+  color: var(--text-2);
+  font-weight: 600;
+}
+.dz-modal-wm.is-on .dz-modal-wm-text {
+  color: var(--text-2);
+}
+.dz-modal-wm-skip {
+  color: var(--muted);
+}
+.dz-modal-wm-edit {
+  flex: none;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--accent-2);
+}
+.dz-modal-wm-edit:hover {
+  text-decoration: underline;
+}
 .dz-options {
   display: flex;
   flex-direction: column;

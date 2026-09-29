@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Filigran (watermark)**: a card at the bottom of **Mockuplar** takes your own mark (a
+  PNG with a transparent background is recommended; JPG and WebP up to 10 MB), with a
+  live preview on one of your mockups, drawn by the same code as the drafts. Choose
+  *Yalnızca dijital ürünler* (the default) or *Tüm ilan görselleri*, the position (center,
+  bottom-right corner or a diagonal repeat), the opacity (10-90 %, 35 % by default) and
+  the size as a share of the photo's width (30 %, or 15 % for each repeated mark). A mark
+  on a solid background can have it removed. Tasarım Yükle, `drop run` and `drop auto`
+  stamp it on a copy of every listing photo (the mockups, the flat image or preview, a
+  product folder's own photos) in the batch's `watermarked` folders, tell Etsy the
+  picture is watermarked, and never touch the files buyers download or your originals.
+  The copies keep the photo's size and quality and carry no EXIF. A photo the mark cannot
+  go on stops its product rather than going up without it. The start card says
+  "Filigran: açık · dijital ürünlerde" (or off); `stallkit drop watermark` sets it from
+  the command line (`--no-watermark` leaves it off for one run). It is kept as
+  `watermark.png` and `watermark.json` beside the folders.
 - **The video's fonts are bundled**: Inter, Plus Jakarta Sans and JetBrains Mono (SIL
   Open Font License 1.1, see NOTICE.md) ship with the app, so every computer draws the
   same text. On Windows a medium weight no longer looks as bold as a semibold one (the

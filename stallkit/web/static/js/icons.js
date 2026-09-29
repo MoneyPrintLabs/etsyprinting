@@ -108,6 +108,8 @@ const PATHS = {
   "trending-down": '<path d="m3 7 6 6 4-4 8 8"/><path d="M15 17h6v-6"/>',
   move: '<path d="M12 3v18M3 12h18"/><path d="m9 5.5 3-2.5 3 2.5M9 18.5l3 2.5 3-2.5M5.5 9 3 12l2.5 3M18.5 9l2.5 3-2.5 3"/>',
   crop: '<path d="M6 2.5V16a2 2 0 0 0 2 2h13.5"/><path d="M2.5 6H16a2 2 0 0 1 2 2v13.5"/>',
+  // The watermark (Filigran): a drop, like the mark pressed into paper.
+  droplet: '<path d="M12 3.5c3.2 3.9 6 7.2 6 10.6a6 6 0 0 1-12 0c0-3.4 2.8-6.7 6-10.6Z"/><path d="M9.2 14.6a2.9 2.9 0 0 0 2.4 2.6"/>',
   maximize: '<path d="M8.5 3.5h-5v5M15.5 3.5h5v5M8.5 20.5h-5v-5M15.5 20.5h5v-5"/>',
   undo: '<path d="M9 14.5 4 9.5l5-5"/><path d="M4 9.5h10.5a5.5 5.5 0 0 1 0 11H11"/>',
   history: '<path d="M3.5 12a8.5 8.5 0 1 0 2.5-6"/><path d="M3.5 4v4.5H8"/><path d="M12 8v4l3 2"/>',

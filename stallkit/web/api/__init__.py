@@ -24,6 +24,7 @@ from . import (
     settings,
     template,
     updates,
+    watermark,
 )
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -35,6 +36,7 @@ MODULES = (
     connect,
     settings,
     mockups,
+    watermark,
     template,
     designs,
     listings,
