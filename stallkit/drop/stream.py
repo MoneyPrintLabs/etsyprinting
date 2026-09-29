@@ -41,6 +41,16 @@ the mockups like any transparent design; a real photo still goes up as it is.
 
 Every picture a draft gets carries an alt text Etsy stores with it: the concept, and
 on a mockup the mockup's product and colour ("Retro Mountain Sunset t-shirt, white").
+
+The shop's info images (drop.infoimages: the materials, size and how-to cards every
+listing ends with) go up after the product's own pictures, in the seller's order, each
+with its own alt text, never watermarked. They are read, converted if they have to be,
+and fully decoded once, before the plan goes out: one that cannot be used stops the run
+before anything is sent. Photos and info images never pass Etsy's 20: the caller's
+mockups are already capped for them (catalog.usage), and a product folder whose photos
+leave too little room gets the first ones that fit (`info_images_cut` warns). They are
+not in `images` (the product's own pictures, as the screen shows them) but in
+`info_images`; the history entry lists their names.
 Step 5 warns (never fails) when a picture's short side is under 1000 px
 (`small_image`), or when a design had to be enlarged more than twice onto a mockup or
 its flat render (`design_small`): both would look soft on Etsy.
@@ -56,7 +66,8 @@ Events: `on_event(name, step, status, data)`, always with `data["index"]`.
 - step "item": the product's outcome or waiting state; status in waiting | ok |
   partial | error | cancelled | checked (a dry run's good product).
 - step "batch" (name ""), status "running", once before any product: the plan, with
-  `listing_type` and each product's `files_total` (its download files, 0 if physical).
+  `listing_type`, each product's `files_total` (its download files, 0 if physical) and
+  `info_images` (the names every draft ends with).
 """
 
 from __future__ import annotations
@@ -78,7 +89,7 @@ from ..config import LISTING_TYPES, MAX_LISTING_IMAGES, MAX_TAGS
 from ..errors import AuthError, AuthUnreachable, EtsyApiError, ValidationError
 from ..listings import DIGITAL_TYPES
 from ..seo import MarketReport
-from . import automation, catalog, generate, mockup, pipeline, seeds
+from . import automation, catalog, generate, infoimages, mockup, pipeline, seeds
 from .template import Template
 from .workspace import Workspace
 
@@ -179,6 +190,7 @@ class StreamItem:
     market: MarketReport | None = None
     alts: dict[str, str] = field(default_factory=dict)  # image path -> its alt text
     upscale: float = 0.0  # the most a design was enlarged onto a mockup or flat render
+    info: list[Path] = field(default_factory=list)  # the shop's info images, after `images`
 
     @property
     def kind(self) -> str:
@@ -483,6 +495,9 @@ class _Run:
         self.state: dict = {}
         self.history: dict = {}
         self.history_file = automation.history_path(workspace.root)
+        # The shop's info images (read in run()), and each one's name by its picture.
+        self.info: list[infoimages.InfoImage] = []
+        self.info_names: dict[str, str] = {}
 
     # --- the run ----------------------------------------------------------------
 
@@ -491,12 +506,14 @@ class _Run:
         if self.client is None and not self.dry_run:
             raise ValidationError("Connect your Etsy shop before uploading drafts.")
         check_template(self.template)
-        planned = len(self.mockups) + (1 if self.include_flat else 0)
+        info = infoimages.load(self.ws)
+        planned = len(self.mockups) + (1 if self.include_flat else 0) + len(info)
         if planned > MAX_LISTING_IMAGES:
+            flat = " plus the flat render" if self.include_flat else ""
+            extra = f" plus {len(info)} info image(s)" if info else ""
             raise ValidationError(
-                f"{len(self.mockups)} mockup(s){' plus the flat render' if self.include_flat else ''} "
-                f"is {planned} images per listing, and Etsy allows {MAX_LISTING_IMAGES}. "
-                "Turn some mockups off."
+                f"{len(self.mockups)} mockup(s){flat}{extra} is {planned} images per listing, "
+                f"and Etsy allows {MAX_LISTING_IMAGES}. Turn some mockups off."
             )
         with automation.upload_lock(self.ws.root):
             self.state = automation.load_history(self.history_file)
@@ -520,6 +537,11 @@ class _Run:
                     folder_fallback=folder or item.source.parent != self.ws.products,
                 )
             self.report.items = items
+            if items:
+                # Every draft carries them: one that cannot be used stops the run here,
+                # before the plan goes out and before anything is sent.
+                self.info, _notes = pipeline.ready_info_images(info, self.out_dir)
+                self.info_names = {_image_key(i.path): i.name for i in self.info}
             if items and not self.dry_run:
                 # Before the plan goes out: a template that is gone stops the run cleanly.
                 self.inventory = self._template_inventory()
@@ -656,6 +678,7 @@ class _Run:
                 ],
                 "already_done": list(self.report.already_done),
                 "needs_review": list(self.report.needs_review),
+                "info_images": [image.name for image in self.info],
             })
 
     def _step(self, item: StreamItem, step: str, status: str, **data: Any) -> None:
@@ -683,6 +706,7 @@ class _Run:
             "deliverables": [self._rel(p) for p in item.deliverables],
             "files_uploaded": item.files_uploaded,
             "files_total": len(item.deliverables),
+            "info_images": [self._rel(p) for p in item.info],
             "warnings": [w.to_dict() for w in item.warnings],
             "problem": item.error.to_dict() if item.error else None,
         }
@@ -919,9 +943,20 @@ class _Run:
                 "mockup",
             ))
         item.images = uploadable
+        # The shop's info images close the listing, after its own pictures, with their
+        # own alt texts; a folder whose photos leave too little room gets the first ones.
+        info = infoimages.fitting(len(uploadable), self.info)
+        if len(info) < len(self.info):
+            self._warn(item, "info_images_cut", pipeline.info_note(len(info), len(self.info)),
+                       "mockup", n=len(info), total=len(self.info), max=MAX_LISTING_IMAGES)
+        item.info = [image.path for image in info]
+        for image in info:
+            if image.alt:
+                item.alts[_image_key(image.path)] = image.alt
         self._step(item, "mockup", WARN if len(item.warnings) > warned else DONE,
                    images=[self._rel(p) for p in uploadable], mode=item.mode,
-                   flat=self._rel(item.flat) if item.flat is not None else None)
+                   flat=self._rel(item.flat) if item.flat is not None else None,
+                   info_images=[self._rel(p) for p in item.info])
 
     def _market(self, concept: str) -> tuple[MarketReport | None, Problem | None]:
         """One research per concept, however many products share it."""
@@ -1055,7 +1090,7 @@ class _Run:
                 warned = True
         drop_row = pipeline.DropRow(
             source=item.source, seed=item.seed, title=item.title, tags=list(item.tags),
-            description=item.description, images=list(item.images),
+            description=item.description, images=[*item.images, *item.info],
             evidence=list(item.evidence), warnings=[w.message for w in item.warnings],
             files=list(item.deliverables),
         )
@@ -1079,8 +1114,11 @@ class _Run:
             self._warn(item, code, message, "check")
             warned = True
         # Image.verify() is a no-op for JPEG; load() is a real decode. A file cut short by
-        # a half-finished copy fails here, not after its draft already exists.
+        # a half-finished copy fails here, not after its draft already exists. The info
+        # images were decoded once, before the plan (run()).
         for image in prepared.image_paths:
+            if _image_key(image) in self.info_names:
+                continue
             try:
                 with Image.open(image) as opened:
                     opened.load()
@@ -1146,12 +1184,17 @@ class _Run:
             self._fail(item, Problem("duplicate", "This product was already attempted.", "draft"))
             return True
         self._write_review()
-        total = len(item.images)
+        total = len(item.images) + len(item.info)  # its own pictures, then the info images
         files_total = len(item.deliverables)
         counts = {"images_total": total, "files_total": files_total}
         self._step(item, "draft", RUNNING, images_uploaded=0, files_uploaded=0, **counts)
         entry = {"status": "pending", "listing_id": None, "images_uploaded": 0,
                  "files_uploaded": 0, "review_csv": str(self.csv_path), **counts}
+        if item.info:
+            # Which of the pictures are the shop's info images, by the file names sent
+            # (entry["images"] has the same names): the İlanlar detail knows them apart
+            # from the mockups by this.
+            entry["info_images"] = [p.name for p in item.info]
         self.history[item.name] = entry
         # Persist intent BEFORE the request, including ambiguous network failures. A
         # history that cannot be saved stops the whole run (ValidationError).
@@ -1258,6 +1301,7 @@ def item_summary(item: StreamItem, root: Path) -> dict[str, Any]:
         "listing_id": item.listing_id,
         "deliverables": [rel(p) for p in item.deliverables],
         "files_uploaded": item.files_uploaded,
+        "info_images": [rel(p) for p in item.info],
         "warnings": [w.to_dict() for w in item.warnings],
         "error": item.error.to_dict() if item.error else None,
     }

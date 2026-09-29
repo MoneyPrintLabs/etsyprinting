@@ -13,7 +13,8 @@ whose file is gone is ignored (kept on disk, so renaming the file back restores 
 becomes its main image (Etsy's rank 1), so the order matters. Mockups without an
 order (every mockup of an older catalog, or one added after the last reorder)
 follow the ordered ones, in folder order. Drafts use the enabled mockups in this
-order, at most MAX_ENABLED of them; `usage` says exactly which.
+order, at most MAX_ENABLED of them less one per info image (drop.infoimages);
+`usage` says exactly which.
 
 Print areas stay in positions.json (see `mockup.load_positions`); the helpers at
 the bottom answer "which rectangle does this mockup use, and why" exactly the way
@@ -54,7 +55,8 @@ TYPES = (
     "other",
 )
 
-# Etsy takes 20 images per listing, and every draft also carries the flat design.
+# Etsy takes 20 images per listing, and every draft also carries the flat design. The
+# shop's info images take their room too: max_enabled(ws) is the real number.
 MAX_ENABLED = 19
 
 # Pixel limits for an uploaded image (mockups and designs). Pillow itself refuses only
@@ -423,7 +425,8 @@ def add(ws: Workspace, filename: str, data: bytes) -> str:
 
 
 def enabled_mockups(ws: Workspace) -> list[Path]:
-    """The mockups drafts are made with: enabled ones, in the seller's order, at most 19.
+    """The mockups drafts are made with: enabled ones, in the seller's order, at most
+    `max_enabled(ws)` (19, less one per info image).
 
     The first one becomes the draft's main image. `usage` has the same rule with names.
     """
@@ -431,22 +434,41 @@ def enabled_mockups(ws: Workspace) -> list[Path]:
     return [paths[name] for name in usage(ws)["used"] if name in paths]
 
 
-def usage(ws: Workspace, infos: dict[str, MockupInfo] | None = None) -> dict[str, Any]:
+def max_enabled(ws: Workspace, info: int | None = None) -> int:
+    """How many mockups a draft can use: MAX_ENABLED (Etsy's 20 pictures less the flat
+    design), less one per info image the drafts end with (drop.infoimages)."""
+    from . import infoimages  # it builds on this module
+
+    if info is None:
+        info = infoimages.count(ws)
+    return infoimages.mockup_cap(info)
+
+
+def usage(ws: Workspace, infos: dict[str, MockupInfo] | None = None,
+          info: int | None = None) -> dict[str, Any]:
     """Which mockups a draft uses: the one rule every screen shows.
 
     {"used": [names first to last; the first is the main image],
-     "over_limit": [switched-on names that do not fit, beyond MAX_ENABLED],
-     "enabled": how many are switched on, "total": how many mockups, "max": MAX_ENABLED}
+     "over_limit": [switched-on names that do not fit, beyond "max"],
+     "enabled": how many are switched on, "total": how many mockups,
+     "max": max_enabled (MAX_ENABLED less the info images), "info": the info images}
+    `info` is the number of info images when the caller knows it (read otherwise).
     """
+    from . import infoimages
+
     if infos is None:
         infos = load(ws)
-    switched_on = [name for name, info in infos.items() if info.enabled]
+    if info is None:
+        info = infoimages.count(ws)
+    limit = max_enabled(ws, info)
+    switched_on = [name for name, facts in infos.items() if facts.enabled]
     return {
-        "used": switched_on[:MAX_ENABLED],
-        "over_limit": switched_on[MAX_ENABLED:],
+        "used": switched_on[:limit],
+        "over_limit": switched_on[limit:],
         "enabled": len(switched_on),
         "total": len(infos),
-        "max": MAX_ENABLED,
+        "max": limit,
+        "info": info,
     }
 
 

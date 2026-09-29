@@ -1473,8 +1473,15 @@ class DesignsPage {
     }
     const templateTitle = (p.template && p.template.title && shortTitle(p.template.title)) || t("chip.template_unnamed");
     const mk = p.mockups;
+    // The shop's info images (Şablon İlan) end every draft and take their room of the 20.
+    const infoN = (p.info_images && p.info_images.count) || 0;
+    const infoText = infoN ? t("ready.info_part", { n: infoN }) : "";
     // More mockups switched on than Etsy's 20 images leave room for: say which go.
-    if (mk.enabled && mk.over_limit) notes.push(infoNote({ tone: "warning", icon: "image", text: t("ready.mockups_over", { n: mk.enabled, on: mk.switched_on }) }));
+    if (mk.enabled && mk.over_limit) {
+      notes.push(infoNote({ tone: "warning", icon: "image", text: infoN ? t("ready.mockups_over_info", { n: mk.enabled, on: mk.switched_on, info: infoText }) : t("ready.mockups_over", { n: mk.enabled, on: mk.switched_on }) }));
+    }
+    // Product folders whose own photos leave room for only some of them.
+    if (p.warnings.includes("info_cut")) notes.push(infoNote({ tone: "warning", icon: "image", text: t("ready.info_cut", { n: p.info_images.cut }) }));
     const typeName = (type) => (t.has(`type.${type}`) ? t(`type.${type}`) : t("type.other"));
     const toMockups = () => button({ label: t("ready.go_mockups"), size: "sm", iconRight: "arrow-right", onClick: () => { m.close(); this.ctx.navigate("/kurulum/mockuplar"); } });
     // A download's photos show no physical product: the run leaves those mockups out and
@@ -1548,7 +1555,9 @@ class DesignsPage {
     // click outside still closes it.
     const m = this.ctx.modal({
       title: t("ready.title", { n: p.runnable ?? p.count }),
-      subtitle: t("ready.sub", { n: mk.enabled, mockups: mk.enabled, template: templateTitle }),
+      subtitle: infoN
+        ? t("ready.sub_info", { n: mk.enabled, mockups: mk.enabled, info: infoText, template: templateTitle })
+        : t("ready.sub", { n: mk.enabled, mockups: mk.enabled, template: templateTitle }),
       width: 456,
       class: "dz-ready",
       body: notes.length ? notes : null,

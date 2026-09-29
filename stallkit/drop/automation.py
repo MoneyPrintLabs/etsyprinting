@@ -358,11 +358,24 @@ _save = save_history
 _lock = upload_lock
 
 
-class RecordedClient:
-    """Save the draft id before uploading its first image."""
+def image_key(path: Any) -> str:
+    """A picture's key in an alt-text map: its resolved path."""
+    try:
+        return str(Path(path).resolve())
+    except OSError:
+        return str(path)
 
-    def __init__(self, client, path, state, entry):
+
+class RecordedClient:
+    """Save the draft id before uploading its first image.
+
+    `alts` maps a picture (image_key) to the alt text it goes up with when the caller
+    gives none: the shop's info images keep theirs this way.
+    """
+
+    def __init__(self, client, path, state, entry, alts=None):
         self.client, self.path, self.state, self.entry = client, path, state, entry
+        self.base_alts: dict[str, str] = dict(alts or {})
 
     def create_draft_listing(self, fields):
         result = self.client.create_draft_listing(fields)
@@ -392,6 +405,7 @@ class RecordedClient:
         return result
 
     def upload_listing_image(self, listing_id, image, *, rank, alt_text=""):
+        alt_text = alt_text or self.base_alts.get(image_key(image), "")
         # alt_text only when there is one: a client that takes no alt text still works.
         extra = {"alt_text": alt_text} if alt_text else {}
         result = self.client.upload_listing_image(listing_id, image, rank=rank, **extra)
@@ -466,14 +480,23 @@ def run(workspace: Workspace, template: Template, *, client: EtsyClient | None =
         # batch. Image.verify() is not enough: Pillow's base verify() is a no-op and
         # only PNG overrides it, so a JPEG cut short by a half-finished copy would pass
         # and then fail on upload, after the draft already existed. load() is a real
-        # decode, and it costs nothing beside the upload that follows it.
+        # decode, and it costs nothing beside the upload that follows it. Each file once:
+        # the shop's info images are on every row.
+        decoded: set[str] = set()
         for row in prepared.ready:
             for image in row.images:
+                key = image_key(image)
+                if key in decoded:
+                    continue
                 try:
                     with Image.open(image) as opened:
                         opened.load()
                 except (OSError, ValueError) as exc:
                     raise ValidationError(f"Invalid image {image.name}; nothing uploaded.") from exc
+                decoded.add(key)
+        # The info images go up with their own alt texts (the others have none here).
+        info_alts = {image_key(i.path): i.alt for i in prepared.info_images if i.alt}
+        info_keys = {image_key(i.path) for i in prepared.info_images}
         if dry_run:
             report.uploaded = checks
             return report
@@ -491,10 +514,15 @@ def run(workspace: Workspace, template: Template, *, client: EtsyClient | None =
         for line, (product, row) in enumerate(zip(prepared.ready, rows), start=2):
             entry = {"status": "pending", "listing_id": None, "images_uploaded": 0,
                      "files_uploaded": 0, "review_csv": str(prepared.csv_path)}
+            # Which pictures are the shop's info images, by the file names sent (the
+            # names entry["images"] records too).
+            info_names = [Path(p).name for p in product.images if image_key(p) in info_keys]
+            if info_names:
+                entry["info_images"] = info_names
             history[product.source.name] = entry
             # Persist intent BEFORE the request, including ambiguous network failures.
             save_history(path, state)
-            recorder = RecordedClient(client, path, state, entry)
+            recorder = RecordedClient(client, path, state, entry, alts=info_alts)
             result = listings.push(
                 recorder, [row], base_dir=prepared.csv_path.parent, inventory=inventory
             ).results[0]

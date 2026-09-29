@@ -674,16 +674,21 @@ def _picture_facts(file_name: str, design: str,
 
 
 def _image_view(image: dict[str, Any], name: str = "", design: str = "",
-                mockups: dict[str, tuple[str, str]] | None = None) -> dict[str, Any]:
+                mockups: dict[str, tuple[str, str]] | None = None,
+                info: set[str] | frozenset[str] = frozenset()) -> dict[str, Any]:
     """One picture of a listing. Its product and colour (the hero's "Kupa · Beyaz") come
     from the file stallkit sent for it (upload-history.json), else from its alt text;
     "" when nothing says (the page then names the listing's product on the main image
-    only). flat: stallkit's plain design, which has none."""
+    only). flat: stallkit's plain design, which has none; `info`: the names of the shop's
+    info images on the draft, which have none either."""
     from ...drop import catalog
 
     alt = str(image.get("alt_text") or "")
     flat = False
-    if name:
+    is_info = bool(name) and name in info
+    if is_info:
+        kind, colour = "", ""
+    elif name:
         kind, colour, flat = _picture_facts(name, design, mockups or {})
     elif alt:
         kind, colour = catalog.guess(re.sub(r"[.]", " ", alt))
@@ -703,6 +708,7 @@ def _image_view(image: dict[str, Any], name: str = "", design: str = "",
         "color": colour,
         "color_key": _fold(colour),
         "flat": flat,
+        "info": is_info,
     }
 
 
@@ -715,6 +721,8 @@ def _detail(ctx: AppContext, client: Any, listing: dict[str, Any],
     entry = entries.get(row["id"], ("", {}))[1]
     names = entry.get("images") if isinstance(entry.get("images"), dict) else {}
     mockups = _mockup_facts(ctx) if names else {}
+    # The shop's info images on this draft (drop.infoimages): no product, no colour.
+    info = {n for n in entry.get("info_images") or [] if isinstance(n, str)}
     audit = seo.audit_listing(listing)
     try:
         path = paths.get(int(listing.get("taxonomy_id") or 0), "")
@@ -742,7 +750,7 @@ def _detail(ctx: AppContext, client: Any, listing: dict[str, Any],
             "type_name": row["type_name"],
         },
         "images": [_image_view(image, str(names.get(str(image.get("listing_image_id")), "")),
-                               row["source"] or "", mockups) for image in shown],
+                               row["source"] or "", mockups, info) for image in shown],
         "audit": {
             "score": audit.score,
             "grade": audit.grade,
