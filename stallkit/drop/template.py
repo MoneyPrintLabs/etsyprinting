@@ -12,6 +12,11 @@ The listing's type travels with it: a `physical` template makes physical drafts,
 `download` template digital ones (no shipping profile needed) and `both` drafts that
 ship and download. Which file a buyer downloads is not a setting — it is the design
 itself, or a product folder's `dosyalar` subfolder (see drop.pipeline.deliverables).
+
+The listing's description is about its own design, so a draft does not copy it as it is
+(see drop.description): the seller may save a description template with placeholders
+(`description_template`), and the category's names (`category_path`, saved by Şablon
+İlan) say which words are about the product rather than one design.
 """
 
 from __future__ import annotations
@@ -31,6 +36,9 @@ from ..listings import DIGITAL_TYPES, SHIPPING_ONLY_FIELDS
 # (once, as it reads it) and leaves a marked one alone, so a seller's own literal
 # "&amp;" in a newer file stays what they typed.
 PLAIN_TEXT = "plain_text"
+# The seller's description template and the category's names (see Template).
+DESCRIPTION_TEMPLATE = "description_template"
+CATEGORY_PATH = "category_path"
 
 # download / both drafts get the product's files (listings.DIGITAL_TYPES); physical never.
 TYPE_NAMES = {
@@ -97,6 +105,14 @@ def clean_measures(fields: dict[str, Any]) -> None:
                 del fields[name]
 
 
+def _description_template(data: dict[str, Any]) -> str | None:
+    """The saved description template: a text with something in it, else None."""
+    value = data.get(DESCRIPTION_TEMPLATE)
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
+
 @dataclass
 class Template:
     """Settings lifted from a real listing, plus what it teaches about copy."""
@@ -107,9 +123,15 @@ class Template:
     materials: list[str] = field(default_factory=list)
     description: str = ""
     tags: list[str] = field(default_factory=list)
+    # The seller's description template ({başlık}, {tasarım}); None: none saved, and a
+    # draft gets the description with the template's title replaced (drop.description).
+    description_template: str | None = None
+    # The template's Etsy category, root first ("Home & Living", ..., "Wallpaper"): every
+    # draft copies it, so its words are never about one design. Empty when not known.
+    category_path: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "source_listing_id": self.source_listing_id,
             "source_title": self.source_title,
             "fields": self.fields,
@@ -118,6 +140,11 @@ class Template:
             "tags": self.tags,
             PLAIN_TEXT: True,
         }
+        if self.description_template is not None:
+            data[DESCRIPTION_TEMPLATE] = self.description_template
+        if self.category_path:
+            data[CATEGORY_PATH] = list(self.category_path)
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Template:
@@ -138,6 +165,10 @@ class Template:
                 materials=[text(m) for m in data.get("materials") or []],
                 description=str(text(data.get("description", ""))),
                 tags=[text(t) for t in data.get("tags") or []],
+                # Written by stallkit as plain text: never decoded.
+                description_template=_description_template(data),
+                category_path=[str(name) for name in data.get(CATEGORY_PATH) or []
+                               if isinstance(name, str) and name.strip()],
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValidationError(f"product.json is malformed: {exc}") from exc

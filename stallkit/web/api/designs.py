@@ -514,7 +514,7 @@ def delete_file(req: Request) -> dict[str, Any]:
 
 def _template_info(ctx: AppContext, ws: Any) -> tuple[dict[str, Any] | None, str | None]:
     """(template facts for the page, a blocker code)."""
-    from ...drop import pipeline, stream
+    from ...drop import description, pipeline, stream
     from ...drop.template import Template
     from ...errors import ValidationError
 
@@ -527,12 +527,17 @@ def _template_info(ctx: AppContext, ws: Any) -> tuple[dict[str, Any] | None, str
         return {"title": None, "invalid": str(exc)}, "template_invalid"
     fields = template.fields
     has_variations = raw.get("has_variations") if isinstance(raw, dict) else None
+    # The description drafts get (drop.description): a saved description template, or
+    # the template listing's own; how many of its sentences are about that listing's design.
+    text, custom = description.effective(template, lang=ctx.language)
     info: dict[str, Any] = {
         "title": template.source_title or None,
         "source_listing_id": template.source_listing_id,
         "price": fields.get("price"),
         "currency": (ctx.status.get("shop") or {}).get("currency"),
-        "description": bool(template.description.strip()),
+        "description": bool(template.description.strip() or template.description_template),
+        "description_custom": custom,
+        "description_flags": len(description.template_flags(template, text)),
         # physical | download | both; digital drafts get each product's download files.
         "listing_type": template.listing_type,
         "digital": template.digital,
@@ -758,6 +763,10 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
         warnings.append("no_mockups")
     if template and template.get("needs_shipping") and not template.get("shipping_profile"):
         warnings.append("no_shipping_profile")
+    # Sentences about the template listing's own design would reach every draft: the
+    # start card says so once, with a link to Şablon İlan's description template.
+    if template and template.get("description_flags") and runnable:
+        warnings.append("description_flagged")
     info_count = len(info_images)
     images_each = len(enabled) + 1 + info_count
     # Only what will run, with each product's own image count: a folder's photos, one

@@ -1467,6 +1467,21 @@ class DesignsPage {
     if (noFiles) notes.push(infoNote({ tone: "warning", icon: "download", text: t("ready.deliverables", { n: noFiles }) }));
     if (p.warnings.includes("no_mockups")) notes.push(infoNote({ tone: "warning", icon: "image", text: t("ready.no_mockups") }));
     if (p.warnings.includes("no_shipping_profile")) notes.push(infoNote({ tone: "warning", icon: "truck", text: t("ready.no_shipping") }));
+    // Sentences about the template listing's own design would go onto every draft: said
+    // once here, with the way to Şablon İlan's description template (opened on arrival).
+    if (p.warnings.includes("description_flagged")) {
+      const n = (p.template && p.template.description_flags) || 1;
+      const toTemplate = button({
+        label: t("ready.go_template"),
+        size: "sm",
+        iconRight: "arrow-right",
+        onClick: () => {
+          m.close();
+          this.ctx.navigate("/kurulum/sablon?aciklama=1");
+        },
+      });
+      notes.push(infoNote({ tone: "warning", icon: "file", text: t("ready.description_flagged", { n }), action: toTemplate }));
+    }
     // The request estimate only matters when the day's Etsy allowance may run out.
     if (p.warnings.includes("quota")) {
       const estimate =

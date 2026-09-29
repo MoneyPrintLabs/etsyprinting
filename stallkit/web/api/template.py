@@ -17,6 +17,24 @@ Endpoints:
     POST /api/template {"listing_id": int}
          -> {"template": <summary>}  (writes product.json)
 
+    GET    /api/template/description        -> <description>
+    PUT    /api/template/description {"text": str}  -> <description>  (saves it; the
+           listing's own text, unchanged, saves nothing: `custom` stays false)
+    DELETE /api/template/description        -> <description>  (back to the listing's own)
+    POST   /api/template/description/check {"text": str}
+           -> {"flags": [<flag>], "unknown": [str]}  (nothing saved)
+
+    <description> = {text, custom, initial, source_title, words, flags: [<flag>],
+                     unknown, placeholders: {title, design}, max}
+    <flag> = {start, end, text, words}
+
+The description template (drop.description) is what every new draft's description is
+written from: `text` is the saved one (`custom`), else `initial`, the template listing's
+own description with its title turned into {başlık} ({title} in English). `flags` are
+its sentences that hold a word of the template's own design (`words`); `start` and `end`
+count UTF-16 code units, as the page's textarea does. `unknown` are {…} that are not a
+placeholder. With no template saved: 404 no_template.
+
     <row> = {listing_id, title, price, currency, thumb_url, state, num_favorers, sold,
              product_type, product_type_key, has_variations, listing_type}
 
@@ -30,7 +48,11 @@ months): the rows then come best sellers first, and `sales` is {"months": ["YYYY
 and the rows keep Etsy's order. This page makes no Etsy call of its own for it.
     <summary> = {listing_id, title, state, thumb_url, currency, has_variations,
                  listing_type, is_current, saved_at, ok_count, total, resolved,
-                 fields: [{key, ok, required, value}]}
+                 fields: [{key, ok, required, value}],
+                 description: {custom, flags} | null}
+
+`description` is only on the saved template's summary: whether a description template
+is saved, and how many of its sentences look specific to the template's own design.
 
 `listing_type` is Etsy's physical | download | both (ShopListing.listing_type), and the
 drafts keep it: a `download` template needs no shipping profile (its shipping row is
@@ -63,6 +85,7 @@ import weakref
 from typing import TYPE_CHECKING, Any, Callable
 
 from ...drop import cache as disk_cache
+from ...drop import description as description_mod
 from ...drop import template as template_mod
 from ...errors import EtsyApiError, StallKitError, ValidationError
 from ..router import ApiError, Request
@@ -102,6 +125,10 @@ def register(r: Router, ctx: AppContext) -> None:
     r.get("/api/template/listings", api.listings)
     r.get("/api/template/preview/{listing_id:int}", api.preview)
     r.post("/api/template", api.save)
+    r.get("/api/template/description", api.description)
+    r.put("/api/template/description", api.save_description)
+    r.delete("/api/template/description", api.reset_description)
+    r.post("/api/template/description/check", api.check_description)
 
 
 # --------------------------------------------------------------------------- helpers
@@ -212,6 +239,35 @@ def _flatten_taxonomy(nodes: list[dict[str, Any]]) -> dict[int, list[str]]:
         children = [c for c in (node.get("children") or []) if isinstance(c, dict)]
         stack.extend((child, path) for child in reversed(children))
     return out
+
+
+def _utf16(text: str, index: int) -> int:
+    """A code point index of `text` as UTF-16 code units (a JavaScript string's index)."""
+    return len(text[:index].encode("utf-16-le")) // 2
+
+
+def _flag_rows(text: str, found: list[description_mod.Flag]) -> list[dict[str, Any]]:
+    return [
+        {"start": _utf16(text, flag.start), "end": _utf16(text, flag.end),
+         "text": text[flag.start:flag.end], "words": list(flag.words)}
+        for flag in found
+    ]
+
+
+def _description_text(value: Any, *, allow_empty: bool = False) -> str:
+    """A description template from a request, line endings as a textarea sends them."""
+    if not isinstance(value, str):
+        raise ApiError(422, "invalid", "text must be a string", field="text")
+    text = value.replace("\r\n", "\n").replace("\r", "\n")
+    if len(text) > description_mod.MAX_CHARS:
+        raise ApiError(422, "description_too_long",
+                       f"The description template is longer than {description_mod.MAX_CHARS} "
+                       "characters.", max=description_mod.MAX_CHARS, field="text")
+    if not allow_empty and not text.strip():
+        # Etsy needs a description on every draft (createDraftListing: required).
+        raise ApiError(422, "description_empty", "The description template is empty.",
+                       field="text")
+    return text
 
 
 def _units_sold(products: Any) -> dict[int, int]:
@@ -565,6 +621,7 @@ class TemplateApi:
         )
         summary["is_current"] = True
         summary["saved_at"] = round(saved_at, 3)
+        summary["description"] = self._description_state(captured)
         return {"template": summary, "problem": None}
 
     def listings(self, req: Request) -> dict[str, Any]:
@@ -631,12 +688,17 @@ class TemplateApi:
         # Always the listing as it is now, not the cached copy: the price may have moved.
         listing = self._fetch_listing(client, listing_id)
         captured = template_mod.capture(listing)
+        ws = self.ctx.workspace()
+        # The seller's description template stays when the same listing is saved again
+        # (its price moved, say); another listing starts from its own description.
+        captured.description_template = self._kept_description(ws, listing_id)
+        # Its category's names are about the product, never one design (drop.description).
+        captured.category_path = self._category_path(client, captured.fields)
         data = captured.to_dict()
         data["source_title"] = _title(listing)
         # Two facts product.json did not hold before, for this page (Template ignores them).
         data["currency_code"] = _currency(listing) or self._shop_currency()
         data["has_variations"] = bool(listing.get("has_variations"))
-        ws = self.ctx.workspace()
         ws.write_template(data)
         self.ctx.update_shop_prefs(template_listing=str(listing_id))
         cache.raw[listing_id] = listing
@@ -647,7 +709,106 @@ class TemplateApi:
             summary["saved_at"] = round(ws.template_path.stat().st_mtime, 3)
         except OSError:
             summary["saved_at"] = round(time.time(), 3)
+        summary["description"] = self._description_state(template_mod.Template.from_dict(data))
         return {"template": summary}
+
+    # --- the description template -----------------------------------------------
+
+    def _kept_description(self, ws: Any, listing_id: int) -> str | None:
+        """The saved description template, when product.json already holds this listing."""
+        try:
+            data = json.loads(ws.template_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict) or _int(data.get("source_listing_id")) != listing_id:
+            return None
+        value = data.get(template_mod.DESCRIPTION_TEMPLATE)
+        return value if isinstance(value, str) and value.strip() else None
+
+    def _category_path(self, client: Any, fields: dict[str, Any]) -> list[str]:
+        """The template's category names, root first; [] when Etsy's taxonomy is not at hand."""
+        taxonomy_id = _int(fields.get("taxonomy_id"))
+        if taxonomy_id is None:
+            return []
+        try:
+            with client.attempts(1):
+                paths = self._taxonomy_paths(client)
+        except (EtsyApiError, StallKitError, ApiError) as exc:
+            log.warning("template: category names unavailable (%s)", exc)
+            return []
+        return [name for name in paths.get(taxonomy_id) or [] if name]
+
+    def _description_state(self, captured: template_mod.Template) -> dict[str, Any]:
+        """{custom, flags}: a description template saved, and how many sentences are flagged."""
+        text, custom = description_mod.effective(captured, lang=self.ctx.language)
+        return {"custom": custom, "flags": len(description_mod.template_flags(captured, text))}
+
+    def _saved_template(self) -> tuple[Any, dict[str, Any], template_mod.Template]:
+        """(workspace, product.json as saved, its Template); 404 no_template when none."""
+        ws = self.ctx.workspace(create=False)
+        if not ws.template_path.is_file():
+            raise ApiError(404, "no_template", "No template listing is saved yet.")
+        data = ws.read_template()  # not JSON: ValidationError -> 422 invalid
+        if not isinstance(data, dict):
+            raise ValidationError("product.json is malformed: not a JSON object")
+        return ws, data, template_mod.Template.from_dict(data)
+
+    def _description_answer(self, captured: template_mod.Template) -> dict[str, Any]:
+        lang = self.ctx.language
+        text, custom = description_mod.effective(captured, lang=lang)
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        initial = description_mod.initial_template(
+            captured.description, captured.source_title, lang=lang
+        ).replace("\r\n", "\n").replace("\r", "\n")
+        words = description_mod.template_words(captured)
+        return {
+            "text": text,
+            "custom": custom,
+            "initial": initial,
+            "source_title": captured.source_title,
+            "words": words,
+            "flags": _flag_rows(text, description_mod.flags(text, words)),
+            "unknown": description_mod.unknown_placeholders(text),
+            "placeholders": dict(description_mod.PLACEHOLDERS.get(lang)
+                                 or description_mod.PLACEHOLDERS["tr"]),
+            "max": description_mod.MAX_CHARS,
+        }
+
+    def description(self, req: Request) -> dict[str, Any]:
+        _ws, _data, captured = self._saved_template()
+        return self._description_answer(captured)
+
+    def check_description(self, req: Request) -> dict[str, Any]:
+        text = _description_text(req.json_object().get("text"), allow_empty=True)
+        _ws, _data, captured = self._saved_template()
+        found = description_mod.template_flags(captured, text)
+        return {"flags": _flag_rows(text, found),
+                "unknown": description_mod.unknown_placeholders(text)}
+
+    def save_description(self, req: Request) -> dict[str, Any]:
+        text = _description_text(req.json_object().get("text"))
+        ws, data, captured = self._saved_template()
+        # The listing's own description as it starts out (in either language's
+        # placeholder) is no template of the seller's: nothing is saved, and the run keeps
+        # warning about its design-specific sentences.
+        own = {
+            description_mod.initial_template(captured.description, captured.source_title,
+                                             lang=lang).replace("\r\n", "\n").replace("\r", "\n")
+            for lang in description_mod.PLACEHOLDERS
+        }
+        if text.strip() in {value.strip() for value in own}:
+            return self.reset_description(req)
+        data[template_mod.DESCRIPTION_TEMPLATE] = text
+        ws.write_template(data)
+        captured.description_template = text
+        return self._description_answer(captured)
+
+    def reset_description(self, req: Request) -> dict[str, Any]:
+        ws, data, captured = self._saved_template()
+        if data.pop(template_mod.DESCRIPTION_TEMPLATE, None) is not None:
+            ws.write_template(data)
+        captured.description_template = None
+        return self._description_answer(captured)
 
 
 # --------------------------------------------------------------------------- the rows

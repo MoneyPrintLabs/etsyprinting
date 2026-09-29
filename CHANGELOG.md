@@ -52,6 +52,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Siparişler**: for a shop that ships from Türkiye, a note before the first send says
   that Etsy may refuse tracking numbers from newer API keys, with the CSV download and
   Etsy's orders page. It goes for good once Etsy has accepted a number.
+- **Şablon İlan → Açıklama şablonu** (description template): the text every new draft's
+  description is written from, starting as the template listing's own description with
+  its title turned into `{başlık}`. `{başlık}` is each draft's title and `{tasarım}` its
+  design's name (English: `{title}`, `{design}`). Sentences holding a word of the template
+  listing's own design (from its title and tags, such as "lemon"; never a product
+  word such as "wallpaper" or "sample") are highlighted: they would be copied onto every
+  draft. It is saved in `product.json`; saving the same listing again keeps it.
+- Until such sentences are gone, each product of a run warns ("Açıklamada şablon ilanın
+  desenine özel 1 cümle kaldı"), and the start card says so once, with a link that opens
+  the description template. `stallkit drop template` lists them too.
+
+### Fixed
+
+- A new draft's description no longer carries the template listing's own title: the
+  title, and a line made of its `|`- or `,`-separated parts, become the draft's title
+  (a "Sage Lemon Wallpaper | Olive Citrus Mural" line no longer reaches a woodland
+  mural's draft).
 
 ### Changed
 

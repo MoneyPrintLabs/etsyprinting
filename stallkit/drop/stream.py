@@ -96,7 +96,16 @@ from ..config import LISTING_TYPES, MAX_LISTING_IMAGES, MAX_TAGS
 from ..errors import AuthError, AuthUnreachable, EtsyApiError, ValidationError
 from ..listings import DIGITAL_TYPES
 from ..seo import MarketReport
-from . import automation, catalog, generate, infoimages, mockup, pipeline, seeds
+from . import (
+    automation,
+    catalog,
+    description,
+    generate,
+    infoimages,
+    mockup,
+    pipeline,
+    seeds,
+)
 from . import watermark as watermark_mod
 from .template import Template
 from .workspace import Workspace
@@ -1096,15 +1105,31 @@ class _Run:
         if generate.fill_tags(tags, filler):
             item.evidence.append("your template listing's tags")
         item.tags = tags[:MAX_TAGS]
-        item.description = generate.build_description(item.seed, self.template.description,
-                                                      item.title)
+        item.description = generate.build_description(
+            item.seed, self.template.description, item.title,
+            source_title=self.template.source_title,
+            description_template=self.template.description_template,
+        )
+        warned = False
+        if self.template.description_template is None:
+            # No description template saved: the template listing's own description, its
+            # title replaced. A sentence about its design ("lemons") still reaches
+            # this draft, so each product says so (Şablon İlan's description template).
+            left = description.leftover(
+                self.template.description, self.template.source_title, self.template.tags,
+                seed=item.seed, title=item.title, product_words=self.template.category_path,
+            )
+            if left:
+                self._warn(item, "description_design", description.leftover_message(left),
+                           "tags", n=len(left),
+                           words=", ".join(description.flag_words(left)[:4]))
+                warned = True
         if len(item.tags) < MAX_TAGS:
             self._warn(item, "few_tags",
                        f"{len(item.tags)}/{MAX_TAGS} tags — the rest could not be filled honestly",
                        "tags", n=len(item.tags), max=MAX_TAGS)
-            self._step(item, "tags", WARN, tags=list(item.tags))
-        else:
-            self._step(item, "tags", DONE, tags=list(item.tags))
+            warned = True
+        self._step(item, "tags", WARN if warned else DONE, tags=list(item.tags))
 
     def _check(self, item: StreamItem) -> None:
         """Step 5: the row `listings push` will send, validated, and every image decoded.

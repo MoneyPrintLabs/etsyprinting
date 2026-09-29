@@ -445,7 +445,17 @@ name does not say it: `dog-dad-paw-print.png` on a shirt template is searched as
 `dog dad paw print shirt`, not as a poster ("print"). Free tag slots take the template
 listing's own tags only when they suit any design of that product (`graphic tee`,
 `gift for her`); its tags about its own design (`retro mountain sunset`, `hiking gift`)
-stay on it. **Nothing is sent to
+stay on it.
+
+The description is the template listing's own, with its title (and a line made of the
+title's `|`- or `,`-separated parts) replaced by each draft's title. A sentence that names
+the template's own design (a word of its title or tags such as `lemon`; never a
+product word such as `wallpaper` or `sample`) would go onto every draft, so
+`drop template` lists them and each product of `drop run` warns while they remain. Write
+the text drafts should get as `"description_template"` in `product.json` (the app's
+**Şablon İlan → Açıklama şablonu** does this): `{title}` / `{başlık}` is each draft's
+title and `{design}` / `{tasarım}` its design's name from the file name. Picking another
+listing with `drop template` starts over from that listing's description. **Nothing is sent to
 Etsy.** Check `review.csv`, then:
 
 ```bash
