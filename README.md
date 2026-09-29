@@ -127,7 +127,7 @@ After that there is one thing to do each time: drop your designs.
 | **Kâr-Zarar** (Profit & loss) | Revenue, Etsy fees from your payment account, the product and shipping costs you enter, and net profit, month by month, in your shop's currency and in TRY. |
 | **Pinterest** | Optional. Queue Pins of your live listings and post a few a day on your own Pinterest account. |
 | **Mockuplar** (Mockups) | Add photos of the products you sell and set where the design sits on each one (the print area). One setting can cover every mockup of the same size. |
-| **Şablon İlan** (Template listing) | Pick a listing you built by hand. Every new draft copies its price, category, shipping and return settings, description and variations, and whether it is a physical item or a digital download. |
+| **Şablon İlan** (Template listing) | Pick a listing you built by hand. Every new draft copies its price, category, shipping and return settings, description and variations, and whether it is a physical item or a digital download. Below it, tick the template's **bilgi görselleri** (*info images*: materials, sizes, how to install, ...) or add pictures of your own: every draft ends with them, in your order, after its own photos (at most 10; each leaves room for one mockup less, as Etsy takes 20 pictures per listing). |
 | **Mağaza Bağlantısı** (Shop connection) | Your Etsy app keys and the connection to your shop. |
 | **Ayarlar** (Settings) | Language (Turkish or English), several shops, the products folder, a setup checklist, hiding the shop name for screenshots, and quitting. |
 
@@ -318,7 +318,7 @@ The terminal shows the address. Press **Ctrl+C** there to stop the app.
 |---|---|
 | Etsy keys (`.env`), Etsy sign-in (`token.json`), settings, logs | `~/.stallkit` (on Windows `%USERPROFILE%\.stallkit`) |
 | A second or third shop | `~/.stallkit/shops/<id>/` |
-| Products folder: `1-MOCKUPS`, `2-PRODUCTS` (your designs), `3-DRAFTS`, `product.json` (the template) | `Etsy Studio` on your Desktop (`Etsy Studio - <shop id>` for further shops). You can change it in **Ayarlar**. |
+| Products folder: `1-MOCKUPS`, `2-PRODUCTS` (your designs), `3-DRAFTS`, `product.json` (the template), `info-images` (the pictures every draft ends with) | `Etsy Studio` on your Desktop (`Etsy Studio - <shop id>` for further shops). You can change it in **Ayarlar**. |
 
 If you choose `1-MOCKUPS`, `2-PRODUCTS` or `3-DRAFTS` (or a folder inside them) as the
 products folder, stallkit uses the products folder they belong to and says so, instead of
@@ -474,7 +474,7 @@ ilan seçersiniz. Sonrasında her seferinde tek bir iş kalır: tasarımlarını
 | **Kâr-Zarar** | Gelir, ödeme hesabınızdaki Etsy kesintileri, sizin girdiğiniz ürün ve kargo maliyetleri ve net kâr; ay ay, mağazanızın para biriminde ve TL olarak. |
 | **Pinterest** | İsteğe bağlı. Yayındaki ilanlarınızın pinlerini sıraya alın, kendi Pinterest hesabınızda günde birkaç tane paylaşılsın. |
 | **Mockuplar** | Sattığınız ürünlerin fotoğraflarını ekleyin, tasarımın her birinde nereye oturacağını (baskı alanı) ayarlayın. Tek ayar aynı ölçüdeki tüm mockup'lara uygulanabilir. |
-| **Şablon İlan** | Elle hazırladığınız bir ilanı seçin. Her yeni taslak onun fiyatını, kategorisini, kargo ve iade ayarlarını, açıklamasını ve varyasyonlarını, fiziksel mi dijital mi olduğunu da kopyalar. |
+| **Şablon İlan** | Elle hazırladığınız bir ilanı seçin. Her yeni taslak onun fiyatını, kategorisini, kargo ve iade ayarlarını, açıklamasını ve varyasyonlarını, fiziksel mi dijital mi olduğunu da kopyalar. Altında şablonun **bilgi görsellerini** (malzeme, ölçü, kurulum, ...) işaretleyin ya da kendi görsellerinizi ekleyin: her taslak kendi fotoğraflarından sonra, sizin sıranızla bunlarla biter (en fazla 10; Etsy ilan başına 20 görsel aldığı için her biri bir mockup'lık yer kaplar). |
 | **Mağaza Bağlantısı** | Etsy uygulama anahtarlarınız ve mağazanızla bağlantı. |
 | **Ayarlar** | Dil (Türkçe ya da İngilizce), birden fazla mağaza, ürün klasörü, kurulum kontrol listesi, ekran görüntüsü için mağaza adını gizleme ve uygulamayı kapatma. |
 
@@ -659,7 +659,7 @@ Adres terminalde görünür; durdurmak için orada **Ctrl+C**'ye basın.
 |---|---|
 | Etsy anahtarları (`.env`), Etsy oturumu (`token.json`), ayarlar, kayıtlar | `~/.stallkit` (Windows'ta `%USERPROFILE%\.stallkit`) |
 | İkinci, üçüncü mağaza | `~/.stallkit/shops/<id>/` |
-| Ürün klasörü: `1-MOCKUPS`, `2-PRODUCTS` (tasarımlarınız), `3-DRAFTS`, `product.json` (şablon) | Masaüstünüzde `Etsy Studio` (diğer mağazalar için `Etsy Studio - <mağaza id>`). **Ayarlar**'dan değiştirebilirsiniz. |
+| Ürün klasörü: `1-MOCKUPS`, `2-PRODUCTS` (tasarımlarınız), `3-DRAFTS`, `product.json` (şablon), `info-images` (her taslağın sonundaki görseller) | Masaüstünüzde `Etsy Studio` (diğer mağazalar için `Etsy Studio - <mağaza id>`). **Ayarlar**'dan değiştirebilirsiniz. |
 
 Ürün klasörü olarak `1-MOCKUPS`, `2-PRODUCTS` ya da `3-DRAFTS`'ı (veya bunların içindeki
 bir klasörü) seçerseniz stallkit, ilkinin içine ikinci bir ürün klasörü açmak yerine

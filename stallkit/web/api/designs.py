@@ -610,8 +610,9 @@ def used_mockups(ws: Any, listing_type: str | None,
                  infos: dict[str, Any] | None = None) -> tuple[list[str], list[str]]:
     """(the mockups a run uses, the switched-on ones a download-only template leaves out).
 
-    catalog.usage's rule (switched on, the seller's order, at most 19; the first is the
-    main image), and for a download-only template none that shows a physical product.
+    catalog.usage's rule (switched on, the seller's order, at most 19 less one per info
+    image; the first is the main image), and for a download-only template none that shows
+    a physical product.
     """
     from ...drop import catalog
 
@@ -626,7 +627,7 @@ def used_mockups(ws: Any, listing_type: str | None,
 
 def _pending_info(ctx: AppContext) -> dict[str, Any]:
     from ...config import MAX_LISTING_IMAGES
-    from ...drop import automation, catalog, pipeline, seeds
+    from ...drop import automation, catalog, infoimages, pipeline, seeds
     from ...drop import watermark as watermark_mod
 
     if not ctx.wait_first_status(0):
@@ -700,10 +701,12 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
     ]
 
     infos = catalog.load(ws)
+    # The shop's info images: every draft ends with them, after its own pictures.
+    info_images = infoimages.load(ws)
     # The same rule as the Mockuplar page and the run itself (catalog.usage): switched-on
-    # mockups in the seller's order, at most 19; the first is the main image. A
-    # download-only template leaves out those showing a physical product.
-    use = catalog.usage(ws, infos)
+    # mockups in the seller's order, at most 19 less one per info image; the first is the
+    # main image. A download-only template leaves out those showing a physical product.
+    use = catalog.usage(ws, infos, info=len(info_images))
     enabled, left_out = used_mockups(ws, template.get("listing_type") if template else None,
                                      infos)
     types = collections.Counter(infos[name].type for name in enabled if name in infos)
@@ -755,18 +758,29 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
         warnings.append("no_mockups")
     if template and template.get("needs_shipping") and not template.get("shipping_profile"):
         warnings.append("no_shipping_profile")
-    images_each = len(enabled) + 1
+    info_count = len(info_images)
+    images_each = len(enabled) + 1 + info_count
     # Only what will run, with each product's own image count: a folder's photos, one
     # upload for a JPEG (a finished photo, never composited), mockups + the flat design
     # for anything that may be transparent artwork (an upper bound; opaque ones take 1).
     # A digital template composites every loose design, a JPEG too: it is the download.
+    # Each ends with the info images that fit (drop.infoimages.fitting).
     run_items = [item for item in items if _runnable(item)]
+
+    def own_images(item: dict[str, Any]) -> int:
+        if item["kind"] == "folder":
+            return item["files"]
+        if not digital and Path(item["name"]).suffix.lower() in (".jpg", ".jpeg"):
+            return 1
+        return len(enabled) + 1
+
     images_total = sum(
-        item["files"] if item["kind"] == "folder"
-        else 1 if not digital and Path(item["name"]).suffix.lower() in (".jpg", ".jpeg")
-        else images_each
-        for item in run_items
+        own + len(infoimages.fitting(own, info_images))
+        for own in (own_images(item) for item in run_items)
     )
+    # Product folders whose photos leave room for only some of the info images.
+    info_cut = sum(1 for item in run_items if item["kind"] == "folder"
+                   and len(infoimages.fitting(item["files"], info_images)) < info_count)
     # A digital draft uploads its download files too, one request each.
     files_total = sum(len(item["deliverables"]) for item in run_items)
     estimate = pipeline.estimate_requests(
@@ -780,6 +794,8 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
     quota = status.get("quota_remaining")
     if isinstance(quota, int) and estimate > quota:
         warnings.append("quota")
+    if info_cut:
+        warnings.append("info_cut")
     locked_at = int(lock["since"]) if lock and lock["since"] else None
 
     shop = status.get("shop") or {}
@@ -806,6 +822,11 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
             "names": list(enabled),
             "left_out": [{"name": n, "type": infos[n].type} for n in left_out if n in infos],
         },
+        # Every draft ends with these (Şablon İlan); `cut`: product folders that get only
+        # the first ones, their photos leaving too little room of Etsy's `images_max`.
+        "info_images": {"count": info_count, "names": [i.name for i in info_images],
+                        "cut": info_cut},
+        "images_max": MAX_LISTING_IMAGES,
         "opaque": {"flat": grounds.get("flat", 0), "photo": grounds.get("photo", 0),
                    "unknown": grounds.get("unknown", 0)},
         "watermark": mark,
@@ -881,6 +902,7 @@ def _new_item(data: dict[str, Any]) -> dict[str, Any]:
         "deliverables": [],
         "files_uploaded": 0,
         "files_total": data.get("files_total", 0),
+        "info_images": [],
         "sampled": None,
         "warnings": [],
         "error": None,
@@ -894,6 +916,7 @@ def _copy_item(item: dict[str, Any]) -> dict[str, Any]:
     out["tags"] = list(item["tags"])
     out["images"] = list(item["images"])
     out["deliverables"] = list(item.get("deliverables") or [])
+    out["info_images"] = list(item.get("info_images") or [])
     out["warnings"] = list(item["warnings"])
     return out
 
@@ -969,7 +992,7 @@ class _Tracker:
             item = self.items[index]
             for key in ("images", "flat", "mode", "title", "tags", "listing_id",
                         "images_uploaded", "images_total", "sampled", "deliverables",
-                        "files_uploaded", "files_total"):
+                        "files_uploaded", "files_total", "info_images"):
                 if key in data and data[key] is not None:
                     item[key] = list(data[key]) if isinstance(data[key], list) else data[key]
             if step in STEPS:

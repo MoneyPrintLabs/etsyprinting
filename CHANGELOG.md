@@ -24,6 +24,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "Filigran: açık · dijital ürünlerde" (or off); `stallkit drop watermark` sets it from
   the command line (`--no-watermark` leaves it off for one run). It is kept as
   `watermark.png` and `watermark.json` beside the folders.
+- **Şablon İlan: info images** (*bilgi görselleri*). Under the template's fields, tick
+  the template listing's photos every listing should end with (materials, roll size,
+  installation, sample, measuring...) or add pictures of your own, and set their order.
+  stallkit keeps full-size copies in the products folder (`info-images`), so runs need no
+  Etsy call for them and the command line (`drop run`, `drop auto`) uses the same ones.
+  Every draft gets them after its own photos, in that order, with their alt text and no
+  watermark; the upload history records them, and the listing page names them. Etsy
+  takes 20 pictures per listing, so each one leaves room for one mockup less: the
+  Mockuplar counter and the Tasarım Yükle start card show the real numbers, and a product
+  folder whose photos leave too little room gets the first ones that fit, with a warning.
+  At most 10.
 - **The video's fonts are bundled**: Inter, Plus Jakarta Sans and JetBrains Mono (SIL
   Open Font License 1.1, see NOTICE.md) ship with the app, so every computer draws the
   same text. On Windows a medium weight no longer looks as bold as a semibold one (the

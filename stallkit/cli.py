@@ -25,6 +25,7 @@ from .client import EtsyClient, walk_taxonomy
 from .config import Config, home_dir, split_credential, token_path, write_env_file
 from .drop import automation, pipeline
 from .drop import catalog as catalog_mod
+from .drop import infoimages as infoimages_mod
 from .drop import mockup as mockup_mod
 from .drop import template as template_mod
 from .drop import watermark as watermark_mod
@@ -1298,8 +1299,31 @@ def drop_template(
 
 _MOCKUPS_HELP = (
     "Use only the first N of the chosen mockups. Default: every mockup switched on in the "
-    "app's Mockups page, in its order (the first is the main image), at most 19."
+    "app's Mockups page, in its order (the first is the main image), at most 19 less one "
+    "per info image."
 )
+
+
+def _drop_info_images(ws: workspace_mod.Workspace) -> list[infoimages_mod.InfoImage]:
+    """The shop's info images every draft ends with (Şablon İlan, or info-images/).
+
+    Says once which ones are used, and which are left out for being past the limit.
+    """
+    images = infoimages_mod.load(ws)
+    if images:
+        names = ", ".join(image.name for image in images)
+        console.print(
+            f"[dim]Info images: {len(images)} after each product's own photos ({names}). "
+            f"Choose them in the app's Template listing page or in {ws.info_images}.[/]"
+        )
+    extra = infoimages_mod.unused(ws)
+    if extra:
+        _warn(
+            f"{len(extra)} picture(s) in {ws.info_images} are past the limit of "
+            f"{infoimages_mod.MAX_INFO_IMAGES} info images and are not used: "
+            + ", ".join(image.name for image in extra)
+        )
+    return images
 
 
 def _drop_mockups(ws: workspace_mod.Workspace, count: Optional[int]) -> list[Path]:
@@ -1377,7 +1401,8 @@ def drop_run(
 
     chosen = _drop_mockups(ws, mockups)
     _drop_watermark(ws, tmpl, not no_watermark)
-    images_each = len(chosen) + (0 if no_flat else 1)
+    info = _drop_info_images(ws)
+    images_each = len(chosen) + (0 if no_flat else 1) + len(info)
     # A digital template's drafts also upload what the buyer downloads, one request each.
     to_order = pipeline.made_to_order(tmpl)  # a made-to-order draft may go without one
     files = (
@@ -1405,6 +1430,7 @@ def drop_run(
                 use_cache=not no_cache,
                 on_progress=lambda msg: status.update(msg),
                 watermark=not no_watermark,
+                info_images=info,
             )
     finally:
         if client:
@@ -1671,6 +1697,7 @@ def drop_auto(
     tmpl = template_mod.Template.from_dict(ws.read_template())
     chosen = _drop_mockups(ws, mockups)
     _drop_watermark(ws, tmpl, not no_watermark)
+    _drop_info_images(ws)
     if dry_run:
         report = automation.run(ws, tmpl, dry_run=True, mockups=chosen,
                                 watermark=not no_watermark)

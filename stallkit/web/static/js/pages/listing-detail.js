@@ -325,10 +325,12 @@ export default {
       // Each picture's own product and colour ("Kupa · Beyaz": the mockup it was made on),
       // none on the plain design (video). A picture with nothing known about it: the
       // listing's own product, for the main image only.
-      const main = st.image === 0 && !img.flat;
-      const kind = img.flat ? "" : typeText(img.type || (main ? d.listing.type : ""), main ? d.listing.type_name : "");
-      const colour = img.flat ? "" : img.color_key && t.has(`color.${img.color_key}`) ? t(`color.${img.color_key}`) : img.color;
-      const chip = [kind, colour].filter(Boolean).join(" · ");
+      // The shop's info images (Şablon İlan) say so instead: they show no product.
+      const plain = img.flat || img.info;
+      const main = st.image === 0 && !plain;
+      const kind = plain ? "" : typeText(img.type || (main ? d.listing.type : ""), main ? d.listing.type_name : "");
+      const colour = plain ? "" : img.color_key && t.has(`color.${img.color_key}`) ? t(`color.${img.color_key}`) : img.color;
+      const chip = img.info ? t("images.info") : [kind, colour].filter(Boolean).join(" · ");
       const n = images.length;
       mount(
         hero,

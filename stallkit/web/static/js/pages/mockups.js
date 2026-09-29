@@ -417,7 +417,10 @@ async function mountGrid(el, ctx) {
   let suppressClick = false;
   const cleanups = [];
 
-  const max = () => (data && data.max_enabled) || 19;
+  // 19 (Etsy's 20 pictures less the flat design), less one per info image (Şablon İlan).
+  const max = () => (data && typeof data.max_enabled === "number" ? data.max_enabled : 19);
+  const infoCount = () => (data && data.info_images) || 0;
+  const usageRule = () => (infoCount() ? t("usage.rule_info", { info: t("usage.info_part", { n: infoCount() }) }) : t("usage.rule"));
   const savedOrder = () => (data ? data.items.map((it) => it.name) : []);
   const order = () => (sel ? sel.order : savedOrder());
   const isOn = (name) => (sel ? sel.on.has(name) : !!(byName.get(name) || {}).enabled);
@@ -585,7 +588,7 @@ async function mountGrid(el, ctx) {
     const fill = h("span", { class: "mk-meter-fill", style: { width: `${Math.round((p.used / m) * 100)}%` } });
     const meter = h("span", { class: "mk-meter", role: "meter", "aria-valuemin": "0", "aria-valuemax": String(m), "aria-valuenow": String(p.used), "aria-label": t("usage.count", { used: p.used, max: m }) }, fill);
     let sub;
-    if (p.on > m) sub = h("p", { class: "mk-usage-sub is-over" }, icon("alert", { size: 13 }), h("span", null, t("usage.over", { n: p.on - m })));
+    if (p.on > m) sub = h("p", { class: "mk-usage-sub is-over" }, icon("alert", { size: 13 }), h("span", null, t("usage.over", { n: p.on - m, max: m })));
     else if (!p.on) sub = h("p", { class: "mk-usage-sub is-none" }, icon("info", { size: 13 }), h("span", null, t("usage.none")));
     else {
       const main = byName.get(p.main);
@@ -594,7 +597,7 @@ async function mountGrid(el, ctx) {
     const text = h(
       "div",
       { class: "mk-usage-text" },
-      h("p", { class: "mk-usage-count" }, h("strong", { class: "num" }, t("usage.count", { used: p.used, max: m })), h("span", { class: "mk-usage-rule" }, ` — ${t("usage.rule")}`)),
+      h("p", { class: "mk-usage-count" }, h("strong", { class: "num" }, t("usage.count", { used: p.used, max: m })), h("span", { class: "mk-usage-rule" }, ` — ${usageRule()}`)),
       sub,
     );
     if (!sel) {
