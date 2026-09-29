@@ -1,6 +1,7 @@
-"""Is there a newer stallkit? A quiet look at GitHub's latest release, once a day.
+"""Is there a newer stallkit? A quiet look at GitHub's latest release, at every start
+and once a day while the app runs.
 
-    ctx.updates.start()            # the launcher: first look ~10 s after start, then daily
+    ctx.updates.start()            # the launcher: a look ~10 s after start, then daily
     ctx.updates.state()            # what the page shows (GET /api/update)
     ctx.updates.check(force=True)  # "Şimdi kontrol et" (POST /api/update/check)
     ctx.updates.dismiss("0.3.1")   # the pill's ×, for that version only
@@ -8,11 +9,13 @@
 
 One GET to api.github.com/repos/<repo>/releases/latest, which already skips drafts and
 pre-releases, with nothing but a User-Agent. The answer is kept in
-`~/.stallkit/update.json` with the time it came, so a restart within a day does not
-ask again. Any failure (offline, rate limit, a strange answer) is a log line and
-nothing else; the next look comes an hour later. A newer version is announced once
-through the bell (the version is remembered), and the pill in the top bar shows it
-until it is dismissed for that version.
+`~/.stallkit/update.json` with the time it came. Every start looks again, unless that
+answer is under an hour old (START_FRESH): a quick restart reuses it. While the app
+stays open, the next look comes a day after the last answer. Any failure (offline, rate
+limit, a strange answer) is a log line and nothing else; the next look comes an hour
+later, a restart included, so there is never more than one failed look an hour. A newer
+version is announced once through the bell (the version is remembered), and the pill in
+the top bar shows it until it is dismissed for that version.
 
 Off switches: the Ayarlar toggle (app pref `update_check`, on by default) stops the
 automatic looks; `STALLKIT_NO_UPDATE_CHECK=1` stops every look, the manual one too.
@@ -46,7 +49,8 @@ CACHE_FILE = "update.json"
 ENV_OFF = "STALLKIT_NO_UPDATE_CHECK"
 PREF = "update_check"
 FIRST_DELAY = 10.0
-INTERVAL = 24 * 60 * 60.0
+INTERVAL = 24 * 60 * 60.0  # while the app runs: a day after the last answer
+START_FRESH = 60 * 60.0  # at a start: an answer younger than this is reused
 RETRY_AFTER = 60 * 60.0  # after a failed look
 MIN_WAIT = 60.0
 TIMEOUT = 5.0
@@ -154,6 +158,7 @@ class UpdateChecker:
         transport: Any = None,
         first_delay: float = FIRST_DELAY,
         interval: float = INTERVAL,
+        start_fresh: float = START_FRESH,
         retry_after: float = RETRY_AFTER,
         min_wait: float = MIN_WAIT,
         clock: Callable[[], float] = time.time,
@@ -163,6 +168,7 @@ class UpdateChecker:
         self.transport = transport
         self.first_delay = first_delay
         self.interval = interval
+        self.start_fresh = start_fresh
         self.retry_after = retry_after
         self.min_wait = min_wait
         self.clock = clock
@@ -183,7 +189,7 @@ class UpdateChecker:
 
     @property
     def auto(self) -> bool:
-        """The Ayarlar toggle: look by itself once a day (default on)."""
+        """The Ayarlar toggle: look by itself, at a start and daily (default on)."""
         value = self.ctx.app_prefs().get(PREF, True)
         return value if isinstance(value, bool) else True
 
@@ -276,27 +282,33 @@ class UpdateChecker:
 
     # --- looking --------------------------------------------------------------------------
 
-    def due_in(self, now: float | None = None) -> float:
-        """Seconds until the next automatic look (<= 0: now). A day after the last
-        answer, an hour after a failed try; a time in the future (a clock that was
-        set back) counts as now."""
+    def due_in(self, now: float | None = None, *, max_age: float | None = None) -> float:
+        """Seconds until the next automatic look (<= 0: now).
+
+        `max_age` is how old the last answer may grow before a look is due: a day
+        (`interval`, the default) while the app runs, an hour (`start_fresh`) for the
+        look at a start. A failed try is followed by the next one an hour later in both
+        cases. A time in the future (a clock that was set back) counts as now.
+        """
         now = self.clock() if now is None else now
+        max_age = self.interval if max_age is None else max_age
         with self._lock:
             checked = self._data["checked_at"]
             attempted = self._data["attempted_at"]
         due = 0.0
         if checked is not None and checked <= now:
-            due = checked + self.interval
+            due = checked + max_age
         if attempted is not None and attempted <= now:
             due = max(due, attempted + self.retry_after)
         return due - now
 
-    def check(self, *, force: bool = False) -> dict[str, Any]:
-        """Look now (force) or only when due. Returns state(); never raises."""
+    def check(self, *, force: bool = False, max_age: float | None = None) -> dict[str, Any]:
+        """Look now (force) or only when due (see due_in for `max_age`). Returns
+        state(); never raises."""
         if self.blocked or self._closed:
             return self.state()
         with self._check_lock:
-            if self._closed or (not force and self.due_in() > 0):
+            if self._closed or (not force and self.due_in(max_age=max_age) > 0):
                 return self.state()
             now = self.clock()
             try:
@@ -370,7 +382,8 @@ class UpdateChecker:
     # --- the background loop ----------------------------------------------------------------
 
     def start(self) -> None:
-        """Look ~10 s from now, then whenever due, on a daemon thread. Idempotent."""
+        """Look ~10 s from now (unless the last answer is under an hour old), then
+        whenever due, on a daemon thread. Idempotent."""
         with self._lock:
             if self._thread is not None or self._closed:
                 return
@@ -378,16 +391,45 @@ class UpdateChecker:
                                             daemon=True)
         self._thread.start()
 
+    def fresh(self, now: float | None = None) -> bool:
+        """The last answer is under `start_fresh` old: a start reuses it."""
+        now = self.clock() if now is None else now
+        with self._lock:
+            checked = self._data["checked_at"]
+        return checked is not None and checked <= now and now - checked < self.start_fresh
+
+    def step(self, starting: bool) -> tuple[bool, float]:
+        """One pass of the background loop: look when due. Returns (still starting,
+        seconds until the next pass).
+
+        `starting` holds until the app has an answer under `start_fresh` old, reused
+        from the cache or just asked: until then an older answer is due (the look at a
+        start), so a start look put off by a failed try an hour ago, or failing itself,
+        comes an hour later, not a day. Then a day after each answer. With the checks
+        off nothing is looked at, and the first pass after they are switched on is
+        still the start's.
+        """
+        if not self.enabled:
+            return starting, self.interval
+        if starting and self.fresh():
+            starting = False
+        max_age = self.start_fresh if starting else None
+        if self.due_in(max_age=max_age) <= 0:
+            self.check(max_age=max_age)
+            if starting and self.fresh():
+                starting = False
+        max_age = self.start_fresh if starting else None
+        return starting, max(self.min_wait, self.due_in(max_age=max_age))
+
     def _loop(self) -> None:
         wait = self.first_delay
+        starting = True
         while True:
             self._wake.wait(max(0.0, wait))
             self._wake.clear()
             if self._closed:
                 return
-            if self.enabled and self.due_in() <= 0:
-                self.check()
-            wait = max(self.min_wait, self.due_in()) if self.enabled else self.interval
+            starting, wait = self.step(starting)
 
     def close(self) -> None:
         self._closed = True

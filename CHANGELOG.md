@@ -26,9 +26,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Siparişler**: for a shop that ships from Türkiye, a note before the first send says
   that Etsy may refuse tracking numbers from newer API keys, with the CSV download and
   Etsy's orders page. It goes for good once Etsy has accepted a number.
+- **Tasarım Yükle → Başlat** has a **Mağaza bölümü** (*Shop section*) choice: your
+  shop's sections, starting on **Şablondaki gibi (…)** (the template listing's). Every
+  draft of that run goes into the section you pick, or into none; the template itself
+  is not changed. The choice is remembered per shop. A shop without sections says so; a
+  template or remembered section deleted on Etsy is pointed out (the template's then
+  gives drafts without a section instead of failing them), and a section deleted just
+  before Başlat stops the run before anything is sent.
+- `stallkit drop auto` and `drop run` take `--section NAME_OR_ID` (or `none`) for the
+  same, checked against your shop's sections first.
 
 ### Changed
 
+- The new-version check now looks at every start of the app, unless it already looked
+  less than an hour ago, and then once a day while the app stays open. A failed look is
+  still followed by the next one an hour later, a restart included.
 - **Şablon İlan** shows how many of each listing sold, best sellers first, counted from
   the months **Kâr-Zarar** has already read (no extra Etsy calls; the tooltip names the
   months). Without those months it shows the favourites in Etsy's order, as before.
