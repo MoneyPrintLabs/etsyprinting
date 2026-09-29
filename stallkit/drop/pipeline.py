@@ -641,6 +641,9 @@ def run(
             template_description=template.description,
             fallback_tags=template.tags,
             template_title=template.source_title,
+            # The seller's description template, when saved (drop.description).
+            description_template=template.description_template,
+            product_words=template.category_path,
         )
         row.title, row.tags = clean_title(copy.title), copy.tags
         row.description = copy.description

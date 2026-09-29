@@ -2,8 +2,13 @@
 // settings from. Left: the shop's active listings (cached by the server, filtered and
 // paged here). Right: the seven fields that would be copied, with their names resolved.
 // Saving writes product.json in the products folder; nothing on Etsy changes.
+//
+// The saved template's description is copied too, so it has its own editor, the
+// "Açıklama şablonu" dialog (opened from a line under the fields, or on arrival with
+// ?aciklama=1 from Tasarım Yükle's start card): the listing's own description with its
+// title as {başlık}, sentences about the listing's own design highlighted.
 
-import { badge, button, card, cx, h, infoNote, mount, searchInput, thumb } from "../ui.js";
+import { badge, button, card, cx, debounce, h, infoNote, mount, searchInput, thumb } from "../ui.js";
 import { icon } from "../icons.js";
 import { lower, money, monthName, number, relative } from "../format.js";
 
@@ -71,6 +76,9 @@ export default {
       saving: false,
     };
     let previewSeq = 0;
+    // The description template: `draft` holds edits the dialog was closed without saving
+    // (null: none), so reopening it brings them back and leaving the page asks first.
+    const desc = { draft: null, open: false };
 
     // ------------------------------------------------------------------ layout
 
@@ -725,10 +733,401 @@ export default {
       if (kind !== "physical") {
         hints.push(h("span", { class: "tpl-hint-line is-strong" }, icon("download", { size: 13 }), t(`type.${kind}_note`)));
       }
+      // The saved template's description template: a quiet link, or what it still holds
+      // about the listing's own design. Only for the saved template (it is product.json's).
+      if (current) hints.push(descLink(st.current.description));
       mount(hintEl, hints);
       saveBtn.title = current && st.current.saved_at ? t("saved_ago", { when: relative(st.current.saved_at) }) : "";
       saveBtn.setDisabled(!p || !!st.setupStep);
       saveBtn.setLoading(st.saving);
+    }
+
+    // ------------------------------------------------------------------ description template
+
+    /**
+     * The line under the fields that opens the dialog: warning-coloured while the saved
+     * text flags sentences, or while edits wait unsaved (the dialog was closed on them).
+     */
+    function descLink(state) {
+      const flags = (state && state.flags) || 0;
+      const unsaved = desc.draft !== null;
+      const text = unsaved ? t("desc.unsaved") : flags ? t("desc.hint_flagged", { n: flags }) : t("desc.open");
+      // The words wrap under a narrow column (a 1280 px window) rather than being cut.
+      return h(
+        "button",
+        { type: "button", class: cx("tpl-desc-link", (flags || unsaved) && "is-warning"), onClick: () => openDescription() },
+        unsaved ? h("span", { class: "tpl-desc-dot", "aria-hidden": "true" }) : icon(flags ? "alert" : "edit", { size: 13 }),
+        h(
+          "span",
+          { class: "tpl-desc-link-text" },
+          text,
+          flags || unsaved ? [" ", h("span", { class: "tpl-desc-link-action" }, t("desc.hint_action"))] : null,
+        ),
+      );
+    }
+
+    function setDescDraft(text) {
+      desc.draft = text;
+      ctx.setDirty(text !== null);
+    }
+
+    // Unsaved edits of the description template: asked before any in-app navigation, a
+    // shop switch or a language change; setDirty makes a reload or closing the tab ask too.
+    ctx.onBeforeLeave(() =>
+      desc.draft === null
+        ? true
+        : ctx.confirm({ title: t("desc.leave.title"), message: t("desc.leave.message"), confirmLabel: t("desc.leave.confirm"), danger: true }),
+    );
+
+    async function openDescription() {
+      if (desc.open) return;
+      if (!st.current) {
+        ctx.toast({ tone: "warning", title: t("errors.no_template") });
+        return;
+      }
+      desc.open = true;
+      let data;
+      try {
+        data = await ctx.api.get("/api/template/description", null, { signal: ctx.signal });
+      } catch (err) {
+        desc.open = false;
+        if (ctx.api.isAbort(err)) return;
+        ctx.toast({ tone: "danger", title: t("desc.load_failed"), message: ctx.api.errorText(err, t) });
+        return;
+      }
+      if (!ctx.isActive()) {
+        desc.open = false;
+        return;
+      }
+      descDialog(data);
+    }
+
+    /** The saved template's summary follows what the dialog saved: {custom, flags}. */
+    function noteDescState(data) {
+      if (!st.current) return;
+      st.current.description = { custom: !!data.custom, flags: (data.flags || []).length };
+      renderRight();
+    }
+
+    function descDialog(data) {
+      const saved = data.text;
+      const ph = data.placeholders || { title: "{başlık}", design: "{tasarım}" };
+      const kept = desc.draft !== null && desc.draft !== saved;
+      let text = kept ? desc.draft : saved;
+      let flags = kept ? [] : data.flags || [];
+      let unknown = kept ? [] : data.unknown || [];
+      let checking = false;
+      let saving = false;
+      let active = -1; // the flag the caret is in
+      let closing = null; // "saved" | "discard" when a button closed the dialog
+
+      // The editor: a transparent textarea over a copy of its text laid out the same way,
+      // where the flagged sentences are marked (a textarea cannot colour its own text).
+      const marks = h("div", { class: "tpl-desc-marks" });
+      const backdrop = h("div", { class: "tpl-desc-backdrop", "aria-hidden": "true" }, marks);
+      const ta = h("textarea", {
+        class: "tpl-desc-input",
+        spellcheck: "true",
+        maxlength: data.max || undefined,
+        "aria-label": t("desc.aria"),
+        autofocus: true,
+      });
+      ta.value = text;
+      const editor = h("div", { class: "tpl-desc-editor" }, backdrop, ta);
+
+      const stateSlot = h("span", { class: "tpl-desc-state" });
+      const phButton = (value, label, hint) =>
+        h(
+          "button",
+          { type: "button", class: "tpl-desc-ph", title: `${value}: ${hint}`, onClick: () => edit(ta.selectionStart, ta.selectionEnd, value) },
+          h("code", null, value),
+          h("span", null, label),
+        );
+      const toolbar = h(
+        "div",
+        { class: "tpl-desc-toolbar" },
+        h("span", { class: "tpl-desc-insert" }, t("desc.insert")),
+        phButton(ph.title, t("desc.ph.title"), t("desc.ph.title_hint")),
+        phButton(ph.design, t("desc.ph.design"), t("desc.ph.design_hint")),
+        h("span", { class: "spacer" }),
+        stateSlot,
+      );
+      const countEl = h("span", { class: "tpl-desc-count num" });
+      const legend = h(
+        "div",
+        { class: "tpl-desc-legend" },
+        h(
+          "span",
+          { class: "tpl-desc-legend-text" },
+          h("code", null, ph.title),
+          ` ${t("desc.ph.title_hint")} · `,
+          h("code", null, ph.design),
+          ` ${t("desc.ph.design_hint")}`,
+        ),
+        countEl,
+      );
+      const problemsEl = h("div", { class: "tpl-desc-problems" });
+      const flagsEl = h("div", { class: "tpl-desc-flags" });
+
+      const resetBtn = button({ label: t("desc.reset"), icon: "undo", variant: "ghost", class: "tpl-desc-reset", onClick: () => edit(0, ta.value.length, data.initial) });
+      const cancelBtn = button({
+        label: t("common.cancel"),
+        variant: "secondary",
+        onClick: () => {
+          closing = "discard";
+          m.close();
+        },
+      });
+      const saveBtn = button({ label: t("desc.save"), icon: "save", variant: "primary", onClick: () => save() });
+
+      const m = ctx.modal({
+        title: t("desc.title"),
+        subtitle: t("desc.sub", { ph: ph.title }),
+        width: 780,
+        class: "tpl-desc-modal",
+        body: [toolbar, editor, legend, problemsEl, flagsEl],
+        actions: [resetBtn, cancelBtn, saveBtn],
+        onClose: () => {
+          desc.open = false;
+          check.cancel();
+          // Closed with × / Escape / a click outside: the edits wait for the next opening
+          // (desc.draft already holds them, see paint).
+          if (closing !== null) setDescDraft(null);
+          if (ctx.isActive()) renderRight();
+        },
+      });
+
+      // --- editing
+
+      /** Replace text[a, b) with `value` the way typing would (so Ctrl+Z undoes it). */
+      function edit(a, b, value) {
+        const before = ta.value;
+        ta.focus();
+        ta.setSelectionRange(a, b);
+        let done = false;
+        try {
+          done = value ? document.execCommand("insertText", false, value) : document.execCommand("delete");
+        } catch {
+          done = false;
+        }
+        if (!done || ta.value === before) {
+          ta.setRangeText(value, a, b, "end");
+          changed();
+        }
+      }
+
+      /** The text changed: move the marks along until the server has checked it again. */
+      function changed() {
+        const before = text;
+        text = ta.value;
+        if (text === before) return;
+        let p = 0;
+        const max = Math.min(before.length, text.length);
+        while (p < max && before[p] === text[p]) p += 1;
+        let s = 0;
+        while (s < max - p && before[before.length - 1 - s] === text[text.length - 1 - s]) s += 1;
+        const end = before.length - s;
+        const delta = text.length - before.length;
+        flags = flags
+          .filter((f) => f.end < p || f.start > end)
+          .map((f) => (f.start > end ? { ...f, start: f.start + delta, end: f.end + delta } : f));
+        checking = true;
+        paint();
+        check();
+      }
+
+      const check = debounce(async () => {
+        const sent = text;
+        try {
+          const r = await ctx.api.post("/api/template/description/check", { text: sent }, { signal: ctx.signal });
+          if (sent !== text) return; // typed on meanwhile: the next check answers
+          flags = r.flags || [];
+          unknown = r.unknown || [];
+        } catch (err) {
+          if (ctx.api.isAbort(err) || sent !== text) return;
+          // The marks stay where they were moved to; saving still checks on the server.
+        }
+        checking = false;
+        paint();
+      }, 280);
+
+      function removeSentence(f) {
+        let a = f.start;
+        let b = f.end;
+        // The space after it (or before it, at a line's end) goes too.
+        if (text[b] === " ") b += 1;
+        else if (a > 0 && text[a - 1] === " ") a -= 1;
+        const lineStart = text.lastIndexOf("\n", a - 1) + 1;
+        let lineEnd = text.indexOf("\n", b);
+        if (lineEnd < 0) lineEnd = text.length;
+        if (!text.slice(lineStart, a).trim() && !text.slice(b, lineEnd).trim()) {
+          // It was the whole line: the line goes, and a paragraph of its own takes one of
+          // the blank lines around it along, so no double gap is left.
+          a = lineStart;
+          b = lineEnd;
+          if (b < text.length) b += 1;
+          else if (a > 0) a -= 1;
+          const blankBefore = a === 0 || (a >= 2 && text[a - 1] === "\n" && text[a - 2] === "\n");
+          if (blankBefore && text[b] === "\n") b += 1;
+        }
+        edit(a, b, "");
+      }
+
+      function showSentence(i) {
+        const f = flags[i];
+        if (!f) return;
+        ta.focus();
+        ta.setSelectionRange(f.start, f.end);
+        const mark = marks.querySelector(`mark[data-i="${i}"]`);
+        if (mark) ta.scrollTop = Math.max(0, mark.offsetTop - 28);
+        syncScroll();
+        caret();
+      }
+
+      function syncScroll() {
+        backdrop.scrollTop = ta.scrollTop;
+        backdrop.scrollLeft = ta.scrollLeft;
+      }
+
+      /** The flag the caret sits in, lit in the text and in the list. */
+      function caret() {
+        const at = ta.selectionStart;
+        const next = flags.findIndex((f) => at >= f.start && at <= f.end);
+        if (next === active) return;
+        active = next;
+        for (const node of marks.querySelectorAll("mark")) node.classList.toggle("is-active", Number(node.dataset.i) === active);
+        for (const node of flagsEl.querySelectorAll(".tpl-desc-flag")) node.classList.toggle("is-active", Number(node.dataset.i) === active);
+      }
+
+      async function save() {
+        if (saving || !ta.value.trim()) return;
+        saving = true;
+        saveBtn.setLoading(true);
+        try {
+          const r = await ctx.api.put("/api/template/description", { text: ta.value }, { signal: ctx.signal });
+          closing = "saved";
+          m.close();
+          noteDescState(r);
+          ctx.toast(r.custom ? { tone: "success", title: t("desc.saved"), message: t("desc.saved_msg") } : { tone: "success", title: t("desc.reset_done") });
+        } catch (err) {
+          if (ctx.api.isAbort(err)) return;
+          ctx.toast({ tone: "danger", title: t("desc.save_failed"), message: ctx.api.errorText(err, t) });
+        } finally {
+          saving = false;
+          saveBtn.setLoading(false);
+        }
+      }
+
+      // --- drawing
+
+      function paint() {
+        // Unsaved edits are the page's from the first keystroke: leaving asks, closing the
+        // dialog keeps them.
+        setDescDraft(text !== saved ? text : null);
+        if (document.activeElement === ta) {
+          const at = ta.selectionStart;
+          active = flags.findIndex((f) => at >= f.start && at <= f.end);
+        }
+        // The marked copy: the text in order, each flag a <mark>, and a trailing space so
+        // a final line break keeps its line.
+        const nodes = [];
+        let at = 0;
+        flags.forEach((f, i) => {
+          if (f.start < at || f.end > text.length || f.end <= f.start) return;
+          if (f.start > at) nodes.push(text.slice(at, f.start));
+          nodes.push(h("mark", { class: cx("tpl-desc-mark", i === active && "is-active"), dataset: { i: String(i) } }, text.slice(f.start, f.end)));
+          at = f.end;
+        });
+        nodes.push(text.slice(at), " ");
+        mount(marks, nodes);
+        syncScroll();
+
+        const dirty = text !== saved;
+        mount(
+          stateSlot,
+          dirty
+            ? badge({ text: t("desc.state.unsaved"), tone: "warning", dot: true, size: "sm" })
+            : data.custom
+              ? badge({ text: t("desc.state.custom"), tone: "success", icon: "check", size: "sm" })
+              : badge({ text: t("desc.state.listing"), tone: "neutral", size: "sm" }),
+        );
+        const n = text.length;
+        countEl.textContent = t("desc.chars", { n, count: number(n) });
+
+        const problems = [];
+        if (!text.trim()) problems.push(infoNote({ tone: "danger", icon: "alert", text: t("desc.empty") }));
+        if (unknown.length) problems.push(infoNote({ tone: "warning", icon: "alert", text: t("desc.unknown", { list: unknown.join(", ") }) }));
+        mount(problemsEl, problems);
+
+        mount(flagsEl, flagList());
+        resetBtn.setDisabled(text === data.initial);
+        saveBtn.setDisabled(!dirty || !text.trim());
+      }
+
+      function flagList() {
+        if (!flags.length) {
+          if (checking) return h("p", { class: "tpl-desc-flags-head is-muted" }, h("span", { class: "tpl-desc-flags-icon" }, icon("loader", { size: 13 })), t("desc.checking"));
+          return h("p", { class: "tpl-desc-flags-head is-ok" }, h("span", { class: "tpl-desc-flags-icon" }, icon("check", { size: 13, strokeWidth: 2.6 })), t("desc.flags.none"));
+        }
+        return [
+          h(
+            "p",
+            { class: "tpl-desc-flags-head is-warning" },
+            h("span", { class: "tpl-desc-flags-icon" }, icon("alert", { size: 13 })),
+            t("desc.flags.title", { n: flags.length }),
+            checking ? h("span", { class: "tpl-desc-checking" }, t("desc.checking")) : null,
+          ),
+          h(
+            "ul",
+            { class: "tpl-desc-flag-list" },
+            flags.map((f, i) =>
+              h(
+                "li",
+                { class: cx("tpl-desc-flag", i === active && "is-active"), dataset: { i: String(i) } },
+                h(
+                  "div",
+                  { class: "tpl-desc-flag-main" },
+                  h("span", { class: "tpl-desc-flag-text", title: f.text }, f.text),
+                  h(
+                    "span",
+                    { class: "tpl-desc-flag-why" },
+                    t("desc.flag.message"),
+                    " ",
+                    h("span", { class: "tpl-desc-flag-words" }, t("desc.flag.words", { words: (f.words || []).join(", ") })),
+                  ),
+                ),
+                h(
+                  "div",
+                  { class: "tpl-desc-flag-actions" },
+                  button({ label: t("desc.flag.show"), icon: "eye", size: "sm", variant: "ghost", onClick: () => showSentence(i) }),
+                  button({ label: t("desc.flag.remove"), icon: "trash", size: "sm", variant: "ghost", onClick: () => removeSentence(flags[i]) }),
+                ),
+              ),
+            ),
+          ),
+        ];
+      }
+
+      ta.addEventListener("input", changed);
+      ta.addEventListener("scroll", syncScroll);
+      for (const type of ["keyup", "click", "select", "focus"]) ta.addEventListener(type, caret);
+      ta.addEventListener("keydown", (e) => {
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "s") {
+          e.preventDefault();
+          save();
+        }
+      });
+      // Edits kept from an earlier opening: their marks come from a fresh check.
+      if (kept) {
+        checking = true;
+        check();
+      }
+      paint();
+      requestAnimationFrame(() => {
+        ta.setSelectionRange(0, 0);
+        ta.scrollTop = 0;
+        syncScroll();
+      });
     }
 
     // ------------------------------------------------------------------ data
@@ -848,9 +1247,12 @@ export default {
       const p = id !== null ? st.previews.get(id) : null;
       if (!p || st.saving) return;
       if (st.current && st.current.listing_id !== id) {
+        // Another listing starts from its own description: a saved (or unsaved) description
+        // template of the old one goes with it.
+        const mine = (st.current.description && st.current.description.custom) || desc.draft !== null;
         const ok = await ctx.confirm({
           title: t("replace.title"),
-          message: t("replace.message", { old: st.current.title, next: p.title }),
+          message: [t("replace.message", { old: st.current.title, next: p.title }), mine ? ` ${t("desc.replace_note")}` : ""],
           confirmLabel: t("replace.confirm"),
           icon: "file",
         });
@@ -860,6 +1262,7 @@ export default {
       renderRight();
       try {
         const r = await ctx.api.post("/api/template", { listing_id: id }, { signal: ctx.signal });
+        if (!st.current || st.current.listing_id !== id) setDescDraft(null);
         st.current = r.template;
         st.currentProblem = null;
         st.previews.set(id, r.template);
@@ -897,7 +1300,16 @@ export default {
 
     renderList();
     renderRight();
-    await Promise.all([loadCurrent(), loadListings(false)]);
+    // Tasarım Yükle's start card sends the seller here for the description (?aciklama=1):
+    // the dialog opens as soon as the saved template is known, not after the shop's list.
+    const openDesc = !!ctx.query.aciklama;
+    if (openDesc) ctx.setQuery({ aciklama: null });
+    await Promise.all([
+      loadCurrent().then(() => {
+        if (openDesc && ctx.isActive()) openDescription();
+      }),
+      loadListings(false),
+    ]);
     if (st.selectedId !== null && !st.previews.has(st.selectedId) && !st.previewLoading) loadPreview(st.selectedId);
     return () => {
       if (resizer) resizer.disconnect();

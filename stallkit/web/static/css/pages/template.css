@@ -609,6 +609,65 @@
   padding: 0 22px;
 }
 
+/* The description template: a quiet line under the fields that opens its dialog, in the
+   warning colour while its text still holds sentences about the listing's own design. */
+.tpl-hint .tpl-desc-link {
+  display: inline-flex;
+  align-items: flex-start;
+  align-self: flex-start;
+  gap: 6px;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-2);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+}
+.tpl-desc-link .icon {
+  flex: none;
+  margin-top: 2px;
+}
+.tpl-desc-link.is-warning {
+  color: var(--warning);
+}
+.tpl-desc-link-text {
+  min-width: 0;
+}
+.tpl-desc-link-action {
+  color: var(--accent-2);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.tpl-desc-link-action::before {
+  content: "·";
+  margin-right: 5px;
+  color: var(--muted-2);
+  font-weight: 400;
+}
+.tpl-desc-link:hover .tpl-desc-link-text,
+.tpl-desc-link:hover .tpl-desc-link-action {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.tpl-desc-link:focus-visible {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.tpl-desc-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin: 6px 3px 0;
+  border-radius: 50%;
+  background: var(--warning);
+}
+
 @container (max-width: 430px) {
   .tpl-code {
     display: none;
@@ -648,12 +707,276 @@
     width: 54px !important;
     height: 54px !important;
   }
+  /* The description template's line under the fields wraps in a narrow card: slightly
+     slimmer rows keep the save button in view. */
+  .tpl-fields:has(.tpl-desc-link) .tpl-field {
+    min-height: 47px;
+  }
 }
 
 @media (max-width: 1100px) {
   .tpl-row {
     padding: 10px 14px 10px 12px;
     gap: 12px;
+  }
+}
+
+/* ------------------------------------------------------------------ description dialog */
+
+/* The "Açıklama şablonu" dialog (in <body>, not under .page-template). */
+.tpl-desc-modal .modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.tpl-desc-modal .modal-body > * + * {
+  margin-top: 0;
+}
+.tpl-desc-modal .modal-actions .tpl-desc-reset {
+  margin-right: auto;
+}
+.tpl-desc-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+}
+.tpl-desc-insert {
+  margin-right: 2px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.tpl-desc-ph {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 11px 0 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border-2);
+  background: var(--panel-3);
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 500;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.tpl-desc-ph:hover {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.tpl-desc-ph code,
+.tpl-desc-legend code {
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--accent-soft);
+  color: var(--accent-2);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+.tpl-desc-state .badge {
+  white-space: nowrap;
+}
+
+/* A transparent textarea over a copy of its text laid out identically, where the flagged
+   sentences are marked: same box, font, padding, wrapping and scrollbar gutter. */
+.tpl-desc-editor {
+  position: relative;
+  height: clamp(170px, 34vh, 300px);
+  border: 1px solid var(--border-2);
+  border-radius: 10px;
+  background: var(--panel);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.tpl-desc-editor:hover {
+  border-color: #3a3e4a;
+}
+.tpl-desc-editor:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(123, 108, 255, 0.18);
+}
+.tpl-desc-backdrop,
+.tpl-desc-input {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 10px;
+  font-family: var(--font);
+  font-size: 13.5px;
+  font-weight: 400;
+  line-height: 1.6;
+  letter-spacing: normal;
+  tab-size: 4;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+.tpl-desc-backdrop {
+  overflow-y: hidden;
+  color: transparent;
+  pointer-events: none;
+}
+.tpl-desc-input {
+  background: transparent;
+  color: var(--text);
+  caret-color: var(--text);
+  resize: none;
+  outline: none;
+}
+.tpl-desc-mark {
+  color: transparent;
+  background: rgba(245, 181, 68, 0.16);
+  border-radius: 3px;
+  box-shadow: inset 0 -1.5px 0 rgba(245, 181, 68, 0.8);
+}
+.tpl-desc-mark.is-active {
+  background: rgba(245, 181, 68, 0.3);
+}
+.tpl-desc-legend {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-top: -4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.tpl-desc-legend-text {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.7;
+}
+.tpl-desc-count {
+  flex: none;
+  color: var(--muted-2);
+}
+.tpl-desc-problems {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tpl-desc-problems:empty {
+  display: none;
+}
+
+/* The flagged sentences, each with the page's words about it. */
+.tpl-desc-flags {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tpl-desc-flags-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.tpl-desc-flags-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+}
+.tpl-desc-flags-head.is-warning {
+  color: var(--warning);
+}
+.tpl-desc-flags-head.is-warning .tpl-desc-flags-icon {
+  background: var(--warning-soft);
+}
+.tpl-desc-flags-head.is-ok {
+  color: var(--success);
+  font-weight: 500;
+}
+.tpl-desc-flags-head.is-ok .tpl-desc-flags-icon {
+  background: var(--success-soft);
+}
+.tpl-desc-flags-head.is-muted {
+  color: var(--muted);
+  font-weight: 500;
+}
+.tpl-desc-checking {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.tpl-desc-flag-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 164px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.tpl-desc-flag {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 8px 9px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(245, 181, 68, 0.22);
+  background: rgba(245, 181, 68, 0.06);
+  transition: background 0.15s, border-color 0.15s;
+}
+.tpl-desc-flag.is-active {
+  border-color: rgba(245, 181, 68, 0.55);
+  background: rgba(245, 181, 68, 0.11);
+}
+.tpl-desc-flag-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.tpl-desc-flag-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--text);
+}
+.tpl-desc-flag-why {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.tpl-desc-flag-words {
+  color: var(--warning);
+}
+.tpl-desc-flag-actions {
+  display: flex;
+  flex: none;
+  gap: 2px;
+}
+@media (max-height: 760px) {
+  .tpl-desc-editor {
+    height: clamp(150px, 30vh, 230px);
+  }
+  .tpl-desc-flag-list {
+    max-height: 136px;
+  }
+}
+@media (max-width: 640px) {
+  .tpl-desc-flag {
+    flex-wrap: wrap;
+  }
+  .tpl-desc-legend {
+    flex-direction: column;
+    gap: 4px;
   }
 }
 @media (max-width: 860px) {

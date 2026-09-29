@@ -127,7 +127,7 @@ After that there is one thing to do each time: drop your designs.
 | **Kâr-Zarar** (Profit & loss) | Revenue, Etsy fees from your payment account, the product and shipping costs you enter, and net profit, month by month, in your shop's currency and in TRY. |
 | **Pinterest** | Optional. Queue Pins of your live listings and post a few a day on your own Pinterest account. |
 | **Mockuplar** (Mockups) | Add photos of the products you sell and set where the design sits on each one (the print area). One setting can cover every mockup of the same size. |
-| **Şablon İlan** (Template listing) | Pick a listing you built by hand. Every new draft copies its price, category, shipping and return settings, description and variations, and whether it is a physical item or a digital download. |
+| **Şablon İlan** (Template listing) | Pick a listing you built by hand. Every new draft copies its price, category, shipping and return settings, description and variations, and whether it is a physical item or a digital download. The listing's own title in its description becomes each draft's title; in the **description template** you can use `{title}` and `{design}`, and sentences about the template listing's own design are highlighted so they do not end up on every draft. |
 | **Mağaza Bağlantısı** (Shop connection) | Your Etsy app keys and the connection to your shop. |
 | **Ayarlar** (Settings) | Language (Turkish or English), several shops, the products folder, a setup checklist, hiding the shop name for screenshots, and quitting. |
 
@@ -461,7 +461,7 @@ ilan seçersiniz. Sonrasında her seferinde tek bir iş kalır: tasarımlarını
 | **Kâr-Zarar** | Gelir, ödeme hesabınızdaki Etsy kesintileri, sizin girdiğiniz ürün ve kargo maliyetleri ve net kâr; ay ay, mağazanızın para biriminde ve TL olarak. |
 | **Pinterest** | İsteğe bağlı. Yayındaki ilanlarınızın pinlerini sıraya alın, kendi Pinterest hesabınızda günde birkaç tane paylaşılsın. |
 | **Mockuplar** | Sattığınız ürünlerin fotoğraflarını ekleyin, tasarımın her birinde nereye oturacağını (baskı alanı) ayarlayın. Tek ayar aynı ölçüdeki tüm mockup'lara uygulanabilir. |
-| **Şablon İlan** | Elle hazırladığınız bir ilanı seçin. Her yeni taslak onun fiyatını, kategorisini, kargo ve iade ayarlarını, açıklamasını ve varyasyonlarını, fiziksel mi dijital mi olduğunu da kopyalar. |
+| **Şablon İlan** | Elle hazırladığınız bir ilanı seçin. Her yeni taslak onun fiyatını, kategorisini, kargo ve iade ayarlarını, açıklamasını ve varyasyonlarını, fiziksel mi dijital mi olduğunu da kopyalar. Açıklamada geçen ilan başlığı her taslağın kendi başlığıyla değişir; **açıklama şablonunda** `{başlık}` ve `{tasarım}` kullanabilirsiniz, şablon ilanın desenine özel cümleler her taslağa kopyalanmasın diye işaretlenir. |
 | **Mağaza Bağlantısı** | Etsy uygulama anahtarlarınız ve mağazanızla bağlantı. |
 | **Ayarlar** | Dil (Türkçe ya da İngilizce), birden fazla mağaza, ürün klasörü, kurulum kontrol listesi, ekran görüntüsü için mağaza adını gizleme ve uygulamayı kapatma. |
 

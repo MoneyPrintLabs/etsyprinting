@@ -25,6 +25,7 @@ from .client import EtsyClient, walk_taxonomy
 from .config import Config, home_dir, split_credential, token_path, write_env_file
 from .drop import automation, pipeline
 from .drop import catalog as catalog_mod
+from .drop import description as description_mod
 from .drop import mockup as mockup_mod
 from .drop import template as template_mod
 from .drop import workspace as workspace_mod
@@ -1276,6 +1277,18 @@ def drop_template(
         listing = client.listing(from_listing)
 
     captured = template_mod.capture(listing)
+    # A description template saved for this same listing (the app's Şablon İlan) stays;
+    # another listing starts from its own description.
+    before = None
+    if ws.template_path.is_file():
+        try:
+            saved = ws.read_template()
+            before = template_mod.Template.from_dict(saved) if isinstance(saved, dict) else None
+        except StallKitError:
+            before = None
+    if before is not None and before.source_listing_id == captured.source_listing_id:
+        captured.description_template = before.description_template
+        captured.category_path = before.category_path
     ws.write_template(captured.to_dict())
     _ok(f"Captured listing {_hide(captured.source_listing_id, 'id')} into {ws.template_path}")
 
@@ -1289,6 +1302,16 @@ def drop_template(
         _warn(
             f"This listing has no {', '.join(gaps)}. Drafts will still be created, "
             "but you cannot publish them until that is set."
+        )
+    flagged = description_mod.template_flags(captured, lang="en")
+    if flagged:
+        words = _hide(", ".join(description_mod.flag_words(flagged)[:4]))
+        _warn(
+            f"{len(flagged)} sentence(s) of the description look specific to this listing's "
+            f"own design ({words}) and would be copied onto every draft. Edit the "
+            "description template in the app's Template page, or set "
+            f"\"{template_mod.DESCRIPTION_TEMPLATE}\" in {ws.template_path} "
+            "({title} and {design} are filled in per draft)."
         )
     console.print(
         f"\nNow put designs in [cyan]{ws.products}[/] and run: [cyan]stallkit drop run[/]"

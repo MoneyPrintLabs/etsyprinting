@@ -416,7 +416,12 @@
     "ready.opaque.place": "Mockup'lara yerleştir",
     "ready.opaque.place_sub": "Düz zemin kaldırılır, tasarım her mockup'a yerleşir",
     "ready.opaque.as_is": "Hazır fotoğraf olarak yükle",
-    "ready.opaque.as_is_sub": "Dosya olduğu gibi, tek görsel olarak yüklenir"
+    "ready.opaque.as_is_sub": "Dosya olduğu gibi, tek görsel olarak yüklenir",
+    "warn.description_design": "Açıklamada şablon ilanın desenine özel {n} cümle kaldı ({words}); Şablon İlan'da açıklama şablonunu düzenleyin",
+    "warn.description_design_one": "Açıklamada şablon ilanın desenine özel 1 cümle kaldı ({words}); Şablon İlan'da açıklama şablonunu düzenleyin",
+    "ready.description_flagged": "Şablon ilanın açıklamasında desenine özel {n} cümle var; her taslağa kopyalanır.",
+    "ready.description_flagged_one": "Şablon ilanın açıklamasında desenine özel 1 cümle var; her taslağa kopyalanır.",
+    "ready.go_template": "Şablon İlan"
   },
   "en": {
     "title": "Upload designs",
@@ -835,6 +840,11 @@
     "ready.opaque.place": "Place on the mockups",
     "ready.opaque.place_sub": "The solid background is removed and the design goes onto every mockup",
     "ready.opaque.as_is": "Upload as finished photos",
-    "ready.opaque.as_is_sub": "Each file goes up as it is, as one picture"
+    "ready.opaque.as_is_sub": "Each file goes up as it is, as one picture",
+    "warn.description_design": "The description still has {n} sentences about the template listing's own design ({words}); edit the description template on Template listing",
+    "warn.description_design_one": "The description still has 1 sentence about the template listing's own design ({words}); edit the description template on Template listing",
+    "ready.description_flagged": "The template listing's description has {n} sentences about its own design; they are copied onto every draft.",
+    "ready.description_flagged_one": "The template listing's description has 1 sentence about its own design; it is copied onto every draft.",
+    "ready.go_template": "Template listing"
   }
 }
