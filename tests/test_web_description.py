@@ -106,6 +106,7 @@ def test_check_flags_an_edited_text_without_saving_it(web):
 
 
 def test_a_saved_template_is_kept_in_product_json_and_used(web):
+    _language(web, "tr")  # the starting text uses the UI language's placeholders
     _saved(web)
     text = "{başlık}\r\n\r\nA {tasarım} print. Wallpaper samples are available."
     resp = web.client.put("/api/template/description", json={"text": text})
@@ -164,6 +165,7 @@ def test_an_empty_too_long_or_odd_text_is_refused(web):
 
 
 def test_the_same_listing_saved_again_keeps_it_another_listing_starts_over(web):
+    _language(web, "tr")  # the starting text uses the UI language's placeholders
     _saved(web)
     web.client.put("/api/template/description", json={"text": "{başlık}\n\nMine."})
     assert web.client.post("/api/template", json={"listing_id": 1000011}).status_code == 200
