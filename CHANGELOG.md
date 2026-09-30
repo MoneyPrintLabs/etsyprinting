@@ -133,6 +133,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Filigran card's title uses the display face of the other cards, the Panel feed's
   "20 hours ago" fits a 1280 px window, and the two toast areas have their own names for
   screen readers.
+- **Mağaza Bağlantısı**: once the shop is connected, "Devam" leads to the first setup step
+  still to do (Mockuplar, then Şablon İlan) and to Tasarım Yükle when setup is finished,
+  instead of always to Mockuplar.
+- **Siparişler**: a 22-digit USPS tracking number shows whole beside its ✓ at the
+  video's window width, and a cell no longer draws a stray "…" under the number's end.
+- The new-version pill also folds away "Neler yeni?" when the page title would still be
+  cut (English **Profit & loss** at 1280 px); Ayarlar keeps the link.
 
 ## [0.3.1] — 2026-09-28
 
@@ -470,7 +477,8 @@ Recorded here and in the code so nobody has to re-derive them:
 - There is no idempotency key, so non-idempotent writes are never retried on a timeout
   or a 5xx — a repeat would mean a duplicate listing, or a second email to a buyer.
 
-[Unreleased]: https://github.com/MoneyPrintLabs/stallkit/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/MoneyPrintLabs/stallkit/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/MoneyPrintLabs/stallkit/releases/tag/v0.3.1
 [0.3.0]: https://github.com/MoneyPrintLabs/stallkit/releases/tag/v0.3.0
 [0.2.0]: https://github.com/MoneyPrintLabs/stallkit/releases/tag/v0.2.0
 [0.1.0]: https://github.com/MoneyPrintLabs/stallkit/releases/tag/v0.1.0

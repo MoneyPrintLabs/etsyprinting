@@ -5,8 +5,11 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
 
 import httpx
+import pytest
 from web_helpers import ETSY_SHOP_ID, use_fake_etsy
 
 from stallkit.web.server import STATIC_DIR
@@ -137,3 +140,29 @@ def test_every_finished_step_reads_done():
         keys = _strings()[lang]
         assert not {"steps.mockups_n", "steps.mockups_n_one", "steps.ready"} & set(keys)
     assert _strings()["tr"]["steps.done"] == "Tamamlandı"
+
+
+NODE = shutil.which("node")
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_the_connected_card_leads_to_the_first_step_still_to_do():
+    """The "Devam" button follows the stepper: Mockuplar until one is ready, then Şablon İlan until
+    the template is saved, then Tasarım Yükle (not Mockuplar once setup is finished)."""
+    url = (STATIC_DIR / "js" / "pages" / "connect.js").as_uri()
+    code = (f"const m = await import({json.dumps(url)});\n"
+            "console.log(JSON.stringify([null, {}, {mockups: 0, template: true}, {mockups: 2},"
+            " {mockups: 6, template: false}, {mockups: 6, template: true}].map(m.nextSetupStep)));")
+    done = subprocess.run([NODE, "--input-type=module", "-e", code], capture_output=True,
+                          text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    got = [(x["key"], x["path"]) for x in json.loads(done.stdout)]
+    mockups, template = ("", "/kurulum/mockuplar"), ("_template", "/kurulum/sablon")
+    upload = ("_upload", "/tasarim-yukle")
+    assert got == [mockups, mockups, mockups, template, template, upload]
+    tr, en = _strings()["tr"], _strings()["en"]
+    for key, _path in (mockups, template, upload):
+        for lang in (tr, en):
+            assert lang[f"connected.next{key}"] and lang[f"connected.next{key}_hint"]
+    assert tr["connected.next_upload"] == "Devam: Tasarım Yükle"
+    assert tr["connected.next_template"] == "Devam: Şablon İlan"

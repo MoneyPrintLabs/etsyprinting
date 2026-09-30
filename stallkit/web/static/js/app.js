@@ -1120,8 +1120,11 @@ function watchTitleWidth() {
 function fitUpdatePill() {
   const pill = els.updateSlot && !els.updateSlot.hidden ? els.updateSlot.firstElementChild : null;
   if (!pill || !els.title) return;
-  pill.classList.remove("is-compact");
-  if (els.title.scrollWidth > els.title.clientWidth + 1) pill.classList.add("is-compact");
+  const cut = () => els.title.scrollWidth > els.title.clientWidth + 1;
+  pill.classList.remove("is-compact", "is-tight");
+  // First the "Yeni sürüm" label goes, then "Neler yeni?" (Ayarlar has it too).
+  if (cut()) pill.classList.add("is-compact");
+  if (cut()) pill.classList.add("is-tight");
 }
 
 /**

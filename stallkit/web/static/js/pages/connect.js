@@ -69,6 +69,18 @@ const SLOW_AFTER = 15; // seconds on Etsy's page before "Etsy bir hata mı göst
 // A connect that ended with one of these gets the same help, open.
 const TROUBLE_AFTER = new Set(["connect_timeout", "token_refused", "state_mismatch"]);
 
+/**
+ * The connected card's "Devam" from /api/status's `setup`: the first setup step still to
+ * do (mockups, then the template listing), else Tasarım Yükle. `key` ends the string key
+ * (connected.next, connected.next_template, connected.next_upload and their _hint).
+ */
+export function nextSetupStep(su) {
+  const s = su || {};
+  if (!(s.mockups > 0)) return { key: "", path: "/kurulum/mockuplar" };
+  if (!s.template) return { key: "_template", path: "/kurulum/sablon" };
+  return { key: "_upload", path: "/tasarim-yukle" };
+}
+
 export default {
   async mount(el, ctx) {
     return mountConnect(el, ctx);
@@ -1265,6 +1277,7 @@ async function mountConnect(el, ctx) {
     if (s.connError) notes.push(problemNote(s.connError));
     const granted = info.scopes_granted && info.scopes_granted.length ? info.scopes_granted : (s.status && s.status.scopes) || [];
     const missing = info.missing_scopes || [];
+    const next = nextSetupStep(setup());
     if (missing.length) {
       notes.push(
         infoNote({
@@ -1303,8 +1316,8 @@ async function mountConnect(el, ctx) {
       h(
         "div",
         { class: "cx-actions cx-done-actions" },
-        button({ label: t("connected.next"), variant: "primary", size: "lg", iconRight: "arrow-right", onClick: () => ctx.navigate("/kurulum/mockuplar") }),
-        h("span", { class: "cx-hint" }, t("connected.next_hint")),
+        button({ label: t(`connected.next${next.key}`), variant: "primary", size: "lg", iconRight: "arrow-right", onClick: () => ctx.navigate(next.path) }),
+        h("span", { class: "cx-hint" }, t(`connected.next${next.key}_hint`)),
       ),
     ].filter(Boolean);
   }

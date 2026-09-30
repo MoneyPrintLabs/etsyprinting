@@ -402,15 +402,21 @@
 }
 
 /* tracking number: ✓ + code once uploaded, an input while waiting. The code lines up
-   with the column head and with the number typed in; the ✓ hangs to its left (t280). */
+   with the column head and with the number typed in; the ✓ hangs to its left (t280).
+   It may also use the cell's right padding, so a 22-digit USPS number stays whole
+   beside its ✓ at the video's width, as in the video. */
 .page-orders .o-table .tbl th.o-th-tracking {
   padding-left: 25px;
+}
+/* The code shortens itself (…) when the column is too narrow; the cell adds none. */
+.page-orders .o-table .tbl td.o-td-tracking {
+  text-overflow: clip;
 }
 .page-orders .o-track {
   display: inline-flex;
   align-items: center;
   gap: 9px;
-  max-width: calc(100% + 11px);
+  max-width: calc(100% + 25px);
   margin-left: -11px;
   color: var(--text);
   font-size: 13px;

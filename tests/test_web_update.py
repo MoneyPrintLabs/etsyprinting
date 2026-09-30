@@ -616,3 +616,14 @@ def test_the_cache_lives_in_the_base_home_for_every_shop(web, checks_on):
     # Another shop sees the same answer and is not told again.
     state = use_checker(web, FakeGitHub()).check(force=True)
     assert state["pill"] and update_notifications(web) == []
+
+def test_the_pill_gives_way_before_the_page_title_is_cut():
+    """At 1280 px "Profit & loss" was cut beside the pill even without its label: the
+    shell drops the label first, then "What's new?" (Settings has it too)."""
+    from stallkit.web.server import STATIC_DIR
+
+    app = (Path(STATIC_DIR) / "js" / "app.js").read_text(encoding="utf-8")
+    css = (Path(STATIC_DIR) / "css" / "base.css").read_text(encoding="utf-8")
+    body = app[app.index("function fitUpdatePill()"):app.index("export function showReleaseNotes")]
+    assert body.index('add("is-compact")') < body.index('add("is-tight")')
+    assert ".update-pill.is-tight .update-pill-notes" in css

@@ -654,7 +654,8 @@ a:hover {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.update-pill.is-compact .update-pill-label {
+.update-pill.is-compact .update-pill-label,
+.update-pill.is-tight .update-pill-notes {
   display: none; /* app.js: the page title would be cut otherwise */
 }
 @media (max-width: 1100px) {
