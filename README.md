@@ -202,6 +202,7 @@ the same one for the command line.
 |---|---|
 | **Windows 10 / 11** | `stallkit-…-windows.exe`: one file, nothing to install. |
 | **Mac with Apple Silicon (M1 and newer)** | `stallkit-…-macos.zip`: unzip it, then move `stallkit.app` to Applications. |
+| **Mac with Intel** | `stallkit-…-macos-intel.zip`: the same, for Intel Macs. |
 
 On an Intel Mac or on Linux, [run it from source](#run-from-source-windows-macos-linux).
 
@@ -550,6 +551,7 @@ yazar. Komut satırında aynı ayarı `stallkit drop watermark` yapar.
 |---|---|
 | **Windows 10 / 11** | `stallkit-…-windows.exe`: tek dosya, kurulum yok. |
 | **Apple Silicon Mac (M1 ve sonrası)** | `stallkit-…-macos.zip`: zip'i açın, `stallkit.app`'i Uygulamalar klasörüne taşıyın. |
+| **Intel işlemcili Mac** | `stallkit-…-macos-intel.zip`: aynısı, Intel Mac'ler için. |
 
 Intel Mac ya da Linux'ta [kaynak koddan çalıştırın](#kaynak-koddan-çalıştırma-windows-macos-linux).
 

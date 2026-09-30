@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-09-30
+
 ### Added
+- A download for Intel Macs, `stallkit-<version>-macos-intel.zip`, built on GitHub's Intel macOS runner.
 
 - **Filigran (watermark)**: a card at the bottom of **Mockuplar** takes your own mark (a
   PNG with a transparent background is recommended; JPG and WebP up to 10 MB), with a
@@ -42,9 +45,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   listing's own design (from its title and tags, such as "lemon"; never a product
   word such as "wallpaper" or "sample") are highlighted: they would be copied onto every
   draft. It is saved in `product.json`; saving the same listing again keeps it.
-- Until such sentences are gone, each product of a run warns ("Açıklamada şablon ilanın
-  desenine özel 1 cümle kaldı"), and the start card says so once, with a link that opens
-  the description template. `stallkit drop template` lists them too.
+- Until such sentences are gone, the start card says so once, with a link that opens the
+  description template, and `stallkit drop template` lists them. While no description
+  template is saved yet, each product of a run warns too ("Açıklamada şablon ilanın
+  desenine özel 1 cümle kaldı").
 - **Tasarım Yükle → Başlat** has a **Mağaza bölümü** (*Shop section*) choice: your
   shop's sections, starting on **Şablondaki gibi (…)** (the template listing's). Every
   draft of that run goes into the section you pick, or into none; the template itself
@@ -477,7 +481,8 @@ Recorded here and in the code so nobody has to re-derive them:
 - There is no idempotency key, so non-idempotent writes are never retried on a timeout
   or a 5xx — a repeat would mean a duplicate listing, or a second email to a buyer.
 
-[Unreleased]: https://github.com/MoneyPrintLabs/stallkit/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/MoneyPrintLabs/stallkit/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/MoneyPrintLabs/stallkit/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/MoneyPrintLabs/stallkit/releases/tag/v0.3.1
 [0.3.0]: https://github.com/MoneyPrintLabs/stallkit/releases/tag/v0.3.0
 [0.2.0]: https://github.com/MoneyPrintLabs/stallkit/releases/tag/v0.2.0

@@ -31,7 +31,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        # macos-latest is Apple Silicon; macos-15-intel builds for Intel Macs.
+        os: [windows-latest, macos-latest, macos-15-intel]
 
     steps:
       - uses: actions/checkout@v7
@@ -90,7 +91,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: stallkit-${{ runner.os }}
+          name: stallkit-${{ matrix.os }}
           path: dist/release/*
           if-no-files-found: error
 

@@ -4,7 +4,8 @@
     python packaging/build.py
 
 Windows produces one self-contained `stallkit-<version>-windows.exe`; macOS produces
-`stallkit-<version>-macos.zip` holding `stallkit.app`. Both land in `dist/release/`.
+`stallkit-<version>-macos.zip` (Apple Silicon) or `-macos-intel.zip` (Intel) holding
+`stallkit.app`. Both land in `dist/release/`.
 Neither needs Python on the machine it runs on.
 
 Releases are built by .github/workflows/release.yml on GitHub's runners, not on a
@@ -132,7 +133,9 @@ def main() -> int:
         shutil.copy2(DIST / "stallkit.exe", target)
     else:
         _stamp_bundle_version(DIST / "stallkit.app")
-        target = RELEASE / f"stallkit-{__version__}-macos.zip"
+        # Apple Silicon keeps the plain name the README links to; an Intel build says so.
+        suffix = "macos-intel" if platform.machine() == "x86_64" else "macos"
+        target = RELEASE / f"stallkit-{__version__}-{suffix}.zip"
         target.unlink(missing_ok=True)
         # ditto keeps the bundle's symlinks and permissions; zipfile would not.
         subprocess.run(
