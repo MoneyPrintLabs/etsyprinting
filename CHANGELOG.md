@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the size as a share of the photo's width (30 %, or 15 % for each repeated mark). A mark
   on a solid background can have it removed. Tasarım Yükle, `drop run` and `drop auto`
   stamp it on a copy of every listing photo (the mockups, the flat image or preview, a
-  product folder's own photos) in the batch's `watermarked` folders, tell Etsy the
+  product folder's own photos) in the batch's `watermarked` folder, tell Etsy the
   picture is watermarked, and never touch the files buyers download or your originals.
   The copies keep the photo's size and quality and carry no EXIF. A photo the mark cannot
   go on stops its product rather than going up without it. The start card says
@@ -87,8 +87,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still save the default area), the "Baskı alanı" label shows while drawing once the
   rectangle is big enough, and the chips, notices and buttons match the video.
 - A download-only template's drafts use only the mockups that show no physical product
-  (posters, canvases, frames) plus the flat preview; the start card names them and the
-  ones left out.
+  (posters, canvases, frames) plus the flat preview; the start card names them ("Poster ·
+  Meşe") and the ones left out. `drop run` and `drop auto` use the same mockups and name
+  the ones they leave out.
 - **İlanlar**: "N yeni taslak" counts only the drafts of stallkit's latest run; older
   drafts read "N taslak".
 - **SEO → Düzelt** offers a title change only when removing whole repeated phrases ends
@@ -106,6 +107,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   title, and a line made of its `|`- or `,`-separated parts, become the draft's title
   (a "Sage Lemon Wallpaper | Olive Citrus Mural" line no longer reaches a woodland
   mural's draft).
+- Two designs whose names differ only by their extension (`sunset.jpg` and
+  `sunset.jpeg`, `poster.png` and `poster.gif`) no longer share one watermarked copy; the
+  batch keeps one `watermarked` folder, so a long design name no longer doubles the path
+  (Windows' 260-character limit).
+- A download-only template no longer loses its posters when T-shirt mockups come first
+  and info images shorten the list: the physical ones are left out before the 19-picture
+  limit is applied, on the start card, in the run and in `drop run` / `drop auto`.
+- An info image with the same file name as one of a product's photos goes up with its own
+  alt text, and the listing page tells them apart by Etsy's image id.
+- `stallkit listings push` of a `drop run` batch tells Etsy which pictures carry the
+  watermark and sends the info images' alt texts, as `drop auto` and the app do.
+- Alt texts read from a template listing's photos no longer keep Etsy's HTML escapes
+  (`&amp;`), and a photo download that Etsy's image server redirects fails with a clear
+  message instead of saving the redirect page as the picture.
+- The start card's request estimate counts a JPG on a solid background as placed on
+  every mockup (the "Mockup'lara yerleştir" choice), and keeps that choice when a deleted
+  shop section reopens the card.
+- Keyboard: the description link on **Şablon İlan**, the template photos and the info
+  images' × keep the focus after a change, and the Filigran card's choices are radio
+  groups moved with the arrow keys; removing or replacing the mark keeps the focus in
+  the card. A watermark setting changed just before a reload is saved, Ctrl+S in the
+  description dialog saves only a changed text, and "Tüm ilan görselleri" says so even
+  before a template listing is chosen.
+- The Filigran card's title uses the display face of the other cards, the Panel feed's
+  "20 hours ago" fits a 1280 px window, and the two toast areas have their own names for
+  screen readers.
 
 ## [0.3.1] — 2026-09-28
 

@@ -468,6 +468,9 @@ async function mountGrid(el, ctx) {
   wmCtl.el.hidden = true;
   el.append(toolbar, usageHost, toolsHost, notes, grid, wmCtl.el);
   cleanups.push(() => wmCtl.flush());
+  // A reload or a closed tab never runs the cleanup: what waits goes with the page.
+  window.addEventListener("pagehide", wmCtl.flushOnExit);
+  cleanups.push(() => window.removeEventListener("pagehide", wmCtl.flushOnExit));
   const offDrop = installPageDrop(el, ctx, (files) => queueUpload(files));
   cleanups.push(offDrop);
 
@@ -1303,11 +1306,21 @@ function watermarkSection(ctx, { labelFor }) {
     }
   }
 
-  function take(res) {
+  /** A new state from the server, drawn at once. `where` ("drop", "replace", "title"):
+   *  where the keyboard goes when it was in the card, whose nodes are all rebuilt. */
+  function take(res, where = null) {
+    const inCard = el.contains(document.activeElement);
     wm = res;
     pending = {};
     draft = { ...wm.settings };
     render();
+    if (where && inCard && !el.contains(document.activeElement)) refocus(where);
+  }
+
+  function refocus(where) {
+    const node = where === "drop" ? refs.drop : where === "replace" ? refs.replace : refs.title;
+    const target = node && node.isConnected ? node : refs.title;
+    if (target) target.focus({ preventScroll: true });
   }
 
   function queueSave(fields, { now = false } = {}) {
@@ -1347,6 +1360,26 @@ function watermarkSection(ctx, { labelFor }) {
     }
   }
 
+  /** The tab is closing (a reload, the window shut): what still waits goes as a keepalive
+   *  request, which the browser completes after the page is gone. */
+  function flushOnExit() {
+    clearTimeout(saveTimer);
+    if (!Object.keys(pending).length) return;
+    const body = pending;
+    pending = {};
+    try {
+      fetch("/api/watermark", {
+        method: "PATCH",
+        keepalive: true,
+        credentials: "same-origin",
+        headers: { "X-Stallkit": "1", "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).catch(() => {});
+    } catch {
+      /* the page is closing: nothing more to do */
+    }
+  }
+
   /** What is still waiting goes now (not tied to the page's signal: it also runs when the
    *  page is left). Resolves when it is saved. */
   function flush() {
@@ -1377,7 +1410,7 @@ function watermarkSection(ctx, { labelFor }) {
     try {
       await flush();
       const res = await ctx.api.upload("/api/watermark/file", file, { query: { name: file.name }, signal: ctx.signal });
-      take(res);
+      take(res, "replace");
       ctx.toast({ tone: "success", title: t(had ? "wm.replaced" : "wm.uploaded"), message: res.file ? res.file.name : file.name, timeout: 3500 });
     } catch (err) {
       if (ctx.api.isAbort(err)) return;
@@ -1416,7 +1449,7 @@ function watermarkSection(ctx, { labelFor }) {
     busy = true;
     try {
       await flush();
-      take(await ctx.api.del("/api/watermark/file", null, { signal: ctx.signal }));
+      take(await ctx.api.del("/api/watermark/file", null, { signal: ctx.signal }), "drop");
       ctx.toast({ tone: "success", title: t("wm.removed"), timeout: 3000 });
     } catch (err) {
       if (!ctx.api.isAbort(err)) ctx.toast({ tone: "danger", title: ctx.api.errorText(err, t) });
@@ -1430,7 +1463,7 @@ function watermarkSection(ctx, { labelFor }) {
     busy = true;
     if (btn) btn.setLoading(true);
     try {
-      take(await ctx.api.post("/api/watermark/remove-ground", null, { signal: ctx.signal }));
+      take(await ctx.api.post("/api/watermark/remove-ground", null, { signal: ctx.signal }), "title");
       ctx.toast({ tone: "success", title: t("wm.ground_done"), timeout: 3000 });
     } catch (err) {
       if (btn) btn.setLoading(false);
@@ -1506,7 +1539,7 @@ function watermarkSection(ctx, { labelFor }) {
       "header",
       { class: "mk-wm-head" },
       h("span", { class: "icon-tile" }, icon("droplet", { size: 16 })),
-      h("div", { class: "mk-wm-titles" }, h("h2", { class: "mk-wm-title", id: titleId }, t("wm.title")), h("p", { class: "mk-wm-sub" }, t("wm.sub"))),
+      h("div", { class: "mk-wm-titles" }, (refs.title = h("h2", { class: "mk-wm-title", id: titleId, tabindex: "-1" }, t("wm.title"))), h("p", { class: "mk-wm-sub" }, t("wm.sub"))),
       file ? h("div", { class: "mk-wm-switch" }, refs.state, refs.toggle) : null,
     );
   }
@@ -1590,7 +1623,7 @@ function watermarkSection(ctx, { labelFor }) {
         h("span", { class: "mk-wm-file-name ellipsis", title: file.name }, file.name),
         h("span", { class: "mk-wm-file-meta" }, meta),
       ),
-      button({ label: t("wm.replace"), size: "sm", variant: "secondary", onClick: () => pickMark() }),
+      (refs.replace = button({ label: t("wm.replace"), size: "sm", variant: "secondary", onClick: () => pickMark() })),
       iconButton({ icon: "trash", title: t("wm.remove"), variant: "ghost", size: "sm", class: "mk-wm-remove", onClick: () => removeMark() }),
     );
     let groundNote = null;
@@ -1603,7 +1636,9 @@ function watermarkSection(ctx, { labelFor }) {
       groundNote = infoNote({ tone: "warning", icon: "alert", text: t("wm.ground_photo_note") });
     }
 
-    // Where it goes (scope), where on the photo (position), how strong and how big.
+    // Where it goes (scope), where on the photo (position), how strong and how big. Each
+    // group is one Tab stop (the chosen option); the arrow keys move and choose.
+    const stop = (group, ids) => (ids.includes(draft[group]) ? draft[group] : ids[0]);
     const option = (group, id, title, sub) =>
       h(
         "button",
@@ -1612,6 +1647,7 @@ function watermarkSection(ctx, { labelFor }) {
           role: "radio",
           class: cx("mk-wm-opt", draft[group] === id && "is-selected"),
           "aria-checked": draft[group] === id ? "true" : "false",
+          tabindex: stop(group, group === "scope" ? WM_SCOPES : WM_POSITIONS) === id ? "0" : "-1",
           dataset: { group, id },
           onClick: () => choose(group, id),
         },
@@ -1628,6 +1664,8 @@ function watermarkSection(ctx, { labelFor }) {
       { class: "mk-wm-opts mk-wm-positions", role: "radiogroup", "aria-label": t("wm.position") },
       WM_POSITIONS.map((id) => option("position", id, t(`wm.position.${id}`), null)),
     );
+    radioKeys(refs.scope, "scope");
+    radioKeys(refs.positions, "position");
     refs.opacity = slider("opacity", t("wm.opacity"));
     refs.size = slider(sizeKey(), t("wm.size"));
     refs.applies = h("div", { class: "mk-wm-applies" });
@@ -1672,10 +1710,32 @@ function watermarkSection(ctx, { labelFor }) {
       draft[ctl.key] = Number(input.value);
       schedulePreview();
     });
-    input.addEventListener("change", () => queueSave({ [ctl.key]: Number(input.value) }));
+    // "change" comes once, at the end of a drag (or a key press): saved at once, so a
+    // reload right after it loses nothing. The preview follows "input" meanwhile.
+    input.addEventListener("change", () => queueSave({ [ctl.key]: Number(input.value) }, { now: true }));
     ctl.el = h("label", { class: "mk-wm-slider" }, h("span", { class: "mk-wm-slider-row" }, h("span", { class: "mk-wm-label" }, label), hint, h("span", { class: "spacer" }), value), input);
     ctl.set(draft[key], key);
     return ctl;
+  }
+
+  /** The ARIA radio group's keys: arrows move to the next or previous option (round),
+   *  Home and End to the ends; each move chooses it. */
+  function radioKeys(box, group) {
+    box.addEventListener("keydown", (e) => {
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
+      const opts = [...box.querySelectorAll(".mk-wm-opt")];
+      const i = opts.indexOf(document.activeElement);
+      if (i < 0) return;
+      let j = null;
+      if (e.key === "ArrowRight" || e.key === "ArrowDown") j = (i + 1) % opts.length;
+      else if (e.key === "ArrowLeft" || e.key === "ArrowUp") j = (i - 1 + opts.length) % opts.length;
+      else if (e.key === "Home") j = 0;
+      else if (e.key === "End") j = opts.length - 1;
+      if (j === null) return;
+      e.preventDefault();
+      choose(group, opts[j].dataset.id);
+      opts[j].focus();
+    });
   }
 
   function choose(group, id) {
@@ -1685,6 +1745,7 @@ function watermarkSection(ctx, { labelFor }) {
       const on = b.dataset.id === id;
       b.classList.toggle("is-selected", on);
       b.setAttribute("aria-checked", on ? "true" : "false");
+      b.tabIndex = on ? 0 : -1;
     }
     queueSave({ [group]: id });
     if (group === "position") {
@@ -1763,11 +1824,12 @@ function watermarkSection(ctx, { labelFor }) {
     let tone = "muted";
     let text;
     if (!draft.enabled) text = t("wm.applies.off");
-    else if (!type) text = t("wm.applies.no_template");
     else if (draft.scope === "all") {
+      // Every listing's photos, whatever the template (drop/watermark.applies_to).
       tone = "on";
       text = t("wm.applies.all");
-    } else if (digital) {
+    } else if (!type) text = t("wm.applies.no_template");
+    else if (digital) {
       tone = "on";
       text = t("wm.applies.digital");
     } else text = t("wm.applies.physical");
@@ -1778,7 +1840,7 @@ function watermarkSection(ctx, { labelFor }) {
     );
   }
 
-  return { el, load, flush };
+  return { el, load, flush, flushOnExit };
 }
 
 // ------------------------------------------------------------------ editor

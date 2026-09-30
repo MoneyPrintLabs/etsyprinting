@@ -219,10 +219,11 @@ def safe_name(filename: str) -> str:
 def _uploadable(name: str, data: bytes) -> tuple[str, bytes]:
     """(name, bytes) of a picture Etsy takes as it is: JPG, PNG or GIF, at most 20 MB.
 
-    Anything else Pillow reads (WEBP, BMP, TIFF, a CMYK or 16-bit file) is saved as a
-    JPEG on white, full size; a file over 20 MB is saved again smaller in quality, then
-    in size. Refuses what is not an image (ValidationError) or is too large to decode
-    (catalog.TooManyPixels).
+    A JPG, PNG or GIF of at most 20 MB is kept byte for byte, whatever its colour mode
+    (a CMYK JPEG, a 16-bit PNG), as finished product photos are. Anything else Pillow
+    reads (WEBP, BMP, TIFF, ...) is saved as a JPEG on white, full size; a file over
+    20 MB is saved again smaller in quality, then in size. Refuses what is not an image
+    (ValidationError) or is too large to decode (catalog.TooManyPixels).
     """
     from . import catalog, mockup
 

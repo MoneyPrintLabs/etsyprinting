@@ -8,6 +8,8 @@ spreadsheet can edit the file and get an identical result.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import re
 import shutil
@@ -39,7 +41,12 @@ from . import watermark as watermark_mod
 from .template import Template
 from .workspace import FILES_DIRS, INFO_DIR, Workspace
 
+log = logging.getLogger(__name__)
+
 REVIEW_FILE = "review.csv"
+# Beside review.csv: the info images' alt texts ({"info-images/<file>": alt}), so a later
+# `stallkit listings push` of the batch sends them as drop auto and the app do.
+INFO_ALTS_FILE = "info-alts.json"
 
 # Columns the review file carries beyond what `listings push` reads. push() ignores
 # extras, so the same file serves both the seller's eye and the writer.
@@ -466,7 +473,32 @@ def ready_info_images(
             name=image.name, path=fitted, alt=image.alt, listing_id=image.listing_id,
             listing_image_id=image.listing_image_id,
         ))
+    alts = {_relative(i.path, out_dir): i.alt for i in ready if i.alt}
+    if alts:
+        try:
+            (out_dir / INFO_ALTS_FILE).write_text(
+                json.dumps(alts, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:  # only `listings push` reads it later; the run itself does not
+            log.warning("could not write %s", out_dir / INFO_ALTS_FILE)
     return ready, notes
+
+
+def batch_upload_notes(batch_dir: Path) -> tuple[Path, dict[str, str]]:
+    """(the batch's folder of watermarked copies, the info images' alt texts by resolved
+    path): what `stallkit listings push` of a drop batch's review.csv tells Etsy."""
+    alts: dict[str, str] = {}
+    try:
+        raw = json.loads((batch_dir / INFO_ALTS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raw = {}
+    if isinstance(raw, dict):
+        for rel, alt in raw.items():
+            if isinstance(rel, str) and isinstance(alt, str) and alt.strip():
+                try:
+                    alts[str((batch_dir / rel).resolve())] = alt
+                except OSError:
+                    continue
+    return batch_dir / watermark_mod.STAMPED_DIR, alts
 
 
 def info_note(appended: int, total: int) -> str:
@@ -542,14 +574,15 @@ def run(
     """Composite, research, write copy, and emit review.csv. Nothing is sent to Etsy.
 
     `mockups` are the templates to composite onto, first (the main image) to last —
-    normally `catalog.enabled_mockups(workspace)`, the Mockuplar page's selection and
-    order. Without it the first `mockups_per_product` files of 1-MOCKUPS are used.
+    normally `catalog.run_mockups(workspace, template.listing_type)`, the Mockuplar
+    page's selection and order. Without it the first `mockups_per_product` files of
+    1-MOCKUPS are used.
 
     `watermark`: stamp the workspace's watermark (drop.watermark) on a copy of every
     listing photo when it is on and takes this template; False never stamps. The copies
-    go to the product's `watermarked` folder; originals and download files are never
-    changed. A product whose photo cannot take the mark is skipped, never sent bare, and
-    a mark that is on but cannot be read stops the run (ValidationError).
+    go to the batch's `watermarked` folder, one name each; originals and download files
+    are never changed. A product whose photo cannot take the mark is skipped, never sent
+    bare, and a mark that is on but cannot be read stops the run (ValidationError).
 
     `info_images` end every row's images, after its own (default: the workspace's,
     drop.infoimages); a product folder gets the ones that fit (`infoimages.fitting`).
@@ -658,6 +691,7 @@ def run(
     # Output names are handed out from one set per batch, so a collision between two
     # products is resolved rather than discovered later as a missing image.
     taken: set[str] = set()
+    stamped_names: set[str] = set()  # the batch's stamped copies (watermark_mod.STAMPED_DIR)
 
     # One lookup per distinct concept, not per file. Eighteen concepts across a
     # hundred products is eighteen searches.
@@ -787,8 +821,8 @@ def run(
         convert_dir = report.out_dir / (
             row.source.name if row.source.is_dir() else row.source.stem
         )
-        stamped_dir = convert_dir / watermark_mod.STAMPED_DIR
-        stamped_names: set[str] = set()
+        # The batch's one folder of stamped copies, each name taken once (stamped_names).
+        stamped_dir = report.out_dir / watermark_mod.STAMPED_DIR
         unstamped: list[Path] = []
         unmarked: str | None = None
         uploadable: list[Path] = []

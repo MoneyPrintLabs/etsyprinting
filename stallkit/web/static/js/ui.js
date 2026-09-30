@@ -1237,7 +1237,9 @@ const toastHosts = {};
 function ensureToastHost(place = "bottom") {
   const known = toastHosts[place];
   if (known && known.isConnected) return known;
-  const host = h("div", { class: cx("toasts", place === "top" && "is-top"), role: "region", "aria-live": "polite", "aria-label": ct("toast.region") });
+  // Two hosts, two landmarks: each has its own name (axe landmark-unique).
+  const label = ct(place === "top" ? "toast.region_top" : "toast.region");
+  const host = h("div", { class: cx("toasts", place === "top" && "is-top"), role: "region", "aria-live": "polite", "aria-label": label });
   document.body.appendChild(host);
   toastHosts[place] = host;
   return host;

@@ -28,6 +28,7 @@ from ..client import EtsyClient
 from ..config import LISTING_TYPES
 from ..errors import ValidationError
 from . import catalog, pipeline
+from . import watermark as watermark_mod
 from .template import Template
 from .workspace import Workspace
 
@@ -373,12 +374,16 @@ class RecordedClient:
     is told so when they are uploaded (uploadListingImage's is_watermarked).
     `alts` maps a picture (image_key) to the alt text it goes up with when the caller
     gives none: the shop's info images keep theirs this way.
+    `info`: the shop's info images (image_key); the entry's "info_image_ids" records the
+    Etsy image id each one got, so the listing page knows them apart from the product's
+    own pictures even when a file name is the same.
     """
 
-    def __init__(self, client, path, state, entry, stamped=None, alts=None):
+    def __init__(self, client, path, state, entry, stamped=None, alts=None, info=None):
         self.client, self.path, self.state, self.entry = client, path, state, entry
         self.stamped = {image_key(p) for p in stamped or ()}
         self.base_alts: dict[str, str] = dict(alts or {})
+        self.info = {image_key(p) for p in info or ()}
 
     def create_draft_listing(self, fields):
         result = self.client.create_draft_listing(fields)
@@ -421,6 +426,8 @@ class RecordedClient:
         image_id = result.get("listing_image_id") if isinstance(result, dict) else None
         if image_id:
             self.entry.setdefault("images", {})[str(image_id)] = Path(image).name
+            if self.info and image_key(image) in self.info:
+                self.entry.setdefault("info_image_ids", []).append(str(image_id))
         self._progress_saved()
         return result
 
@@ -432,6 +439,39 @@ class RecordedClient:
 
 
 _RecordedClient = RecordedClient
+
+
+class BatchImageClient:
+    """`stallkit listings push` of a drop batch's review.csv (`drop run`'s next step):
+    Etsy is told which pictures carry the watermark (the batch's `watermarked` folder)
+    and the info images go up with their alt texts (the batch's info-alts.json), as
+    `drop auto` and the app's runs do. Every other call goes to `client` unchanged."""
+
+    def __init__(self, client, batch_dir: Path) -> None:
+        self.client = client
+        stamped_dir, self.alts = pipeline.batch_upload_notes(batch_dir)
+        self.stamped_dir = image_key(stamped_dir)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.client, name)
+
+    def upload_listing_image(self, listing_id, image, *, rank, alt_text="",
+                             is_watermarked=False):
+        key = image_key(image)
+        alt_text = alt_text or self.alts.get(key, "")
+        extra: dict[str, Any] = {"alt_text": alt_text} if alt_text else {}
+        if is_watermarked or str(Path(key).parent) == self.stamped_dir:
+            extra["is_watermarked"] = True
+        return self.client.upload_listing_image(listing_id, image, rank=rank, **extra)
+
+
+def for_batch(client, batch_dir: Path):
+    """`client` wrapped in BatchImageClient when `batch_dir` is a drop batch with stamped
+    copies or info alt texts; else `client` itself."""
+    if (batch_dir / pipeline.INFO_ALTS_FILE).is_file() or (
+            batch_dir / watermark_mod.STAMPED_DIR).is_dir():
+        return BatchImageClient(client, batch_dir)
+    return client
 
 
 def run(workspace: Workspace, template: Template, *, client: EtsyClient | None = None,
@@ -446,14 +486,15 @@ def run(workspace: Workspace, template: Template, *, client: EtsyClient | None =
     a folder's `dosyalar` / `files` subfolder). A product without a download it can send
     is skipped by the pipeline, which stops the batch before anything is uploaded.
     `mockups` are the templates to composite onto, first (the main image) to last;
-    by default the ones chosen on the Mockuplar page, in that order
-    (`catalog.enabled_mockups`), exactly as the app's own runs use them.
+    by default the ones chosen on the Mockuplar page, in that order, less those showing
+    a physical product for a download-only template (`catalog.run_mockups`), exactly
+    as the app's own runs use them.
     `watermark`: stamp the workspace's watermark on the photos when it is on and takes
     this template (pipeline.run); Etsy is told which pictures carry it.
     """
     workspace.require()
     if mockups is None:
-        mockups = catalog.enabled_mockups(workspace)
+        mockups = catalog.run_mockups(workspace, template.listing_type)
     if client is None and not dry_run:
         raise ValidationError("Connect your Etsy shop before uploading drafts.")
     listing_type = template.fields.get("type") or "physical"
@@ -531,7 +572,7 @@ def run(workspace: Workspace, template: Template, *, client: EtsyClient | None =
             # Persist intent BEFORE the request, including ambiguous network failures.
             save_history(path, state)
             recorder = RecordedClient(client, path, state, entry, stamped=product.stamped,
-                                      alts=info_alts)
+                                      alts=info_alts, info=info_keys)
             result = listings.push(
                 recorder, [row], base_dir=prepared.csv_path.parent, inventory=inventory
             ).results[0]

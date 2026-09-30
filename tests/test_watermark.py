@@ -540,9 +540,11 @@ def test_drop_run_stamps_copies_and_leaves_the_downloads_alone(tmp_path, monkeyp
     assert rows[folder.name].files == [folder / "dosyalar" / "pages.pdf"]
     # review.csv points at the stamped copies; `listings push` sends those.
     text = report.csv_path.read_text(encoding="utf-8-sig")
-    assert "/watermarked/" in text and "pages.pdf" in text
+    assert ",watermarked/" in text and "pages.pdf" in text
     stamped = next(p for p in rows[design.name].images if "--flat" in p.name)
-    original = stamped.parent.parent.parent / stamped.name
+    # One folder of stamped copies for the batch, beside the composites.
+    assert stamped.parent == report.out_dir / wm.STAMPED_DIR
+    original = stamped.parent.parent / stamped.name
     assert original.is_file() and original.read_bytes() != stamped.read_bytes()
 
 

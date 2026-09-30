@@ -1463,7 +1463,11 @@ class DesignsPage {
 
   // ------------------------------------------------------------------ starting a run
 
-  async openStart(given, { refreshSections = false } = {}) {
+  /**
+   * given: the pending view (read afresh when null). opaque: the seller's earlier choice
+   * for loose designs on a solid background, kept when the card opens again.
+   */
+  async openStart(given, { refreshSections = false, opaque: chosen = null } = {}) {
     const { t } = this;
     if (this.uploading) {
       this.ctx.toast({ tone: "info", title: t("ready.wait_upload") });
@@ -1558,8 +1562,16 @@ class DesignsPage {
         const types = [...new Set(left.map((x) => typeName(x.type)))].join(", ");
         notes.push(infoNote({ tone: "warning", icon: "image", text: t("ready.digital_physical", { n: left.length, types }) }));
       }
-      const names = mk.names || [];
-      notes.push(h("p", { class: "dz-modal-hint dz-ready-names" }, names.length ? t("ready.digital_mockups", { names: names.join(", ") }) : t("ready.digital_flat_only")));
+      // Named the way Mockuplar names them ("Poster · Meşe"); a mockup of type "other" by
+      // its file name without the extension.
+      const colorName = (c) => (c && t.has(`color.${c}`) ? t(`color.${c}`) : c || "");
+      const labelOf = (m) => {
+        const base = m.type === "other" ? String(m.name || "").replace(/\.[^.]+$/, "") : typeName(m.type);
+        const color = colorName(m.color);
+        return color ? `${base} · ${color}` : base;
+      };
+      const labels = mk.used_items ? mk.used_items.map(labelOf) : mk.names || [];
+      notes.push(h("p", { class: "dz-modal-hint dz-ready-names" }, labels.length ? t("ready.digital_mockups", { names: labels.join(", ") }) : t("ready.digital_flat_only")));
     } else {
       // One template sets every draft's product: a main image of another product (a mug
       // template, a T-shirt first on Mockuplar) makes every draft contradict itself.
@@ -1575,7 +1587,7 @@ class DesignsPage {
     const op = (!digital && p.opaque) || {};
     const flat = op.flat || 0;
     const photos = op.photo || 0;
-    let opaque = flat ? "place" : "as_is";
+    let opaque = chosen === "place" || chosen === "as_is" ? chosen : flat ? "place" : "as_is";
     if (flat || photos) {
       const said = h("div", { class: "dz-ready-opaque-note" });
       const say = () =>
@@ -1853,9 +1865,10 @@ class DesignsPage {
       await this.showJob(job.id, job);
     } catch (err) {
       if (err && err.code === "section_gone") {
-        // Deleted on Etsy since the card opened: the card again, with the list read afresh.
+        // Deleted on Etsy since the card opened: the card again, with the list read afresh
+        // and the seller's other choices kept.
         this.ctx.toast({ tone: "warning", title: this.errorText(err) });
-        this.openStart(null, { refreshSections: true });
+        this.openStart(null, { refreshSections: true, opaque });
         return;
       }
       if (err && err.code === "setup_incomplete" && this.pending) {

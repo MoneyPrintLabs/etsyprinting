@@ -400,7 +400,8 @@ def test_list_follows_the_saved_order_and_numbers_the_images(web, ws):
         ("b-tshirt-black.png", 2, 2, True, False),
     ]
     assert body["usage"] == {"used": ["c-mug.png", "b-tshirt-black.png"], "over_limit": [],
-                             "enabled": 2, "total": 3, "max": catalog.MAX_ENABLED, "info": 0}
+                             "left_out": [], "enabled": 2, "total": 3,
+                             "max": catalog.MAX_ENABLED, "info": 0}
 
 
 def test_thirty_seven_colour_mockups_show_exactly_which_are_used(web, ws):

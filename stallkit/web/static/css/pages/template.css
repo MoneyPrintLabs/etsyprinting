@@ -840,11 +840,12 @@
   color: #fff;
   background: rgba(255, 255, 255, 0.2);
 }
-.tpl-info-btn.is-remove:hover:not(:disabled) {
+.tpl-info-btn.is-remove:hover:not(:disabled):not([aria-disabled="true"]) {
   color: #fff;
   background: var(--danger);
 }
-.tpl-info-btn.btn:disabled {
+.tpl-info-btn.btn:disabled,
+.tpl-info-btn.btn[aria-disabled="true"] {
   opacity: 0.35;
 }
 .tpl-info-busy {
@@ -937,6 +938,9 @@
 .tpl-photo:disabled:not(.is-busy) {
   opacity: 0.4;
   cursor: not-allowed;
+}
+.tpl-photo.is-busy {
+  cursor: progress;
 }
 .tpl-photo:focus-visible {
   outline: 2px solid var(--accent-2);

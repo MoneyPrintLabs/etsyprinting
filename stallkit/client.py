@@ -514,6 +514,10 @@ class EtsyClient:
         """
         payload = self.get(f"/listings/{listing_id}/images", authed=self.token is not None)
         images = (payload or {}).get("results") or []
+        for image in images:
+            if isinstance(image, dict):
+                # The seller wrote it; Etsy escapes it like a title ("Size &amp; care").
+                _unescape_fields(image, ("alt_text",))
         return sorted(images, key=lambda image: image.get("rank") or 0)
 
     def download_image(self, url: str, *, max_bytes: int | None = None) -> bytes:
@@ -523,7 +527,8 @@ class EtsyClient:
         sent, and no other host is fetched (is_etsy_image_url). A GET, so it is retried
         like one; a file over `max_bytes` (Etsy's own 20 MB image limit) is refused while
         it streams. Raises ValidationError for a refused URL or size, EtsyApiError for an
-        HTTP error (status 0: the network).
+        HTTP error (status 0: the network, or any answer that is not a 2xx: a redirect is
+        not followed, and its body is never taken for the picture).
         """
         if not is_etsy_image_url(url):
             raise ValidationError(f"Not an Etsy image address: {str(url)[:120]}")
@@ -535,7 +540,7 @@ class EtsyClient:
             attempt += 1
             try:
                 with self._http.stream("GET", url, headers=headers) as resp:
-                    if resp.status_code >= 400:
+                    if not resp.is_success:
                         retryable = resp.status_code == 429 or resp.status_code >= 500
                         if not retryable or attempt >= max_attempts:
                             raise EtsyApiError(

@@ -675,17 +675,22 @@ def _picture_facts(file_name: str, design: str,
 
 def _image_view(image: dict[str, Any], name: str = "", design: str = "",
                 mockups: dict[str, tuple[str, str]] | None = None,
-                info: set[str] | frozenset[str] = frozenset()) -> dict[str, Any]:
+                info: set[str] | frozenset[str] = frozenset(),
+                info_ids: set[str] | None = None) -> dict[str, Any]:
     """One picture of a listing. Its product and colour (the hero's "Kupa · Beyaz") come
     from the file stallkit sent for it (upload-history.json), else from its alt text;
     "" when nothing says (the page then names the listing's product on the main image
-    only). flat: stallkit's plain design, which has none; `info`: the names of the shop's
-    info images on the draft, which have none either."""
+    only). flat: stallkit's plain design, which has none; the shop's info images on the
+    draft have none either: `info_ids` their Etsy image ids (history since 0.3.2), else
+    `info` their file names (an older entry)."""
     from ...drop import catalog
 
     alt = str(image.get("alt_text") or "")
     flat = False
-    is_info = bool(name) and name in info
+    if info_ids is not None:
+        is_info = str(image.get("listing_image_id")) in info_ids
+    else:
+        is_info = bool(name) and name in info
     if is_info:
         kind, colour = "", ""
     elif name:
@@ -723,6 +728,11 @@ def _detail(ctx: AppContext, client: Any, listing: dict[str, Any],
     mockups = _mockup_facts(ctx) if names else {}
     # The shop's info images on this draft (drop.infoimages): no product, no colour.
     info = {n for n in entry.get("info_images") or [] if isinstance(n, str)}
+    # By Etsy's image id when the history has it: a product photo called like an info
+    # image (size.jpg) is not one.
+    raw_ids = entry.get("info_image_ids")
+    info_ids = ({str(i) for i in raw_ids if isinstance(i, (str, int))}
+                if isinstance(raw_ids, list) else None)
     audit = seo.audit_listing(listing)
     try:
         path = paths.get(int(listing.get("taxonomy_id") or 0), "")
@@ -750,7 +760,8 @@ def _detail(ctx: AppContext, client: Any, listing: dict[str, Any],
             "type_name": row["type_name"],
         },
         "images": [_image_view(image, str(names.get(str(image.get("listing_image_id")), "")),
-                               row["source"] or "", mockups, info) for image in shown],
+                               row["source"] or "", mockups, info, info_ids)
+                   for image in shown],
         "audit": {
             "score": audit.score,
             "grade": audit.grade,

@@ -36,7 +36,7 @@ and the history records `files_uploaded` next to `images_uploaded`.
 The workspace's watermark (drop.watermark), when it is on and its scope takes this
 template, is stamped on a copy of every picture a draft shows buyers: the mockups, the
 flat render or preview, a folder's own photos, a photo uploaded as it is. The copies go
-to the product's `watermarked` folder in the batch; the seller's files and the download
+to the batch's `watermarked` folder (one name each); the seller's files and the download
 files are never touched, and Etsy is told each stamped picture is watermarked. A picture
 the mark cannot be put on fails its product (watermark_failed): it never goes up bare.
 
@@ -429,8 +429,8 @@ class _Recorder(automation.RecordedClient):
     """automation's history-writing client, plus what the stream needs to know."""
 
     def __init__(self, client, path, state, entry, on_image, on_file=None,
-                 alts=None, stamped=None) -> None:
-        super().__init__(client, path, state, entry, stamped=stamped)
+                 alts=None, stamped=None, info=None) -> None:
+        super().__init__(client, path, state, entry, stamped=stamped, info=info)
         self.on_image = on_image
         self.on_file = on_file
         self.alts: dict[str, str] = dict(alts or {})
@@ -454,7 +454,9 @@ class _Recorder(automation.RecordedClient):
             raise
 
     def upload_listing_image(self, listing_id, image, *, rank):
-        alt = self.alts.get(_image_key(image)) or self.alts.get(Path(image).name, "")
+        # By the picture's own path only: an info image and a product photo may share a
+        # file name (size.jpg), and each goes up with its own alt text.
+        alt = self.alts.get(_image_key(image), "")
         try:
             result = super().upload_listing_image(listing_id, image, rank=rank, alt_text=alt)
         except BaseException as exc:
@@ -510,6 +512,9 @@ class _Run:
         self._lock = threading.RLock()
         self._halt_flag = threading.Event()
         self._taken: set[str] = set()
+        # The stamped copies' names in the batch's one `watermarked` folder (every
+        # product's, so two designs called sunset.jpg and sunset.jpeg never share one).
+        self._stamped_names: set[str] = set()
         self._concept_locks: dict[str, threading.Lock] = {}
         self._markets: dict[str, tuple[MarketReport | None, Problem | None]] = {}
         self._research_down: Problem | None = None
@@ -931,8 +936,10 @@ class _Run:
         # Etsy takes JPG, PNG and GIF only; anything else is converted, and said so. A
         # file over Etsy's 20 MB limit is made smaller, and said so too.
         convert_dir = self.out_dir / (item.source.name if item.photos else item.source.stem)
-        stamped_dir = convert_dir / watermark_mod.STAMPED_DIR
-        stamped_names: set[str] = set()
+        # One folder for the batch's stamped copies, each name taken once: a design's
+        # name is in the path once (Windows' 260-character limit), and two products never
+        # write the same file.
+        stamped_dir = self.out_dir / watermark_mod.STAMPED_DIR
         uploadable: list[Path] = []
         for image in images:
             try:
@@ -953,7 +960,7 @@ class _Run:
                 # 2-PRODUCTS, a composite) stays as it is. Never up without the mark.
                 self._check_halt()
                 try:
-                    stamped = self.mark.stamp(converted, stamped_dir, stamped_names)
+                    stamped = self.mark.stamp(converted, stamped_dir, self._stamped_names)
                 except Exception as exc:  # noqa: BLE001 — this product only
                     raise _ProductFailed(Problem(
                         "watermark_failed",
@@ -979,7 +986,6 @@ class _Run:
                 item.flat = fitted
             if alts.get(image):
                 item.alts[_image_key(fitted)] = alts[image]
-                item.alts[fitted.name] = alts[image]
             if self.mark is not None:
                 item.stamped.add(_image_key(fitted))
             uploadable.append(fitted)
@@ -1257,9 +1263,9 @@ class _Run:
         entry = {"status": "pending", "listing_id": None, "images_uploaded": 0,
                  "files_uploaded": 0, "review_csv": str(self.csv_path), **counts}
         if item.info:
-            # Which of the pictures are the shop's info images, by the file names sent
-            # (entry["images"] has the same names): the İlanlar detail knows them apart
-            # from the mockups by this.
+            # Which of the pictures are the shop's info images: their names here, and
+            # (the recorder, as each goes up) their Etsy image ids in "info_image_ids",
+            # by which the İlanlar detail knows them apart from the product's own.
             entry["info_images"] = [p.name for p in item.info]
         self.history[item.name] = entry
         # Persist intent BEFORE the request, including ambiguous network failures. A
@@ -1277,7 +1283,7 @@ class _Run:
                        files_uploaded=rank, **counts)
 
         recorder = _Recorder(self.client, self.history_file, self.state, entry, on_image,
-                             on_file, alts=item.alts, stamped=item.stamped)
+                             on_file, alts=item.alts, stamped=item.stamped, info=item.info)
         try:
             result = listings.push(recorder, [item.row], base_dir=self.out_dir,
                                    inventory=self.inventory).results[0]

@@ -51,9 +51,12 @@ from .workspace import Workspace
 
 WATERMARK_FILE = "watermark.png"
 SETTINGS_FILE = "watermark.json"
-# Stamped copies land in this folder inside the product's own batch folder; the file
-# keeps its name, which says which mockup it was made on (web/api/listings reads it).
+# Stamped copies land in this one folder of the batch (every product's), so a design's
+# name is in the path once; the file keeps its name, which says which mockup it was made
+# on (web/api/listings reads it), and a clash gets "-2" (the run's one `taken` set).
 STAMPED_DIR = "watermarked"
+# Guards a `taken` set shared by a run's worker threads (stamp's name check-and-add).
+_TAKEN_LOCK = threading.Lock()
 
 CENTER, CORNER, TILED = "center", "corner", "tiled"
 POSITIONS = (CENTER, CORNER, TILED)
@@ -487,8 +490,9 @@ class Watermark:
         """A stamped copy of the photo `source` in `out_dir`; `source` is never changed.
 
         Same name, except a picture that is not a JPEG becomes a PNG (a GIF included);
-        `taken` (casefolded names already written in `out_dir` by this run) gets a
-        "-2" for a clash. Upright, sRGB, no EXIF, same pixel size as displayed.
+        `taken` (casefolded names already written in `out_dir` by this run, which its
+        threads may share) gets a "-2" for a clash. Upright, sRGB, no EXIF, same pixel
+        size as displayed.
         """
         try:
             with Image.open(source) as raw:
@@ -504,11 +508,12 @@ class Watermark:
         suffix = ".jpg" if jpeg else ".png"
         name = f"{source.stem}{suffix}"
         if taken is not None:
-            number = 1
-            while name.casefold() in taken:
-                number += 1
-                name = f"{source.stem}-{number}{suffix}"
-            taken.add(name.casefold())
+            with _TAKEN_LOCK:
+                number = 1
+                while name.casefold() in taken:
+                    number += 1
+                    name = f"{source.stem}-{number}{suffix}"
+                taken.add(name.casefold())
         out_dir.mkdir(parents=True, exist_ok=True)
         out = out_dir / name
         if jpeg:

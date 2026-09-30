@@ -406,9 +406,12 @@ stallkit drop watermark                                   # show what is set
   `all` stamps every listing's photos. The size is a share of the photo's width (30 % for
   one mark, 15 % for each repeated one), opacity 10-90 % (35 % by default).
 - It goes on copies of every listing photo: the mockups, the flat render or preview, a
-  folder product's own photos. The copies land in the product's `watermarked` folder in
+  folder product's own photos. The copies land in the batch's `watermarked` folder in
   `3-DRAFTS`; your files in `2-PRODUCTS` stay as they are, and **the files buyers
-  download are never stamped**. Etsy is told which pictures carry a watermark.
+  download are never stamped**. Etsy is told which pictures carry a watermark: by
+  `drop auto`, the app, and `stallkit listings push` of a `drop run` batch's
+  `review.csv` (which also sends the info images' alt texts, kept in the batch's
+  `info-alts.json`).
 - A photo the mark cannot be put on stops its product; it never goes up without it.
 
 ### Compositing loose designs

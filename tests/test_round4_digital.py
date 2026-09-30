@@ -155,11 +155,11 @@ def test_drop_run_composites_an_opaque_printable_and_attaches_the_original(tmp_p
 
 
 def test_the_pending_estimate_counts_mockups_for_a_digital_jpg(web):
-    from test_web_designs import _jpg, _put, _setup_shop
+    from test_web_designs import _jpg, _photo_jpg, _put, _setup_shop
 
     _fake, ws = _setup_shop(web)
     (ws.mockups / "poster-oak-frame.jpg").write_bytes(_jpg())
-    _put(web, "boho-sunset-wall-art.jpg", _jpg())
+    _put(web, "boho-sunset-wall-art.jpg", _photo_jpg())
     physical = web.client.get("/api/designs/pending").json()
     _template(ws)
     digital = web.client.get("/api/designs/pending").json()

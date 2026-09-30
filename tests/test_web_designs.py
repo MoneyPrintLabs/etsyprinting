@@ -39,6 +39,14 @@ def _jpg(colour=(240, 240, 240)) -> bytes:
     return buffer.getvalue()
 
 
+def _photo_jpg() -> bytes:
+    """A finished product photo: no border is one colour (never a "flat" ground, which
+    the start card's "place" choice would put onto the mockups)."""
+    buffer = io.BytesIO()
+    Image.effect_noise((40, 40), 80).convert("RGB").save(buffer, "JPEG", quality=95)
+    return buffer.getvalue()
+
+
 def _put(web, path, data, **query):
     return web.client.put("/api/designs/files", params={"path": path, **query}, content=data)
 
@@ -116,7 +124,8 @@ def test_without_keys_the_pending_view_says_what_is_missing(web):
     assert data["blockers"] == ["keys", "template", "empty"]
     assert data["mockups"] == {"enabled": 0, "used": 0, "switched_on": 0, "over_limit": 0,
                                "max": 19, "main": None, "main_type": None, "total": 0,
-                               "types": {}, "primary": None, "names": [], "left_out": []}
+                               "types": {}, "primary": None, "names": [], "used_items": [],
+                               "left_out": []}
     assert data["shop"]["connected"] is False
 
     start = web.client.post("/api/designs/start", json={})
@@ -708,7 +717,7 @@ def test_the_estimate_counts_only_what_will_run_with_its_real_images(web):
     _setup_shop(web)  # 2 mockups: a design is 3 images
     ws = web.ctx.workspace()
     _put(web, "retro-mountain-sunset.png", _png())
-    _put(web, "ocean-waves-photo.jpg", _jpg())
+    _put(web, "ocean-waves-photo.jpg", _photo_jpg())
     _put(web, "IMG_2043.png", _png((10, 200, 30)))  # junk: never runs
     for name in ("01.jpg", "02.jpg", "03.jpg", "04.jpg"):
         _put(web, f"desert cactus print/{name}", _jpg((int(name[1]), 0, 0)), batch="b1")

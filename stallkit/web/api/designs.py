@@ -91,9 +91,6 @@ _STATE_BLOCKERS = {
 _ETSY_BLOCKERS = set(_STATE_BLOCKERS.values())
 # At most this often the whole job state is copied for GET /api/jobs/{id}.
 STATE_INTERVAL = 0.5
-# Mockup types that show a physical product: never the photos of a download-only draft.
-PHYSICAL_TYPES = frozenset({"tshirt", "sweatshirt", "hoodie", "mug", "phone_case", "tote",
-                            "pillow", "sticker"})
 # How long one pending view may spend reading new designs' backgrounds (the rest are
 # read by the next view; every answer is kept per file version).
 GROUND_BUDGET = 2.0
@@ -645,19 +642,14 @@ def used_mockups(ws: Any, listing_type: str | None,
                  infos: dict[str, Any] | None = None) -> tuple[list[str], list[str]]:
     """(the mockups a run uses, the switched-on ones a download-only template leaves out).
 
-    catalog.usage's rule (switched on, the seller's order, at most 19 less one per info
-    image; the first is the main image), and for a download-only template none that shows
-    a physical product.
+    catalog.usage's rule with the template's type: switched on, the seller's order, for a
+    download-only template none that shows a physical product, then at most 19 less one
+    per info image; the first is the main image.
     """
     from ...drop import catalog
 
-    if infos is None:
-        infos = catalog.load(ws)
-    used = list(catalog.usage(ws, infos)["used"])
-    if listing_type != "download":
-        return used, []
-    physical = [n for n in used if n in infos and infos[n].type in PHYSICAL_TYPES]
-    return [n for n in used if n not in physical], physical
+    use = catalog.usage(ws, infos, listing_type=listing_type)
+    return list(use["used"]), list(use["left_out"])
 
 
 def _pending_info(ctx: AppContext) -> dict[str, Any]:
@@ -739,11 +731,12 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
     # The shop's info images: every draft ends with them, after its own pictures.
     info_images = infoimages.load(ws)
     # The same rule as the Mockuplar page and the run itself (catalog.usage): switched-on
-    # mockups in the seller's order, at most 19 less one per info image; the first is the
-    # main image. A download-only template leaves out those showing a physical product.
-    use = catalog.usage(ws, infos, info=len(info_images))
-    enabled, left_out = used_mockups(ws, template.get("listing_type") if template else None,
-                                     infos)
+    # mockups in the seller's order, less (a download-only template) those showing a
+    # physical product, then at most 19 less one per info image; the first is the main
+    # image.
+    use = catalog.usage(ws, infos, info=len(info_images),
+                        listing_type=template.get("listing_type") if template else None)
+    enabled, left_out = list(use["used"]), list(use["left_out"])
     types = collections.Counter(infos[name].type for name in enabled if name in infos)
 
     blockers: list[str] = []
@@ -799,9 +792,10 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
         warnings.append("description_flagged")
     info_count = len(info_images)
     images_each = len(enabled) + 1 + info_count
-    # Only what will run, with each product's own image count: a folder's photos, one
-    # upload for a JPEG (a finished photo, never composited), mockups + the flat design
-    # for anything that may be transparent artwork (an upper bound; opaque ones take 1).
+    # Only what will run, with each product's own image count, an upper bound: a
+    # folder's photos; one upload for a JPEG finished photo (never composited); mockups +
+    # the flat design for anything that may be transparent artwork, and for a JPEG on a
+    # solid background too (the start card's "place" choice puts it onto every mockup).
     # A digital template composites every loose design, a JPEG too: it is the download.
     # Each ends with the info images that fit (drop.infoimages.fitting).
     run_items = [item for item in items if _runnable(item)]
@@ -809,7 +803,8 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
     def own_images(item: dict[str, Any]) -> int:
         if item["kind"] == "folder":
             return item["files"]
-        if not digital and Path(item["name"]).suffix.lower() in (".jpg", ".jpeg"):
+        if (not digital and Path(item["name"]).suffix.lower() in (".jpg", ".jpeg")
+                and item.get("ground") != "flat"):
             return 1
         return len(enabled) + 1
 
@@ -859,6 +854,9 @@ def _pending_info(ctx: AppContext) -> dict[str, Any]:
             # The ones this run uses, in order, and (a download-only template) the
             # switched-on ones it leaves out because they show a physical product.
             "names": list(enabled),
+            # The same with each one's product and colour, for the start card's labels.
+            "used_items": [{"name": n, "type": infos[n].type, "color": infos[n].color}
+                           for n in enabled if n in infos],
             "left_out": [{"name": n, "type": infos[n].type} for n in left_out if n in infos],
         },
         # Every draft ends with these (Şablon İlan); `cut`: product folders that get only
@@ -1362,7 +1360,7 @@ def start(req: Request) -> dict[str, Any]:
 
 def _start(ctx: AppContext, dry_run: bool, opaque: str = "as_is",
            section: str | int | None = None) -> dict[str, Any]:
-    from ...drop import automation, catalog, stream
+    from ...drop import automation, stream
     from ...drop.template import Template
 
     if _active_job(ctx) is not None:
@@ -1383,9 +1381,10 @@ def _start(ctx: AppContext, dry_run: bool, opaque: str = "as_is",
             "etsy_shop_id": _etsy_shop_id(ctx)}})
     mockups_info = dict(info["mockups"])
     # The mockups the start card named (a download-only template's without the physical
-    # ones), in catalog.enabled_mockups' order.
-    named = {name.casefold() for name in mockups_info.get("names") or []}
-    mockup_paths = [path for path in catalog.enabled_mockups(ws) if path.name.casefold() in named]
+    # ones), in its order: the pending view already applied catalog.usage's rule.
+    files = {path.name.casefold(): path for path in ws.mockup_files()}
+    mockup_paths = [files[name.casefold()] for name in mockups_info.get("names") or []
+                    if name.casefold() in files]
 
     def work(job: Job) -> dict[str, Any]:
         tracker = _Tracker(job, dry_run=dry_run, template=info["template"],

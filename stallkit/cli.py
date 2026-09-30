@@ -740,7 +740,9 @@ def listings_push(
                     f"{inventory_from} onto each new draft.[/]"
                 )
                 push_args["inventory"] = inventory
-            report = listings_mod.push(client, rows, **push_args)
+            # A drop batch's review.csv: its watermarked copies and info alt texts.
+            batch = automation.for_batch(client, push_args["base_dir"])
+            report = listings_mod.push(batch, rows, **push_args)
 
     console.print()
     if dry_run:
@@ -1374,21 +1376,30 @@ def _drop_info_images(ws: workspace_mod.Workspace) -> list[infoimages_mod.InfoIm
     return images
 
 
-def _drop_mockups(ws: workspace_mod.Workspace, count: Optional[int]) -> list[Path]:
-    """The mockups a drop run composites onto: the app's selection and order (Mockuplar).
+def _drop_mockups(ws: workspace_mod.Workspace, count: Optional[int],
+                  listing_type: Optional[str] = None) -> list[Path]:
+    """The mockups a drop run composites onto: the app's selection and order (Mockuplar),
+    less those showing a physical product for a download-only template, as the app's
+    run does (catalog.run_mockups).
 
     `--mockups N` keeps the first N of them. Says once which ones are used.
     """
-    use = catalog_mod.usage(ws)
-    chosen = catalog_mod.enabled_mockups(ws)
+    infos = catalog_mod.load(ws)
+    use = catalog_mod.usage(ws, infos, listing_type=listing_type)
+    chosen = catalog_mod.run_mockups(ws, listing_type, infos)
     if count is not None:
         chosen = chosen[: max(0, count)]
     available = len(ws.mockup_files())
     if available:
-        off = use["total"] - use["enabled"]
+        off = use["total"] - use["enabled"] - len(use["left_out"])
         notes = [f"main image {chosen[0].name}"] if chosen else []
         if off:
             notes.append(f"{off} switched off")
+        if use["left_out"]:
+            notes.append(
+                f"{len(use['left_out'])} left out because they show a physical product and "
+                f"the template is a download ({', '.join(use['left_out'])})"
+            )
         if use["over_limit"]:
             notes.append(f"{len(use['over_limit'])} over the {use['max']}-mockup limit")
         if count is not None and len(chosen) < len(use["used"]):
@@ -1398,7 +1409,10 @@ def _drop_mockups(ws: workspace_mod.Workspace, count: Optional[int]) -> list[Pat
             + (f" ({'; '.join(notes)})" if notes else "")
             + ". Choose and order them in the app's Mockups page.[/]"
         )
-        if not chosen:
+        if not chosen and use["left_out"]:
+            _warn("No mockup a download can use is switched on (a poster, canvas or other): "
+                  "the designs get only the flat preview.")
+        elif not chosen:
             _warn("No mockup is switched on: transparent designs get only the flat render.")
     return chosen
 
@@ -1457,7 +1471,7 @@ def drop_run(
             client.close()
         raise
 
-    chosen = _drop_mockups(ws, mockups)
+    chosen = _drop_mockups(ws, mockups, tmpl.listing_type)
     _drop_watermark(ws, tmpl, not no_watermark)
     info = _drop_info_images(ws)
     images_each = len(chosen) + (0 if no_flat else 1) + len(info)
@@ -1754,7 +1768,7 @@ def drop_auto(
     """Prepare new products and upload Etsy drafts. Previously attempted products are skipped."""
     ws = _workspace(path).require()
     tmpl = template_mod.Template.from_dict(ws.read_template())
-    chosen = _drop_mockups(ws, mockups)
+    chosen = _drop_mockups(ws, mockups, tmpl.listing_type)
     _drop_watermark(ws, tmpl, not no_watermark)
     _drop_info_images(ws)
     if dry_run:

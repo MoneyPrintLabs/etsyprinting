@@ -204,6 +204,8 @@ export default {
       class: "tpl-hint-line tpl-info-link",
       onClick: () => infoCard.scrollIntoView({ behavior: "smooth", block: "start" }),
     });
+    // The line that opens the description template's dialog (descLink fills it).
+    const descLinkEl = h("button", { type: "button", class: "tpl-desc-link", onClick: () => openDescription() });
 
     // The cards fill the visible height under the top bar (and under the app's warning
     // banner when one shows), so the list scrolls inside its card like in the video.
@@ -799,7 +801,11 @@ export default {
       if (current) hints.push(descLink(st.current.description));
       renderInfoLink();
       hints.push(infoLinkEl);
+      // The two links are the same nodes every time: one that had the focus (the
+      // description dialog just gave it back) keeps it through the re-mount.
+      const focused = hintEl.contains(document.activeElement) ? document.activeElement : null;
       mount(hintEl, hints);
+      if (focused && focused.isConnected && document.activeElement !== focused) focused.focus({ preventScroll: true });
       saveBtn.title = current && st.current.saved_at ? t("saved_ago", { when: relative(st.current.saved_at) }) : "";
       saveBtn.setDisabled(!p || !!st.setupStep);
       saveBtn.setLoading(st.saving);
@@ -826,6 +832,44 @@ export default {
     }
 
     function renderInfo() {
+      // Every photo and tile is rebuilt: the keyboard stays on the same one (or the next).
+      const focus = infoFocusKey();
+      paintInfo();
+      restoreInfoFocus(focus);
+    }
+
+    /** What has the keyboard in the info card, to find its new node after a re-render. */
+    function infoFocusKey() {
+      const a = document.activeElement;
+      if (!a || !infoCard.contains(a)) return null;
+      const photo = a.closest(".tpl-photo[data-id]");
+      if (photo) return { photo: photo.dataset.id };
+      if (a.classList.contains("tpl-info-add")) return { add: true };
+      const tile = a.closest(".tpl-info-tile[data-name]");
+      if (tile && a.classList.contains("is-remove")) {
+        const tiles = [...infoOrderEl.querySelectorAll(".tpl-info-tile[data-name]")];
+        return { remove: tile.dataset.name, index: tiles.indexOf(tile) };
+      }
+      return null;
+    }
+
+    function restoreInfoFocus(key) {
+      if (!key || infoCard.contains(document.activeElement)) return;
+      let target = null;
+      if (key.photo) {
+        target = [...infoPhotosEl.querySelectorAll(".tpl-photo[data-id]")].find((node) => node.dataset.id === key.photo) || null;
+      } else if (key.remove) {
+        // Its own × while it goes; once it is gone, the next picture's (or the last one's),
+        // else the add tile.
+        const tiles = [...infoOrderEl.querySelectorAll(".tpl-info-tile[data-name]")];
+        const tile = tiles.find((node) => node.dataset.name === key.remove) || tiles[Math.min(key.index, tiles.length - 1)];
+        target = tile ? tile.querySelector(".is-remove") : null;
+      }
+      if (!target) target = infoOrderEl.querySelector(".tpl-info-add");
+      if (target) target.focus({ preventScroll: true });
+    }
+
+    function paintInfo() {
       const s = info.state;
       const n = infoItems().length;
       mount(
@@ -895,7 +939,7 @@ export default {
           { class: "tpl-info-tools" },
           moveBtn(item.name, -1, i === 0 || removing),
           moveBtn(item.name, 1, i === n - 1 || removing),
-          iconButton({ icon: "x", title: t("info.remove"), size: "sm", variant: "ghost", class: "tpl-info-btn is-remove", disabled: removing, onClick: () => removeInfo(item.name) }),
+          removeBtn(item.name, removing),
         ),
         removing ? h("span", { class: "tpl-info-busy" }, spinner({ size: 18 })) : null,
       );
@@ -917,6 +961,14 @@ export default {
         clearInfoDrop();
       });
       return tile;
+    }
+
+    /** The × of a picture; while it goes it stays focusable (aria-disabled), so the
+     * keyboard is not thrown back to the top of the page. */
+    function removeBtn(name, removing) {
+      const b = iconButton({ icon: "x", title: t("info.remove"), size: "sm", variant: "ghost", class: "tpl-info-btn is-remove", onClick: () => removeInfo(name) });
+      if (removing) b.setAttribute("aria-disabled", "true");
+      return b;
     }
 
     function moveBtn(name, step, disabled) {
@@ -1036,15 +1088,22 @@ export default {
           const pos = name ? order.indexOf(name) + 1 : 0;
           const busy = info.busy.has(photo.listing_image_id) || (name && info.removing.has(name));
           const title = pos ? t("info.picked", { n: pos }) : full ? t("info.full", { max: info.state.max }) : t("info.pick");
+          // A busy photo keeps the focus (aria-disabled; the click does nothing meanwhile).
           return h(
             "button",
             {
               type: "button",
               class: cx("tpl-photo", pos && "is-picked", busy && "is-busy"),
+              dataset: { id: String(photo.listing_image_id) },
               "aria-pressed": pos ? "true" : "false",
+              "aria-disabled": busy ? "true" : null,
               title: photo.alt ? `${title} · ${t("info.alt", { alt: photo.alt })}` : title,
-              disabled: !!busy || (!pos && full) || !info.state,
-              onClick: () => (name ? removeInfo(name) : addInfoFromEtsy(photo.listing_image_id)),
+              disabled: !busy && ((!pos && full) || !info.state),
+              onClick: () => {
+                if (busy) return;
+                if (name) removeInfo(name);
+                else addInfoFromEtsy(photo.listing_image_id);
+              },
             },
             h("span", { class: "tpl-photo-img" }, photo.thumb || photo.url ? h("img", { src: photo.thumb || photo.url, alt: photo.alt || "", loading: "lazy", decoding: "async" }) : icon("image", { size: 20 })),
             h("span", { class: "tpl-photo-check", "aria-hidden": "true" }, pos ? h("span", { class: "num" }, String(pos)) : null),
@@ -1202,9 +1261,10 @@ export default {
       const unsaved = desc.draft !== null;
       const text = unsaved ? t("desc.unsaved") : flags ? t("desc.hint_flagged", { n: flags }) : t("desc.open");
       // The words wrap under a narrow column (a 1280 px window) rather than being cut.
-      return h(
-        "button",
-        { type: "button", class: cx("tpl-desc-link", (flags || unsaved) && "is-warning"), onClick: () => openDescription() },
+      // One button, updated in place: the dialog gives the focus back to it.
+      descLinkEl.className = cx("tpl-desc-link", (flags || unsaved) && "is-warning");
+      return mount(
+        descLinkEl,
         unsaved ? h("span", { class: "tpl-desc-dot", "aria-hidden": "true" }) : icon(flags ? "alert" : "edit", { size: 13 }),
         h(
           "span",
@@ -1449,7 +1509,8 @@ export default {
       }
 
       async function save() {
-        if (saving || !ta.value.trim()) return;
+        // The Kaydet button's own rule (paint), so Ctrl+S never "saves" an unchanged text.
+        if (saving || ta.value === saved || !ta.value.trim()) return;
         saving = true;
         saveBtn.setLoading(true);
         try {

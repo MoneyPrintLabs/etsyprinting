@@ -636,8 +636,9 @@ a.feed-link:hover {
   .feed-link {
     gap: 11px;
   }
+  /* "20 hours ago" / "23 saat önce" need about 77 px: never narrower than that. */
   .feed-time {
-    width: 72px;
+    width: 78px;
   }
 }
 @media (max-width: 1100px) {
