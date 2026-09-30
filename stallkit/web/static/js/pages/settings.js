@@ -488,6 +488,10 @@ export default {
         lines.push(h("p", { class: "st-muted-note" }, t("etsy.quota", { n: st.quota_remaining })));
       }
       const actions = [button({ label: t("etsy.go"), iconRight: "arrow-right", size: "sm", onClick: () => ctx.navigate("/kurulum/magaza") })];
+      if (info.keys) {
+        // Mağaza Bağlantısı opens straight on the key form (its card has no button for it).
+        actions.push(button({ label: t("etsy.keys_edit"), icon: "key", size: "sm", variant: "ghost", onClick: () => ctx.navigate("/kurulum/magaza?keys=1") }));
+      }
       if (info.connected) {
         actions.push(button({ label: t("etsy.disconnect"), icon: "logout", size: "sm", variant: "ghost", class: "st-danger-ghost", onClick: () => disconnect() }));
       }

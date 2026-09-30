@@ -8,8 +8,11 @@ spreadsheet can edit the file and get an identical result.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import re
+import shutil
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -33,11 +36,17 @@ from ..listings import (
     title_problems,  # noqa: F401 - re-exported: pipeline.title_problems
 )
 from ..seo import MarketReport, research
-from . import cache, catalog, generate, mockup, seeds
+from . import cache, catalog, generate, infoimages, mockup, seeds
+from . import watermark as watermark_mod
 from .template import Template
-from .workspace import FILES_DIRS, Workspace
+from .workspace import FILES_DIRS, INFO_DIR, Workspace
+
+log = logging.getLogger(__name__)
 
 REVIEW_FILE = "review.csv"
+# Beside review.csv: the info images' alt texts ({"info-images/<file>": alt}), so a later
+# `stallkit listings push` of the batch sends them as drop auto and the app do.
+INFO_ALTS_FILE = "info-alts.json"
 
 # Columns the review file carries beyond what `listings push` reads. push() ignores
 # extras, so the same file serves both the seller's eye and the writer.
@@ -79,6 +88,7 @@ class DropRow:
     warnings: list[str] = field(default_factory=list)
     skipped: bool = False
     files: list[Path] = field(default_factory=list)  # a digital product's downloads
+    stamped: list[Path] = field(default_factory=list)  # images carrying the watermark
 
     @property
     def ok(self) -> bool:
@@ -94,6 +104,8 @@ class DropReport:
     concepts: int = 0
     researched: int = 0
     cached: int = 0
+    # The shop's info images every row ends with (as sent: converted when they had to be).
+    info_images: list[infoimages.InfoImage] = field(default_factory=list)
 
     @property
     def ready(self) -> list[DropRow]:
@@ -423,6 +435,80 @@ def fit_for_etsy(image: Path, out_dir: Path, *, limit: int | None = None) -> Pat
     raise ValidationError(f"{image.name} could not be made smaller than Etsy's 20MB limit.")
 
 
+def ready_info_images(
+    images: Sequence[infoimages.InfoImage], out_dir: Path
+) -> tuple[list[infoimages.InfoImage], list[str]]:
+    """(the shop's info images as Etsy takes them, what was done to them).
+
+    Each is copied into `out_dir`/info-images first, once per run: the batch then keeps
+    what it sent (review.csv points at the copies), and a picture taken out or replaced
+    on Şablon İlan while the run is going changes nothing in it. The app stores them
+    ready (JPG, PNG or GIF, at most 20 MB); one put in info-images/ by hand may be
+    neither: its copy is converted the same way a ready photo is, and said so. Raises
+    ValidationError for one that cannot be read at all: every draft would carry it, so
+    the run stops before anything is sent.
+    """
+    ready: list[infoimages.InfoImage] = []
+    notes: list[str] = []
+    convert_dir = out_dir / INFO_DIR
+    for image in images:
+        try:
+            convert_dir.mkdir(parents=True, exist_ok=True)
+            copy = convert_dir / image.name
+            shutil.copyfile(image.path, copy)
+            converted = mockup.to_uploadable(copy, convert_dir)
+            fitted = fit_for_etsy(converted, convert_dir)
+            # A real decode, once per run: every draft carries it, so a file cut short
+            # must stop the run here, not fail every upload after its draft exists.
+            with Image.open(fitted) as opened:
+                opened.load()
+        except Exception as exc:  # noqa: BLE001 — named in the message, the run stops
+            raise ValidationError(
+                f"The info image {image.name} cannot be used ({exc}). Replace or remove it "
+                "(Template listing page, or the info-images folder)."
+            ) from exc
+        if fitted != copy:
+            notes.append(f"info image {image.name} was converted to {fitted.name} for Etsy")
+        ready.append(infoimages.InfoImage(
+            name=image.name, path=fitted, alt=image.alt, listing_id=image.listing_id,
+            listing_image_id=image.listing_image_id,
+        ))
+    alts = {_relative(i.path, out_dir): i.alt for i in ready if i.alt}
+    if alts:
+        try:
+            (out_dir / INFO_ALTS_FILE).write_text(
+                json.dumps(alts, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:  # only `listings push` reads it later; the run itself does not
+            log.warning("could not write %s", out_dir / INFO_ALTS_FILE)
+    return ready, notes
+
+
+def batch_upload_notes(batch_dir: Path) -> tuple[Path, dict[str, str]]:
+    """(the batch's folder of watermarked copies, the info images' alt texts by resolved
+    path): what `stallkit listings push` of a drop batch's review.csv tells Etsy."""
+    alts: dict[str, str] = {}
+    try:
+        raw = json.loads((batch_dir / INFO_ALTS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raw = {}
+    if isinstance(raw, dict):
+        for rel, alt in raw.items():
+            if isinstance(rel, str) and isinstance(alt, str) and alt.strip():
+                try:
+                    alts[str((batch_dir / rel).resolve())] = alt
+                except OSError:
+                    continue
+    return batch_dir / watermark_mod.STAMPED_DIR, alts
+
+
+def info_note(appended: int, total: int) -> str:
+    """The warning of a product that got only some of the shop's info images."""
+    return (
+        f"only {appended} of the {total} info images fit after this product's own photos "
+        f"(Etsy takes {MAX_LISTING_IMAGES} pictures per listing); the first ones were added"
+    )
+
+
 def _batch_name() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d-%H%M%S-%f")
 
@@ -482,12 +568,25 @@ def run(
     on_progress: Callable[[str], None] | None = None,
     exclude_products: set[str] | None = None,
     mockups: Sequence[Path] | None = None,
+    watermark: bool = True,
+    info_images: Sequence[infoimages.InfoImage] | None = None,
 ) -> DropReport:
     """Composite, research, write copy, and emit review.csv. Nothing is sent to Etsy.
 
     `mockups` are the templates to composite onto, first (the main image) to last —
-    normally `catalog.enabled_mockups(workspace)`, the Mockuplar page's selection and
-    order. Without it the first `mockups_per_product` files of 1-MOCKUPS are used.
+    normally `catalog.run_mockups(workspace, template.listing_type)`, the Mockuplar
+    page's selection and order. Without it the first `mockups_per_product` files of
+    1-MOCKUPS are used.
+
+    `watermark`: stamp the workspace's watermark (drop.watermark) on a copy of every
+    listing photo when it is on and takes this template; False never stamps. The copies
+    go to the batch's `watermarked` folder, one name each; originals and download files
+    are never changed. A product whose photo cannot take the mark is skipped, never sent
+    bare, and a mark that is on but cannot be read stops the run (ValidationError).
+
+    `info_images` end every row's images, after its own (default: the workspace's,
+    drop.infoimages); a product folder gets the ones that fit (`infoimages.fitting`).
+    They are never watermarked.
     """
     workspace.require()
     # download / both: every row also carries the files a buyer downloads.
@@ -507,6 +606,8 @@ def run(
 
     if not groups:
         return report
+    mark = (watermark_mod.for_run(workspace, template.fields.get("type") or "physical")
+            if watermark else None)
 
     available = workspace.mockup_files()
     if mockups is not None:
@@ -520,25 +621,34 @@ def run(
         unused = len(available) - len(chosen)
     mockups = chosen
 
-    # A composited row carries one image per mockup plus the flat render, and Etsy takes
-    # ten per listing. Counted against the mockups that actually exist rather than the
-    # number asked for, so `--mockups 50` on a workspace holding three is still a fine
-    # run. Refused here, before a single image is composited or a single research call is
-    # spent, because the alternative is a whole batch of review rows that `listings push`
-    # is then obliged to reject one by one.
-    planned = len(mockups) + (1 if include_flat else 0)
+    if info_images is None:
+        info_images = infoimages.load(workspace)
+    info = list(info_images)
+
+    # A composited row carries one image per mockup plus the flat render plus the shop's
+    # info images, and Etsy takes twenty per listing. Counted against the mockups that
+    # actually exist rather than the number asked for, so `--mockups 50` on a workspace
+    # holding three is still a fine run. Refused here, before a single image is
+    # composited or a single research call is spent, because the alternative is a whole
+    # batch of review rows that `listings push` is then obliged to reject one by one.
+    planned = len(mockups) + (1 if include_flat else 0) + len(info)
     if planned > MAX_LISTING_IMAGES:
-        allowed = MAX_LISTING_IMAGES - (1 if include_flat else 0)
+        allowed = infoimages.mockup_cap(len(info), include_flat=include_flat)
         flat_note = " plus the flat render" if include_flat else ""
+        info_note_text = f" plus {len(info)} info image(s)" if info else ""
         remedy = (
             f"Use --mockups {allowed} or fewer" + (", or --no-flat." if include_flat else ".")
             if unused or mockups_per_product < len(available)
             else f"Turn some mockups off on the Mockups page (at most {allowed})."
         )
         raise ValidationError(
-            f"{len(mockups)} mockup(s){flat_note} is {planned} images per listing, and "
-            f"Etsy allows {MAX_LISTING_IMAGES}. {remedy}"
+            f"{len(mockups)} mockup(s){flat_note}{info_note_text} is {planned} images per "
+            f"listing, and Etsy allows {MAX_LISTING_IMAGES}. {remedy}"
         )
+    info, info_notes = ready_info_images(info, report.out_dir)
+    report.info_images = info
+    for note in info_notes:
+        say(note)
 
     positions = mockup.load_positions(workspace.positions_path)
     # One calibration covers every mockup of the same size — that is the point of
@@ -581,6 +691,7 @@ def run(
     # Output names are handed out from one set per batch, so a collision between two
     # products is resolved rather than discovered later as a missing image.
     taken: set[str] = set()
+    stamped_names: set[str] = set()  # the batch's stamped copies (watermark_mod.STAMPED_DIR)
 
     # One lookup per distinct concept, not per file. Eighteen concepts across a
     # hundred products is eighteen searches.
@@ -641,6 +752,9 @@ def run(
             template_description=template.description,
             fallback_tags=template.tags,
             template_title=template.source_title,
+            # The seller's description template, when saved (drop.description).
+            description_template=template.description_template,
+            product_words=template.category_path,
         )
         row.title, row.tags = clean_title(copy.title), copy.tags
         row.description = copy.description
@@ -707,6 +821,10 @@ def run(
         convert_dir = report.out_dir / (
             row.source.name if row.source.is_dir() else row.source.stem
         )
+        # The batch's one folder of stamped copies, each name taken once (stamped_names).
+        stamped_dir = report.out_dir / watermark_mod.STAMPED_DIR
+        unstamped: list[Path] = []
+        unmarked: str | None = None
         uploadable: list[Path] = []
         for image in row.images:
             try:
@@ -719,8 +837,19 @@ def run(
                     f"{image.name} was converted to {converted.name}: Etsy accepts only "
                     "JPG, PNG and GIF listing images"
                 )
+            fit_dir = convert_dir
+            if mark is not None:
+                # A stamped copy; the picture itself stays as it is. A photo the mark
+                # cannot be put on stops this product: it never goes up without it.
+                try:
+                    stamped = mark.stamp(converted, stamped_dir, stamped_names)
+                except Exception as exc:  # noqa: BLE001
+                    unmarked = f"the watermark could not be put on {image.name}: {exc}"
+                    break
+                unstamped.append(converted)
+                converted, fit_dir = stamped, stamped_dir
             try:
-                fitted = fit_for_etsy(converted, convert_dir)
+                fitted = fit_for_etsy(converted, fit_dir)
             except Exception as exc:  # noqa: BLE001
                 row.warnings.append(f"{converted.name} could not be made smaller for Etsy: {exc}")
                 continue
@@ -729,10 +858,27 @@ def run(
                     f"{converted.name} was over Etsy's 20MB image limit; made smaller as "
                     f"{fitted.name}"
                 )
+            if mark is not None:
+                row.stamped.append(fitted)
             uploadable.append(fitted)
+        if unmarked is not None:
+            row.skipped = True
+            row.warnings.append(unmarked)
+            say(f"skipped {row.source.name}")
+            continue
         row.images = uploadable
 
-        clash = photo_is_download(row.images, row.files) if row.files else None
+        # The shop's info images close every listing, after its own pictures (never
+        # watermarked); a folder whose photos leave too little room gets the first ones
+        # that fit, and says so.
+        if info and row.images:
+            extra = infoimages.fitting(len(row.images), info)
+            if len(extra) < len(info):
+                row.warnings.append(info_note(len(extra), len(info)))
+            row.images.extend(image.path for image in extra)
+
+        # The pictures a watermarked copy was made from are checked too.
+        clash = photo_is_download([*row.images, *unstamped], row.files) if row.files else None
         if clash is not None:
             row.skipped = True
             row.warnings.append(clash[1])

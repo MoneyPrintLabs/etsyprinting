@@ -7,6 +7,144 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-09-30
+
+### Added
+- A download for Intel Macs, `stallkit-<version>-macos-intel.zip`, built on GitHub's Intel macOS runner.
+
+- **Filigran (watermark)**: a card at the bottom of **Mockuplar** takes your own mark (a
+  PNG with a transparent background is recommended; JPG and WebP up to 10 MB), with a
+  live preview on one of your mockups, drawn by the same code as the drafts. Choose
+  *Yalnızca dijital ürünler* (the default) or *Tüm ilan görselleri*, the position (center,
+  bottom-right corner or a diagonal repeat), the opacity (10-90 %, 35 % by default) and
+  the size as a share of the photo's width (30 %, or 15 % for each repeated mark). A mark
+  on a solid background can have it removed. Tasarım Yükle, `drop run` and `drop auto`
+  stamp it on a copy of every listing photo (the mockups, the flat image or preview, a
+  product folder's own photos) in the batch's `watermarked` folder, tell Etsy the
+  picture is watermarked, and never touch the files buyers download or your originals.
+  The copies keep the photo's size and quality and carry no EXIF. A photo the mark cannot
+  go on stops its product rather than going up without it. The start card says
+  "Filigran: açık · dijital ürünlerde" (or off); `stallkit drop watermark` sets it from
+  the command line (`--no-watermark` leaves it off for one run). It is kept as
+  `watermark.png` and `watermark.json` beside the folders.
+- **Şablon İlan: info images** (*bilgi görselleri*). Under the template's fields, tick
+  the template listing's photos every listing should end with (materials, roll size,
+  installation, sample, measuring...) or add pictures of your own, and set their order.
+  stallkit keeps full-size copies in the products folder (`info-images`), so runs need no
+  Etsy call for them and the command line (`drop run`, `drop auto`) uses the same ones.
+  Every draft gets them after its own photos, in that order, with their alt text and no
+  watermark; the upload history records them, and the listing page names them. Etsy
+  takes 20 pictures per listing, so each one leaves room for one mockup less: the
+  Mockuplar counter and the Tasarım Yükle start card show the real numbers, and a product
+  folder whose photos leave too little room gets the first ones that fit, with a warning.
+  At most 10.
+- **Şablon İlan → Açıklama şablonu** (description template): the text every new draft's
+  description is written from, starting as the template listing's own description with
+  its title turned into `{başlık}`. `{başlık}` is each draft's title and `{tasarım}` its
+  design's name (English: `{title}`, `{design}`). Sentences holding a word of the template
+  listing's own design (from its title and tags, such as "lemon"; never a product
+  word such as "wallpaper" or "sample") are highlighted: they would be copied onto every
+  draft. It is saved in `product.json`; saving the same listing again keeps it.
+- Until such sentences are gone, the start card says so once, with a link that opens the
+  description template, and `stallkit drop template` lists them. While no description
+  template is saved yet, each product of a run warns too ("Açıklamada şablon ilanın
+  desenine özel 1 cümle kaldı").
+- **Tasarım Yükle → Başlat** has a **Mağaza bölümü** (*Shop section*) choice: your
+  shop's sections, starting on **Şablondaki gibi (…)** (the template listing's). Every
+  draft of that run goes into the section you pick, or into none; the template itself
+  is not changed. The choice is remembered per shop. A shop without sections says so; a
+  template or remembered section deleted on Etsy is pointed out (the template's then
+  gives drafts without a section instead of failing them), and a section deleted just
+  before Başlat stops the run before anything is sent.
+- `stallkit drop auto` and `drop run` take `--section NAME_OR_ID` (or `none`) for the
+  same, checked against your shop's sections first.
+- **The video's fonts are bundled**: Inter, Plus Jakarta Sans and JetBrains Mono (SIL
+  Open Font License 1.1, see NOTICE.md) ship with the app, so every computer draws the
+  same text. On Windows a medium weight no longer looks as bold as a semibold one (the
+  active menu item stands out again), and headings and numbers use the display face.
+- **Tasarım Yükle**: a design saved without transparency is no longer uploaded silently
+  as a finished photo. Its row warns, and when it sits on a solid background the start
+  card offers to place it on the mockups instead (the background joined to the edges is
+  removed; white inside the design stays).
+- The Kontrol step warns about pictures that would look soft on Etsy: a short side under
+  1000 px, or a design enlarged more than twice onto a mockup.
+- Every picture a draft gets carries an alt text with the design, the product and its
+  colour ("Retro Mountain Sunset t-shirt, white").
+- The start card says when the template's product differs from the main mockup (a mug
+  template with a T-shirt as the first mockup).
+- **Siparişler**: for a shop that ships from Türkiye, a note before the first send says
+  that Etsy may refuse tracking numbers from newer API keys, with the CSV download and
+  Etsy's orders page. It goes for good once Etsy has accepted a number.
+
+### Changed
+
+- The new-version check now looks at every start of the app, unless it already looked
+  less than an hour ago, and then once a day while the app stays open. A failed look is
+  still followed by the next one an hour later, a restart included.
+- **Şablon İlan** shows how many of each listing sold, best sellers first, counted from
+  the months **Kâr-Zarar** has already read (no extra Etsy calls; the tooltip names the
+  months). Without those months it shows the favourites in Etsy's order, as before.
+- **Şablon İlan** names the category by its first and last level in your language
+  ("Giyim › Tişörtler"), shows only whole listing rows until "daha göster" is pressed,
+  and keeps each field's grey bar until its value has faded in.
+- **Mockuplar**: Kaydet stays dimmed until a new mockup's print area is drawn (it can
+  still save the default area), the "Baskı alanı" label shows while drawing once the
+  rectangle is big enough, and the chips, notices and buttons match the video.
+- A download-only template's drafts use only the mockups that show no physical product
+  (posters, canvases, frames) plus the flat preview; the start card names them ("Poster ·
+  Meşe") and the ones left out. `drop run` and `drop auto` use the same mockups and name
+  the ones they leave out.
+- **İlanlar**: "N yeni taslak" counts only the drafts of stallkit's latest run; older
+  drafts read "N taslak".
+- **SEO → Düzelt** offers a title change only when removing whole repeated phrases ends
+  the repetition.
+- **Taslak İlan** names each picture's product and colour from the file the run sent,
+  counts the pictures the run uploaded ("7/7 görsel"), and shows a transparent design on
+  a checkerboard. The Kontrol step's toast sits top right, as in the video.
+- The bell's badge stays clear after a connect the page itself already announced.
+- Font weights are the video's 400/500/600/700/800 only; table column heads are 11.4 px,
+  and a few labels were tightened so Inter fits a 1280 px window.
+
+### Fixed
+
+- A new draft's description no longer carries the template listing's own title: the
+  title, and a line made of its `|`- or `,`-separated parts, become the draft's title
+  (a "Sage Lemon Wallpaper | Olive Citrus Mural" line no longer reaches a woodland
+  mural's draft).
+- Two designs whose names differ only by their extension (`sunset.jpg` and
+  `sunset.jpeg`, `poster.png` and `poster.gif`) no longer share one watermarked copy; the
+  batch keeps one `watermarked` folder, so a long design name no longer doubles the path
+  (Windows' 260-character limit).
+- A download-only template no longer loses its posters when T-shirt mockups come first
+  and info images shorten the list: the physical ones are left out before the 19-picture
+  limit is applied, on the start card, in the run and in `drop run` / `drop auto`.
+- An info image with the same file name as one of a product's photos goes up with its own
+  alt text, and the listing page tells them apart by Etsy's image id.
+- `stallkit listings push` of a `drop run` batch tells Etsy which pictures carry the
+  watermark and sends the info images' alt texts, as `drop auto` and the app do.
+- Alt texts read from a template listing's photos no longer keep Etsy's HTML escapes
+  (`&amp;`), and a photo download that Etsy's image server redirects fails with a clear
+  message instead of saving the redirect page as the picture.
+- The start card's request estimate counts a JPG on a solid background as placed on
+  every mockup (the "Mockup'lara yerleştir" choice), and keeps that choice when a deleted
+  shop section reopens the card.
+- Keyboard: the description link on **Şablon İlan**, the template photos and the info
+  images' × keep the focus after a change, and the Filigran card's choices are radio
+  groups moved with the arrow keys; removing or replacing the mark keeps the focus in
+  the card. A watermark setting changed just before a reload is saved, Ctrl+S in the
+  description dialog saves only a changed text, and "Tüm ilan görselleri" says so even
+  before a template listing is chosen.
+- The Filigran card's title uses the display face of the other cards, the Panel feed's
+  "20 hours ago" fits a 1280 px window, and the two toast areas have their own names for
+  screen readers.
+- **Mağaza Bağlantısı**: once the shop is connected, "Devam" leads to the first setup step
+  still to do (Mockuplar, then Şablon İlan) and to Tasarım Yükle when setup is finished,
+  instead of always to Mockuplar.
+- **Siparişler**: a 22-digit USPS tracking number shows whole beside its ✓ at the
+  video's window width, and a cell no longer draws a stray "…" under the number's end.
+- The new-version pill also folds away "Neler yeni?" when the page title would still be
+  cut (English **Profit & loss** at 1280 px); Ayarlar keeps the link.
+
 ## [0.3.1] — 2026-09-28
 
 ### Fixed
@@ -343,7 +481,9 @@ Recorded here and in the code so nobody has to re-derive them:
 - There is no idempotency key, so non-idempotent writes are never retried on a timeout
   or a 5xx — a repeat would mean a duplicate listing, or a second email to a buyer.
 
-[Unreleased]: https://github.com/MoneyPrintLabs/stallkit/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/MoneyPrintLabs/stallkit/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/MoneyPrintLabs/stallkit/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/MoneyPrintLabs/stallkit/releases/tag/v0.3.1
 [0.3.0]: https://github.com/MoneyPrintLabs/stallkit/releases/tag/v0.3.0
 [0.2.0]: https://github.com/MoneyPrintLabs/stallkit/releases/tag/v0.2.0
 [0.1.0]: https://github.com/MoneyPrintLabs/stallkit/releases/tag/v0.1.0

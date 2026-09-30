@@ -11,7 +11,7 @@
     "general.version": "Sürüm",
     "update.check": "Şimdi kontrol et",
     "update.auto": "Yeni sürümleri denetle",
-    "update.auto_sub": "Günde bir kez GitHub'daki son sürüme bakar. Sizinle ya da mağazanızla ilgili hiçbir bilgi gönderilmez.",
+    "update.auto_sub": "Uygulama her açıldığında (son bakış bir saatten eskiyse) ve açık kaldıkça günde bir kez GitHub'daki son sürüme bakar. Sizinle ya da mağazanızla ilgili hiçbir bilgi gönderilmez.",
     "update.blocked": "STALLKIT_NO_UPDATE_CHECK ile kapatılmış.",
     "update.never": "Henüz kontrol edilmedi",
     "update.up_to_date": "Güncel",
@@ -110,7 +110,7 @@
     "doctor.help.7": "Etsy Dashboard'da uygulamanızın ⋮ menüsünden “Edit callback URLs”e aynı adresi ekleyin. Birebir aynı olmalı.",
     "doctor.help.8": "Etsy uygulama sayfanızdaki iki değeri de kontrol edin. Yeni açılan bir uygulama henüz onay bekliyor olabilir.",
     "doctor.help.8_warn": "Etsy'ye şu an ulaşılamıyor. İnternet bağlantınızı kontrol edip yeniden deneyin.",
-    "doctor.help.9": "Mağaza Bağlantısı sayfasında “Bağlan”a basın.",
+    "doctor.help.9": "Mağaza Bağlantısı sayfasında “Etsy mağazanı bağla”ya basın.",
     "doctor.help.9_warn": "Etsy daha az izin verdi ya da oturum yenilenecek. Eksik izin varsa yeniden bağlanın.",
     "doctor.ask.3": "Açık bir Etsy mağazanız var mı? stallkit mağaza açamaz, var olanı yönetir.",
     "doctor.ask.4": "Etsy'de bir API uygulaması oluşturdunuz mu? Ücretsizdir; kişisel kullanım genelde hızla onaylanır.",
@@ -131,7 +131,8 @@
     "errors.update_check_off": "Güncelleme denetimi STALLKIT_NO_UPDATE_CHECK ile kapatılmış.",
     "doctor.help.10_folder": "Klasör henüz yok. Mockuplar sayfası ya da “Klasörü aç” onu oluşturur.",
     "doctor.help.10_template": "Şablon ilan henüz seçilmedi. Şablon İlan sayfasından bir ilanınızı seçin.",
-    "doctor.help.10_mockups": "Şablon hazır ama mockup yok. Mockuplar sayfasından ekleyin."
+    "doctor.help.10_mockups": "Şablon hazır ama mockup yok. Mockuplar sayfasından ekleyin.",
+    "etsy.keys_edit": "Anahtarları değiştir"
   },
   "en": {
     "title": "Settings",
@@ -145,7 +146,7 @@
     "general.version": "Version",
     "update.check": "Check now",
     "update.auto": "Check for new versions",
-    "update.auto_sub": "Looks at the latest release on GitHub once a day. Nothing about you or your shop is sent.",
+    "update.auto_sub": "Looks at the latest release on GitHub each time the app starts (unless it looked less than an hour ago) and once a day while it stays open. Nothing about you or your shop is sent.",
     "update.blocked": "Turned off with STALLKIT_NO_UPDATE_CHECK.",
     "update.never": "Not checked yet",
     "update.up_to_date": "Up to date",
@@ -244,7 +245,7 @@
     "doctor.help.7": "In the Etsy Dashboard, add the same address under your app's ⋮ menu → “Edit callback URLs”. It must match exactly.",
     "doctor.help.8": "Check both values on your Etsy app page. A brand-new app may still be waiting for approval.",
     "doctor.help.8_warn": "Etsy cannot be reached right now. Check the internet connection and try again.",
-    "doctor.help.9": "Press “Connect” on the Shop connection page.",
+    "doctor.help.9": "Press “Connect your Etsy shop” on the Shop connection page.",
     "doctor.help.9_warn": "Etsy granted fewer permissions, or the sign-in will refresh itself. Reconnect if a permission is missing.",
     "doctor.ask.3": "Do you have an open Etsy shop? stallkit manages a shop; it cannot open one.",
     "doctor.ask.4": "Have you created an API app on Etsy? It is free, and personal use is usually approved quickly.",
@@ -265,6 +266,7 @@
     "errors.update_check_off": "Update checks are turned off with STALLKIT_NO_UPDATE_CHECK.",
     "doctor.help.10_folder": "The folder does not exist yet. The Mockups page or “Open folder” creates it.",
     "doctor.help.10_template": "No template listing yet. Pick one of your listings on the Template listing page.",
-    "doctor.help.10_mockups": "The template is ready but there are no mockups. Add them on the Mockups page."
+    "doctor.help.10_mockups": "The template is ready but there are no mockups. Add them on the Mockups page.",
+    "etsy.keys_edit": "Change keys"
   }
 }

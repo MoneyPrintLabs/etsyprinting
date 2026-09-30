@@ -1197,6 +1197,31 @@ def _costs_view(costs: dict[str, Any], currency: str) -> dict[str, Any]:
     }
 
 
+PROFIT_NOTE_PREF = "panel_profit_note"  # {month: signature of the totals last announced}
+PROFIT_NOTE_MONTHS = 12
+
+
+def _note_month(ctx: AppContext, month: str, summary: dict[str, Any]) -> None:
+    """Tell the Panel a month's P&L is ready ("Eylül kâr-zarar özeti güncellendi"): once per
+    shop and month, and again only when that month's totals change."""
+    fees = summary.get("fees") or {}
+    totals = [summary.get("revenue"), fees.get("total"), summary.get("product_cost"),
+              summary.get("shipping_cost"), summary.get("net"), summary.get("orders")]
+    sig = hashlib.sha1(json.dumps(totals).encode("utf-8")).hexdigest()[:16]
+    try:
+        stored = ctx.shop_prefs().get(PROFIT_NOTE_PREF)
+        notes = {str(k): str(v) for k, v in stored.items()} if isinstance(stored, dict) else {}
+        if notes.get(month) == sig:
+            return
+        notes[month] = sig
+        kept = dict(sorted(notes.items())[-PROFIT_NOTE_MONTHS:])
+        ctx.update_shop_prefs(**{PROFIT_NOTE_PREF: kept})
+        ctx.notify("panel", "notify.profit_month", {"month": month}, tone="success",
+                   link="/kar-zarar", replace=True)
+    except Exception:  # noqa: BLE001 — a note must never break the page
+        log.exception("could not note the %s profit summary", month)
+
+
 def get_profit(req: Request) -> dict[str, Any]:
     ctx = req.ctx
     assert ctx is not None
@@ -1261,6 +1286,8 @@ def get_profit(req: Request) -> dict[str, Any]:
         series.append({"month": ym, "net": result["net"], "revenue": result["revenue"],
                        "orders": result["orders"]})
     summary = results[month]
+    if refreshing is None:
+        _note_month(ctx, month, summary)
     previous = results.get(shift_month(month, -1))
     return {
         **base,

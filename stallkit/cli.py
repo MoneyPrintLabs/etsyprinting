@@ -25,10 +25,13 @@ from .client import EtsyClient, walk_taxonomy
 from .config import Config, home_dir, split_credential, token_path, write_env_file
 from .drop import automation, pipeline
 from .drop import catalog as catalog_mod
+from .drop import description as description_mod
+from .drop import infoimages as infoimages_mod
 from .drop import mockup as mockup_mod
 from .drop import template as template_mod
+from .drop import watermark as watermark_mod
 from .drop import workspace as workspace_mod
-from .errors import AuthError, StallKitError
+from .errors import AuthError, StallKitError, ValidationError
 
 
 def _force_utf8(stream: Any) -> None:
@@ -737,7 +740,9 @@ def listings_push(
                     f"{inventory_from} onto each new draft.[/]"
                 )
                 push_args["inventory"] = inventory
-            report = listings_mod.push(client, rows, **push_args)
+            # A drop batch's review.csv: its watermarked copies and info alt texts.
+            batch = automation.for_batch(client, push_args["base_dir"])
+            report = listings_mod.push(batch, rows, **push_args)
 
     console.print()
     if dry_run:
@@ -1276,6 +1281,18 @@ def drop_template(
         listing = client.listing(from_listing)
 
     captured = template_mod.capture(listing)
+    # A description template saved for this same listing (the app's Şablon İlan) stays;
+    # another listing starts from its own description.
+    before = None
+    if ws.template_path.is_file():
+        try:
+            saved = ws.read_template()
+            before = template_mod.Template.from_dict(saved) if isinstance(saved, dict) else None
+        except StallKitError:
+            before = None
+    if before is not None and before.source_listing_id == captured.source_listing_id:
+        captured.description_template = before.description_template
+        captured.category_path = before.category_path
     ws.write_template(captured.to_dict())
     _ok(f"Captured listing {_hide(captured.source_listing_id, 'id')} into {ws.template_path}")
 
@@ -1290,6 +1307,16 @@ def drop_template(
             f"This listing has no {', '.join(gaps)}. Drafts will still be created, "
             "but you cannot publish them until that is set."
         )
+    flagged = description_mod.template_flags(captured, lang="en")
+    if flagged:
+        words = _hide(", ".join(description_mod.flag_words(flagged)[:4]))
+        _warn(
+            f"{len(flagged)} sentence(s) of the description look specific to this listing's "
+            f"own design ({words}) and would be copied onto every draft. Edit the "
+            "description template in the app's Template page, or set "
+            f"\"{template_mod.DESCRIPTION_TEMPLATE}\" in {ws.template_path} "
+            "({title} and {design} are filled in per draft)."
+        )
     console.print(
         f"\nNow put designs in [cyan]{ws.products}[/] and run: [cyan]stallkit drop run[/]"
     )
@@ -1297,25 +1324,82 @@ def drop_template(
 
 _MOCKUPS_HELP = (
     "Use only the first N of the chosen mockups. Default: every mockup switched on in the "
-    "app's Mockups page, in its order (the first is the main image), at most 19."
+    "app's Mockups page, in its order (the first is the main image), at most 19 less one "
+    "per info image."
+)
+_SECTION_HELP = (
+    "Put every draft of this run in this shop section: its name or id (see `stallkit shop "
+    "profiles`), or `none` for no section. Default: the template listing's section."
 )
 
 
-def _drop_mockups(ws: workspace_mod.Workspace, count: Optional[int]) -> list[Path]:
-    """The mockups a drop run composites onto: the app's selection and order (Mockuplar).
+def _drop_section(
+    tmpl: template_mod.Template, wanted: Optional[str], client: Optional[EtsyClient]
+) -> template_mod.Template:
+    """The template with `--section` applied: the named section (checked against the
+    shop's sections, so a deleted one is refused before anything runs), or none."""
+    if wanted is None:
+        return tmpl
+    if client is None:
+        raise ValidationError(
+            "--section reads your shop's sections, which needs your Etsy keys and the "
+            "sign-in. Run: stallkit auth login"
+        )
+    found = template_mod.resolve_section(client.shop_sections(), wanted)
+    if found is None:
+        console.print("[dim]Shop section: none (the drafts go into no section).[/]")
+        return tmpl.with_section(None)
+    section_id = template_mod.section_number(found.get("shop_section_id"))
+    console.print(f"[dim]Shop section: {_hide(found.get('title') or '')} ({section_id}).[/]")
+    return tmpl.with_section(section_id)
+
+
+def _drop_info_images(ws: workspace_mod.Workspace) -> list[infoimages_mod.InfoImage]:
+    """The shop's info images every draft ends with (Şablon İlan, or info-images/).
+
+    Says once which ones are used, and which are left out for being past the limit.
+    """
+    images = infoimages_mod.load(ws)
+    if images:
+        names = ", ".join(image.name for image in images)
+        console.print(
+            f"[dim]Info images: {len(images)} after each product's own photos ({names}). "
+            f"Choose them in the app's Template listing page or in {ws.info_images}.[/]"
+        )
+    extra = infoimages_mod.unused(ws)
+    if extra:
+        _warn(
+            f"{len(extra)} picture(s) in {ws.info_images} are past the limit of "
+            f"{infoimages_mod.MAX_INFO_IMAGES} info images and are not used: "
+            + ", ".join(image.name for image in extra)
+        )
+    return images
+
+
+def _drop_mockups(ws: workspace_mod.Workspace, count: Optional[int],
+                  listing_type: Optional[str] = None) -> list[Path]:
+    """The mockups a drop run composites onto: the app's selection and order (Mockuplar),
+    less those showing a physical product for a download-only template, as the app's
+    run does (catalog.run_mockups).
 
     `--mockups N` keeps the first N of them. Says once which ones are used.
     """
-    use = catalog_mod.usage(ws)
-    chosen = catalog_mod.enabled_mockups(ws)
+    infos = catalog_mod.load(ws)
+    use = catalog_mod.usage(ws, infos, listing_type=listing_type)
+    chosen = catalog_mod.run_mockups(ws, listing_type, infos)
     if count is not None:
         chosen = chosen[: max(0, count)]
     available = len(ws.mockup_files())
     if available:
-        off = use["total"] - use["enabled"]
+        off = use["total"] - use["enabled"] - len(use["left_out"])
         notes = [f"main image {chosen[0].name}"] if chosen else []
         if off:
             notes.append(f"{off} switched off")
+        if use["left_out"]:
+            notes.append(
+                f"{len(use['left_out'])} left out because they show a physical product and "
+                f"the template is a download ({', '.join(use['left_out'])})"
+            )
         if use["over_limit"]:
             notes.append(f"{len(use['over_limit'])} over the {use['max']}-mockup limit")
         if count is not None and len(chosen) < len(use["used"]):
@@ -1325,9 +1409,27 @@ def _drop_mockups(ws: workspace_mod.Workspace, count: Optional[int]) -> list[Pat
             + (f" ({'; '.join(notes)})" if notes else "")
             + ". Choose and order them in the app's Mockups page.[/]"
         )
-        if not chosen:
+        if not chosen and use["left_out"]:
+            _warn("No mockup a download can use is switched on (a poster, canvas or other): "
+                  "the designs get only the flat preview.")
+        elif not chosen:
             _warn("No mockup is switched on: transparent designs get only the flat render.")
     return chosen
+
+
+_NO_WATERMARK_HELP = "Leave the workspace's watermark off the photos for this run."
+
+
+def _drop_watermark(ws: workspace_mod.Workspace, tmpl: template_mod.Template,
+                    use: bool) -> None:
+    """Say once whether the run stamps the workspace's watermark (drop watermark)."""
+    info = watermark_mod.describe(ws, tmpl.listing_type)
+    if not info["file"]:
+        return
+    if not use and info["applies"]:
+        console.print("[dim]Watermark: left off for this run (--no-watermark).[/]")
+        return
+    console.print(f"[dim]{watermark_mod.summary(info)}[/]")
 
 
 @drop_app.command("run")
@@ -1337,6 +1439,8 @@ def drop_run(
     no_flat: bool = typer.Option(False, "--no-flat", help="Do not append the flat artwork."),
     sample: int = typer.Option(200, "--sample", help="Listings to sample per concept."),
     no_cache: bool = typer.Option(False, "--no-cache", help="Ignore cached research."),
+    no_watermark: bool = typer.Option(False, "--no-watermark", help=_NO_WATERMARK_HELP),
+    section: Optional[str] = typer.Option(None, "--section", help=_SECTION_HELP),
 ) -> None:
     """Turn the designs in your folder into a review CSV. Sends nothing to Etsy."""
     ws = _workspace(path).require()
@@ -1356,10 +1460,21 @@ def drop_run(
     try:
         client = EtsyClient(Config.load(), require_auth=False)
     except StallKitError as exc:
+        if section is not None:
+            raise
         _warn(f"Running without market research ({exc.args[0].splitlines()[0]}).")
 
-    chosen = _drop_mockups(ws, mockups)
-    images_each = len(chosen) + (0 if no_flat else 1)
+    try:
+        tmpl = _drop_section(tmpl, section, client)
+    except BaseException:
+        if client:
+            client.close()
+        raise
+
+    chosen = _drop_mockups(ws, mockups, tmpl.listing_type)
+    _drop_watermark(ws, tmpl, not no_watermark)
+    info = _drop_info_images(ws)
+    images_each = len(chosen) + (0 if no_flat else 1) + len(info)
     # A digital template's drafts also upload what the buyer downloads, one request each.
     to_order = pipeline.made_to_order(tmpl)  # a made-to-order draft may go without one
     files = (
@@ -1386,6 +1501,8 @@ def drop_run(
                 sample=sample,
                 use_cache=not no_cache,
                 on_progress=lambda msg: status.update(msg),
+                watermark=not no_watermark,
+                info_images=info,
             )
     finally:
         if client:
@@ -1645,16 +1762,27 @@ def drop_auto(
     path: Optional[Path] = typer.Option(None, "--path", help="Etsy Studio folder."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Prepare and validate offline, without uploading."),
     mockups: Optional[int] = typer.Option(None, "--mockups", min=0, help=_MOCKUPS_HELP),
+    no_watermark: bool = typer.Option(False, "--no-watermark", help=_NO_WATERMARK_HELP),
+    section: Optional[str] = typer.Option(None, "--section", help=_SECTION_HELP),
 ) -> None:
     """Prepare new products and upload Etsy drafts. Previously attempted products are skipped."""
     ws = _workspace(path).require()
     tmpl = template_mod.Template.from_dict(ws.read_template())
-    chosen = _drop_mockups(ws, mockups)
+    chosen = _drop_mockups(ws, mockups, tmpl.listing_type)
+    _drop_watermark(ws, tmpl, not no_watermark)
+    _drop_info_images(ws)
     if dry_run:
-        report = automation.run(ws, tmpl, dry_run=True, mockups=chosen)
+        if section is not None:
+            # A check sends nothing, but the section is still looked up (read only).
+            with _client(require_auth=False) as client:
+                tmpl = _drop_section(tmpl, section, client)
+        report = automation.run(ws, tmpl, dry_run=True, mockups=chosen,
+                                watermark=not no_watermark)
     else:
         with _client() as client:
-            report = automation.run(ws, tmpl, client=client, mockups=chosen)
+            tmpl = _drop_section(tmpl, section, client)
+            report = automation.run(ws, tmpl, client=client, mockups=chosen,
+                                    watermark=not no_watermark)
     if report.prepared and report.prepared.csv_path:
         console.print(f"Review: {report.prepared.csv_path}")
         for product in report.prepared.ready:
@@ -1669,6 +1797,86 @@ def drop_auto(
         _warn(f"Needs Etsy review before retrying: {item}")
     if report.needs_review or report.uploaded.errors or report.uploaded.partial:
         raise typer.Exit(1)
+
+
+_WATERMARK_WHERE = {"center": "centre", "corner": "bottom-right corner",
+                    "tiled": "repeated diagonally"}
+
+
+@drop_app.command("watermark")
+def drop_watermark(
+    path: Optional[Path] = typer.Option(None, "--path", help="Etsy Studio folder."),
+    file: Optional[Path] = typer.Option(
+        None, "--file", help="A PNG (transparent background recommended), JPG or WebP, at "
+        "most 10 MB. Replaces the current watermark.",
+    ),
+    on: Optional[bool] = typer.Option(None, "--on/--off", help="Switch the watermark on or off."),
+    scope: Optional[str] = typer.Option(
+        None, "--scope", help="digital (only listings of a download/both template) or all."),
+    position: Optional[str] = typer.Option(
+        None, "--position", help="center, corner (bottom right) or tiled (repeated diagonally)."),
+    opacity: Optional[int] = typer.Option(None, "--opacity", help="10-90 (percent)."),
+    size: Optional[int] = typer.Option(
+        None, "--size", help="Percent of the photo width: 5-60 for center/corner, 5-40 for tiled."),
+    remove: bool = typer.Option(False, "--remove", help="Delete the watermark picture."),
+) -> None:
+    """Show or set the watermark stamped on listing photos (never on download files).
+
+    The same watermark.png and watermark.json the app's Mockups page sets, at the
+    workspace root; `drop run`, `drop auto` and the app's runs all use it.
+    """
+    ws = _workspace(path).require()
+    try:
+        if remove:
+            if watermark_mod.remove(ws):
+                _ok(f"Removed {watermark_mod.watermark_path(ws)}.")
+            else:
+                _warn("There is no watermark to remove.")
+        if file is not None:
+            try:
+                data = file.read_bytes()
+            except OSError as exc:
+                _fail(f"Cannot read {file}: {exc}")
+                raise typer.Exit(1) from exc
+            watermark_mod.save_upload(ws, file.name, data)
+            _ok(f"Watermark set from {file.name}.")
+        changes: dict[str, Any] = {}
+        if on is not None:
+            changes["enabled"] = on
+        if scope is not None:
+            changes["scope"] = scope
+        if position is not None:
+            changes["position"] = position
+        if opacity is not None:
+            changes["opacity"] = opacity
+        if size is not None:
+            target = position or watermark_mod.load_settings(ws).position
+            changes["tile_size" if target == watermark_mod.TILED else "size"] = size
+        if changes:
+            watermark_mod.update_settings(ws, **changes)
+    except watermark_mod.WatermarkError as exc:
+        _fail(str(exc))
+        raise typer.Exit(1) from exc
+    except StallKitError as exc:  # too many pixels
+        _fail(str(exc))
+        raise typer.Exit(1) from exc
+
+    info = watermark_mod.describe(ws)
+    settings = watermark_mod.load_settings(ws)
+    table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
+    table.add_row("picture", str(watermark_mod.watermark_path(ws)) if info["file"] else "none")
+    table.add_row("state", "on" if info["on"] else "off")
+    table.add_row("applies to", "digital products only" if settings.scope == "digital"
+                  else "every listing")
+    table.add_row("position", _WATERMARK_WHERE[settings.position])
+    table.add_row("opacity", f"{settings.opacity}%")
+    table.add_row("size", f"{settings.size}% of the photo width (center/corner), "
+                  f"{settings.tile_size}% each (tiled)")
+    console.print(table)
+    if info["problem"]:
+        _warn("The watermark picture cannot be read; set it again with --file.")
+    elif not info["file"]:
+        console.print("[dim]Set one with: stallkit drop watermark --file logo.png[/]")
 
 
 # --- pinterest -----------------------------------------------------------------

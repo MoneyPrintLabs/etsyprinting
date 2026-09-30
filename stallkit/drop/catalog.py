@@ -13,7 +13,8 @@ whose file is gone is ignored (kept on disk, so renaming the file back restores 
 becomes its main image (Etsy's rank 1), so the order matters. Mockups without an
 order (every mockup of an older catalog, or one added after the last reorder)
 follow the ordered ones, in folder order. Drafts use the enabled mockups in this
-order, at most MAX_ENABLED of them; `usage` says exactly which.
+order, at most MAX_ENABLED of them less one per info image (drop.infoimages);
+`usage` says exactly which.
 
 Print areas stay in positions.json (see `mockup.load_positions`); the helpers at
 the bottom answer "which rectangle does this mockup use, and why" exactly the way
@@ -54,8 +55,13 @@ TYPES = (
     "other",
 )
 
-# Etsy takes 20 images per listing, and every draft also carries the flat design.
+# Etsy takes 20 images per listing, and every draft also carries the flat design. The
+# shop's info images take their room too: max_enabled(ws) is the real number.
 MAX_ENABLED = 19
+
+# Mockup types that show a physical product: never the pictures of a download-only draft.
+PHYSICAL_TYPES = frozenset({"tshirt", "sweatshirt", "hoodie", "mug", "phone_case", "tote",
+                            "pillow", "sticker"})
 
 # Pixel limits for an uploaded image (mockups and designs). Pillow itself refuses only
 # above ~179M pixels, yet one 13000x13000 image already needs ~680 MB per decoded copy,
@@ -423,30 +429,72 @@ def add(ws: Workspace, filename: str, data: bytes) -> str:
 
 
 def enabled_mockups(ws: Workspace) -> list[Path]:
-    """The mockups drafts are made with: enabled ones, in the seller's order, at most 19.
+    """The mockups drafts are made with: enabled ones, in the seller's order, at most
+    `max_enabled(ws)` (19, less one per info image).
 
     The first one becomes the draft's main image. `usage` has the same rule with names.
     """
+    return _paths(ws, usage(ws)["used"])
+
+
+def run_mockups(ws: Workspace, listing_type: str | None,
+                infos: dict[str, MockupInfo] | None = None) -> list[Path]:
+    """The mockups a run with a template of `listing_type` composites onto, first (the
+    main image) to last: `usage(ws, listing_type=...)["used"]` as paths. The app's run,
+    `drop run` and `drop auto` all use this one list."""
+    return _paths(ws, usage(ws, infos, listing_type=listing_type)["used"])
+
+
+def _paths(ws: Workspace, names: list[str]) -> list[Path]:
     paths = {path.name: path for path in ws.mockup_files()}
-    return [paths[name] for name in usage(ws)["used"] if name in paths]
+    return [paths[name] for name in names if name in paths]
 
 
-def usage(ws: Workspace, infos: dict[str, MockupInfo] | None = None) -> dict[str, Any]:
+def max_enabled(ws: Workspace, info: int | None = None) -> int:
+    """How many mockups a draft can use: MAX_ENABLED (Etsy's 20 pictures less the flat
+    design), less one per info image the drafts end with (drop.infoimages)."""
+    from . import infoimages  # it builds on this module
+
+    if info is None:
+        info = infoimages.count(ws)
+    return infoimages.mockup_cap(info)
+
+
+def usage(ws: Workspace, infos: dict[str, MockupInfo] | None = None,
+          info: int | None = None, *, listing_type: str | None = None) -> dict[str, Any]:
     """Which mockups a draft uses: the one rule every screen shows.
 
     {"used": [names first to last; the first is the main image],
-     "over_limit": [switched-on names that do not fit, beyond MAX_ENABLED],
-     "enabled": how many are switched on, "total": how many mockups, "max": MAX_ENABLED}
+     "over_limit": [switched-on names that do not fit, beyond "max"],
+     "left_out": [switched-on names a download-only template leaves out],
+     "enabled": how many switched-on ones it can use (before the limit), "total": how
+     many mockups, "max": max_enabled (MAX_ENABLED less the info images), "info": the
+     info images}
+    `info` is the number of info images when the caller knows it (read otherwise).
+    A `listing_type` of "download" leaves out the mockups showing a physical product
+    (PHYSICAL_TYPES) first, and only then takes the first "max" of the rest: a poster
+    after fifteen T-shirts is still used.
     """
+    from . import infoimages
+
     if infos is None:
         infos = load(ws)
-    switched_on = [name for name, info in infos.items() if info.enabled]
+    if info is None:
+        info = infoimages.count(ws)
+    limit = max_enabled(ws, info)
+    switched_on = [name for name, facts in infos.items() if facts.enabled]
+    left_out: list[str] = []
+    if listing_type == "download":
+        left_out = [name for name in switched_on if infos[name].type in PHYSICAL_TYPES]
+        switched_on = [name for name in switched_on if name not in left_out]
     return {
-        "used": switched_on[:MAX_ENABLED],
-        "over_limit": switched_on[MAX_ENABLED:],
+        "used": switched_on[:limit],
+        "over_limit": switched_on[limit:],
+        "left_out": left_out,
         "enabled": len(switched_on),
         "total": len(infos),
-        "max": MAX_ENABLED,
+        "max": limit,
+        "info": info,
     }
 
 

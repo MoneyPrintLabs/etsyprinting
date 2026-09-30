@@ -353,6 +353,7 @@ def test_connecting_end_to_end(web, token_endpoint):
 
     job = wait_for_job(web, started["job_id"])
     assert job["status"] == "done", job
+    note_id = job["result"].pop("notification")
     assert job["result"] == {"shop_name": SHOP_NAME, "scopes": list(DEFAULT_SCOPES),
                              "missing_scopes": []}
     assert job["state"]["phase"] == "done"
@@ -365,6 +366,11 @@ def test_connecting_end_to_end(web, token_endpoint):
     assert auth.port_is_free(port)
     notes = web.client.get("/api/notifications").json()["items"]
     assert notes[0]["ns"] == "connect" and notes[0]["params"] == {"shop": SHOP_NAME}
+    # The job names the notification it stored, so the page that saw the connect end
+    # can mark it read (the bell stays quiet, as in the video).
+    assert notes[0]["id"] == note_id and notes[0]["read"] is False
+    read = web.client.post("/api/notifications/read", json={"ids": [note_id]}).json()
+    assert read["unread"] == 0 and read["items"][0]["read"] is True
 
 
 def test_hidden_names_hide_the_shop_in_the_connected_notification(web, token_endpoint):

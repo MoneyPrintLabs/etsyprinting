@@ -120,14 +120,14 @@ After that there is one thing to do each time: drop your designs.
 | Screen | What it is for |
 |---|---|
 | **Panel** (Dashboard) | Your shop today: active listings, drafts, orders to ship, average SEO score, this month's revenue, and Etsy requests left for today. |
-| **Tasarım Yükle** (Upload designs) | Drag in PNG or JPG designs, or folders of finished photos. Each design goes through six steps: mockups, Etsy search research, a title of up to 140 characters, 13 tags, a check against Etsy's rules, and a draft on Etsy. Physical products and [digital downloads](#digital-products) both work. |
+| **Tasarım Yükle** (Upload designs) | Drag in PNG or JPG designs, or folders of finished photos. Each design goes through six steps: mockups, Etsy search research, a title of up to 140 characters, 13 tags, a check against Etsy's rules, and a draft on Etsy. Physical products and [digital downloads](#digital-products) both work. The **Başlat** (*Start*) window lets you pick the **Mağaza bölümü** (*Shop section*) for the whole batch; it starts on the template listing's and remembers your last choice. |
 | **İlanlar** (Listings) | Your drafts and live listings. Open a draft to check or edit its title, tags and description, then publish the ones you want. You can also download listings as a CSV or update them from one. |
 | **SEO** | Every listing scored out of 100, weakest first, with what to improve. Includes tag research for any keyword. **Fix** sends the suggested change. |
 | **Siparişler** (Orders) | Orders waiting to ship, shipped and delivered. Type tracking numbers or load them from a CSV, then send them to Etsy. |
 | **Kâr-Zarar** (Profit & loss) | Revenue, Etsy fees from your payment account, the product and shipping costs you enter, and net profit, month by month, in your shop's currency and in TRY. |
 | **Pinterest** | Optional. Queue Pins of your live listings and post a few a day on your own Pinterest account. |
 | **Mockuplar** (Mockups) | Add photos of the products you sell and set where the design sits on each one (the print area). One setting can cover every mockup of the same size. |
-| **Şablon İlan** (Template listing) | Pick a listing you built by hand. Every new draft copies its price, category, shipping and return settings, description and variations, and whether it is a physical item or a digital download. |
+| **Şablon İlan** (Template listing) | Pick a listing you built by hand. Every new draft copies its price, category, shipping and return settings, description and variations, and whether it is a physical item or a digital download. The listing's own title in its description becomes each draft's title; in the **description template** you can use `{title}` and `{design}`, and sentences about the template listing's own design are highlighted so they do not end up on every draft. Below it, tick the template's **bilgi görselleri** (*info images*: materials, sizes, how to install, ...) or add pictures of your own: every draft ends with them, in your order, after its own photos (at most 10; each leaves room for one mockup less, as Etsy takes 20 pictures per listing). |
 | **Mağaza Bağlantısı** (Shop connection) | Your Etsy app keys and the connection to your shop. |
 | **Ayarlar** (Settings) | Language (Turkish or English), several shops, the products folder, a setup checklist, hiding the shop name for screenshots, and quitting. |
 
@@ -179,6 +179,19 @@ What the screens say (the English wording in italics):
   says **Dijital ürün: her taslağa tasarım dosyası indirilebilir dosya olarak eklenir**
   (*Digital product: each draft gets its design file as the download*).
 
+#### Watermark
+
+Etsy shows listing photos large, so the **Filigran** (*Watermark*) card at the bottom of
+**Mockuplar** lets you stamp your own mark (a logo or the shop name; a PNG with a
+transparent background works best, JPG or WebP up to 10 MB) on every listing photo: the
+mockups, the flat image and a product folder's photos. It goes on copies in `3-DRAFTS`;
+your files stay as they are, and **the files buyers download never get it**. Choose
+*Digital products only* (the default) or *Every listing photo*, the position (center,
+bottom-right corner or a diagonal repeat), the opacity (10-90 %) and the size, with a live
+preview on one of your mockups. The **Başlat** window says **Filigran: açık · dijital
+ürünlerde** (*Watermark: on · digital products*) or *off*. `stallkit drop watermark` sets
+the same one for the command line.
+
 ---
 
 ## Download and first run
@@ -189,6 +202,7 @@ What the screens say (the English wording in italics):
 |---|---|
 | **Windows 10 / 11** | `stallkit-…-windows.exe`: one file, nothing to install. |
 | **Mac with Apple Silicon (M1 and newer)** | `stallkit-…-macos.zip`: unzip it, then move `stallkit.app` to Applications. |
+| **Mac with Intel** | `stallkit-…-macos-intel.zip`: the same, for Intel Macs. |
 
 On an Intel Mac or on Linux, [run it from source](#run-from-source-windows-macos-linux).
 
@@ -305,7 +319,7 @@ The terminal shows the address. Press **Ctrl+C** there to stop the app.
 |---|---|
 | Etsy keys (`.env`), Etsy sign-in (`token.json`), settings, logs | `~/.stallkit` (on Windows `%USERPROFILE%\.stallkit`) |
 | A second or third shop | `~/.stallkit/shops/<id>/` |
-| Products folder: `1-MOCKUPS`, `2-PRODUCTS` (your designs), `3-DRAFTS`, `product.json` (the template) | `Etsy Studio` on your Desktop (`Etsy Studio - <shop id>` for further shops). You can change it in **Ayarlar**. |
+| Products folder: `1-MOCKUPS`, `2-PRODUCTS` (your designs), `3-DRAFTS`, `product.json` (the template), `info-images` (the pictures every draft ends with) | `Etsy Studio` on your Desktop (`Etsy Studio - <shop id>` for further shops). You can change it in **Ayarlar**. |
 
 If you choose `1-MOCKUPS`, `2-PRODUCTS` or `3-DRAFTS` (or a folder inside them) as the
 products folder, stallkit uses the products folder they belong to and says so, instead of
@@ -328,12 +342,13 @@ The app's log is `~/.stallkit/logs/web-<date>.log`.
   servers); Pinterest only if you connect it; the Central Bank of Turkey's public
   exchange-rate file (at most once a day) so **Kâr-Zarar** can show TRY amounts; and
   GitHub, to see whether a new version is out.
-- **New versions.** About 10 seconds after it starts, and then once a day, the app asks
-  GitHub (`api.github.com`) for the latest stallkit release. Nothing is sent but the
-  request itself, with a `stallkit/<version>` User-Agent. A newer version shows as a small
+- **New versions.** About 10 seconds after each start (unless it asked less than an hour
+  ago), and then once a day while it stays open, the app asks GitHub (`api.github.com`)
+  for the latest stallkit release. Nothing is sent but the request itself, with a
+  `stallkit/<version>` User-Agent. A newer version shows as a small
   pill at the top ("New version v0.3.1 · Download", with **What's new?**) and once in the
   bell; the × hides it for that version. **Ayarlar** shows your version, when it last
-  checked and a **Check now** button. Turn the daily check off there, or set
+  checked and a **Check now** button. Turn the automatic check off there, or set
   `STALLKIT_NO_UPDATE_CHECK=1` to stop every check.
 - Your Etsy password is never seen by stallkit; you approve access on Etsy's own page.
   The keys and the sign-in are stored in `~/.stallkit` and shown only in part.
@@ -358,6 +373,10 @@ stallkit pinterest post                       # post today's Pins
 The downloaded app runs commands too when you give it arguments, for example
 `stallkit.exe pinterest post` from Windows Task Scheduler. Without a terminal, its output
 goes to `~/.stallkit/logs/`.
+
+New in 0.3.2: `stallkit drop auto` and `drop run` take `--section NAME_OR_ID` (or
+`none`), which puts every draft of the batch in one shop section instead of the template
+listing's.
 
 New in 0.3.0:
 
@@ -454,14 +473,14 @@ ilan seçersiniz. Sonrasında her seferinde tek bir iş kalır: tasarımlarını
 | Ekran | Ne işe yarar |
 |---|---|
 | **Panel** | Mağazanızın bugünü: aktif ilanlar, taslaklar, kargolanacak siparişler, ortalama SEO puanı, bu ayın geliri ve bugün kalan Etsy istek hakkı. |
-| **Tasarım Yükle** | PNG ya da JPG tasarımları veya hazır fotoğraf klasörlerini sürükleyip bırakın. Her tasarım altı adımdan geçer: mockup, Etsy aramasında araştırma, en fazla 140 karakterlik başlık, 13 etiket, Etsy kurallarına göre kontrol ve Etsy'de taslak. Fiziksel ürünler de [dijital ürünler](#dijital-ürünler) de olur. |
+| **Tasarım Yükle** | PNG ya da JPG tasarımları veya hazır fotoğraf klasörlerini sürükleyip bırakın. Her tasarım altı adımdan geçer: mockup, Etsy aramasında araştırma, en fazla 140 karakterlik başlık, 13 etiket, Etsy kurallarına göre kontrol ve Etsy'de taslak. Fiziksel ürünler de [dijital ürünler](#dijital-ürünler) de olur. **Başlat** penceresinde partinin **Mağaza bölümü**nü seçersiniz; şablon ilanınkiyle başlar ve son seçiminizi hatırlar. |
 | **İlanlar** | Taslak ve yayındaki ilanlarınız. Bir taslağı açıp başlığını, etiketlerini ve açıklamasını kontrol edebilir, düzenleyebilir, sonra istediklerinizi yayınlayabilirsiniz. İlanları CSV olarak indirebilir ya da CSV'den güncelleyebilirsiniz. |
 | **SEO** | Her ilan 100 üzerinden puanlanır, en zayıf en üstte; neyin iyileşeceği yazar. Herhangi bir kelime için etiket araştırması da vardır. **Düzelt** önerilen değişikliği gönderir. |
 | **Siparişler** | Kargo bekleyen, kargoya verilen ve teslim edilen siparişler. Takip numaralarını yazın ya da CSV'den yükleyin, sonra Etsy'ye gönderin. |
 | **Kâr-Zarar** | Gelir, ödeme hesabınızdaki Etsy kesintileri, sizin girdiğiniz ürün ve kargo maliyetleri ve net kâr; ay ay, mağazanızın para biriminde ve TL olarak. |
 | **Pinterest** | İsteğe bağlı. Yayındaki ilanlarınızın pinlerini sıraya alın, kendi Pinterest hesabınızda günde birkaç tane paylaşılsın. |
 | **Mockuplar** | Sattığınız ürünlerin fotoğraflarını ekleyin, tasarımın her birinde nereye oturacağını (baskı alanı) ayarlayın. Tek ayar aynı ölçüdeki tüm mockup'lara uygulanabilir. |
-| **Şablon İlan** | Elle hazırladığınız bir ilanı seçin. Her yeni taslak onun fiyatını, kategorisini, kargo ve iade ayarlarını, açıklamasını ve varyasyonlarını, fiziksel mi dijital mi olduğunu da kopyalar. |
+| **Şablon İlan** | Elle hazırladığınız bir ilanı seçin. Her yeni taslak onun fiyatını, kategorisini, kargo ve iade ayarlarını, açıklamasını ve varyasyonlarını, fiziksel mi dijital mi olduğunu da kopyalar. Açıklamada geçen ilan başlığı her taslağın kendi başlığıyla değişir; **açıklama şablonunda** `{başlık}` ve `{tasarım}` kullanabilirsiniz, şablon ilanın desenine özel cümleler her taslağa kopyalanmasın diye işaretlenir. Altında şablonun **bilgi görsellerini** (malzeme, ölçü, kurulum, ...) işaretleyin ya da kendi görsellerinizi ekleyin: her taslak kendi fotoğraflarından sonra, sizin sıranızla bunlarla biter (en fazla 10; Etsy ilan başına 20 görsel aldığı için her biri bir mockup'lık yer kaplar). |
 | **Mağaza Bağlantısı** | Etsy uygulama anahtarlarınız ve mağazanızla bağlantı. |
 | **Ayarlar** | Dil (Türkçe ya da İngilizce), birden fazla mağaza, ürün klasörü, kurulum kontrol listesi, ekran görüntüsü için mağaza adını gizleme ve uygulamayı kapatma. |
 
@@ -512,6 +531,18 @@ Ekranlarda gördükleriniz:
 - **Şablon İlan** listede dijital ilanı **Dijital** diye işaretler, seçili ilanın altında
   **Dijital ürün: her taslağa tasarım dosyası indirilebilir dosya olarak eklenir** yazar.
 
+#### Filigran
+
+Etsy ilan fotoğraflarını büyük gösterir; **Mockuplar**'ın altındaki **Filigran** kartıyla
+kendi işaretinizi (logonuz ya da mağaza adınız; şeffaf arka planlı PNG önerilir, JPG veya
+WebP de olur, en fazla 10 MB) her ilan fotoğrafına basabilirsiniz: mockup'lara, düz
+görsele ve ürün klasörünün fotoğraflarına. Filigran `3-DRAFTS`'taki kopyalara basılır;
+kendi dosyalarınız değişmez ve **alıcının indirdiği dosyalara asla eklenmez**. *Yalnızca
+dijital ürünler* (varsayılan) ya da *Tüm ilan görselleri*, konum (orta, sağ alt köşe ya da
+çapraz tekrar), opaklık (%10-90) ve boyut seçilir; mockup'larınızdan biri üzerinde canlı
+önizlenir. **Başlat** penceresi **Filigran: açık · dijital ürünlerde** ya da **kapalı**
+yazar. Komut satırında aynı ayarı `stallkit drop watermark` yapar.
+
 ## İndirme ve ilk açılış
 
 **[Son sürümü indirin →](https://github.com/MoneyPrintLabs/stallkit/releases/latest)**
@@ -520,6 +551,7 @@ Ekranlarda gördükleriniz:
 |---|---|
 | **Windows 10 / 11** | `stallkit-…-windows.exe`: tek dosya, kurulum yok. |
 | **Apple Silicon Mac (M1 ve sonrası)** | `stallkit-…-macos.zip`: zip'i açın, `stallkit.app`'i Uygulamalar klasörüne taşıyın. |
+| **Intel işlemcili Mac** | `stallkit-…-macos-intel.zip`: aynısı, Intel Mac'ler için. |
 
 Intel Mac ya da Linux'ta [kaynak koddan çalıştırın](#kaynak-koddan-çalıştırma-windows-macos-linux).
 
@@ -634,7 +666,7 @@ Adres terminalde görünür; durdurmak için orada **Ctrl+C**'ye basın.
 |---|---|
 | Etsy anahtarları (`.env`), Etsy oturumu (`token.json`), ayarlar, kayıtlar | `~/.stallkit` (Windows'ta `%USERPROFILE%\.stallkit`) |
 | İkinci, üçüncü mağaza | `~/.stallkit/shops/<id>/` |
-| Ürün klasörü: `1-MOCKUPS`, `2-PRODUCTS` (tasarımlarınız), `3-DRAFTS`, `product.json` (şablon) | Masaüstünüzde `Etsy Studio` (diğer mağazalar için `Etsy Studio - <mağaza id>`). **Ayarlar**'dan değiştirebilirsiniz. |
+| Ürün klasörü: `1-MOCKUPS`, `2-PRODUCTS` (tasarımlarınız), `3-DRAFTS`, `product.json` (şablon), `info-images` (her taslağın sonundaki görseller) | Masaüstünüzde `Etsy Studio` (diğer mağazalar için `Etsy Studio - <mağaza id>`). **Ayarlar**'dan değiştirebilirsiniz. |
 
 Ürün klasörü olarak `1-MOCKUPS`, `2-PRODUCTS` ya da `3-DRAFTS`'ı (veya bunların içindeki
 bir klasörü) seçerseniz stallkit, ilkinin içine ikinci bir ürün klasörü açmak yerine
@@ -656,12 +688,13 @@ ortam değişkenini ayarlayın. Uygulamanın kaydı `~/.stallkit/logs/web-<tarih
   sunucularından yüklenir); yalnızca bağlarsanız Pinterest; **Kâr-Zarar** TL tutarlarını
   gösterebilsin diye günde en fazla bir kez TCMB'nin herkese açık kur dosyası; yeni sürüm
   çıkıp çıkmadığını görmek için GitHub.
-- **Yeni sürümler.** Uygulama açıldıktan yaklaşık 10 saniye sonra ve sonra günde bir kez
-  GitHub'a (`api.github.com`) stallkit'in son sürümünü sorar. İsteğin kendisinden başka
-  hiçbir şey gönderilmez (yalnızca `stallkit/<sürüm>` User-Agent başlığı). Yeni bir sürüm
-  üstte küçük bir etiket olarak (“Yeni sürüm v0.3.1 · İndir”, yanında **Neler yeni?**) ve
+- **Yeni sürümler.** Uygulama her açılışından yaklaşık 10 saniye sonra (son bakışın
+  üzerinden bir saat geçtiyse) ve açık kaldıkça günde bir kez GitHub'a (`api.github.com`)
+  stallkit'in son sürümünü sorar. İsteğin kendisinden başka hiçbir şey gönderilmez
+  (yalnızca `stallkit/<sürüm>` User-Agent başlığı). Yeni bir sürüm üstte küçük bir etiket
+  olarak (“Yeni sürüm v0.3.1 · İndir”, yanında **Neler yeni?**) ve
   bir kez de bildirimlerde görünür; × o sürüm için gizler. **Ayarlar** sürümünüzü, son
-  kontrolün ne zaman yapıldığını ve **Şimdi kontrol et** düğmesini gösterir. Günlük
+  kontrolün ne zaman yapıldığını ve **Şimdi kontrol et** düğmesini gösterir. Otomatik
   denetimi oradan kapatabilir, `STALLKIT_NO_UPDATE_CHECK=1` ile tüm denetimleri
   durdurabilirsiniz.
 - Etsy şifrenizi stallkit hiç görmez; izni Etsy'nin kendi sayfasında verirsiniz.
@@ -677,6 +710,9 @@ kaynak koddan kurulumla gelir; örnekler ve tüm komutlar [CLI.md](CLI.md)'de (�
 Zamanlayıcı'dan `stallkit.exe pinterest post`. Kurulum kontrol listesinin tamamı
 [SETUP.md](SETUP.md#kurulum-türkçe)'de; uygulamada **Ayarlar → Her şeyi kontrol et** aynı
 listeyi çalıştırır.
+
+0.3.2'de yeni: `stallkit drop auto` ve `drop run`, `--section AD_YA_DA_ID` (ya da
+`none`) alır; partideki her taslak şablon ilanınki yerine o mağaza bölümüne gider.
 
 0.3.0'da yeni:
 

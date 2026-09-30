@@ -1,12 +1,31 @@
-**0.3.1 fixes drafts that Etsy refused because of the item weight.** A template listing
-whose weight or size was never filled in made every draft fail: Etsy reports that weight as
-0 but refuses 0 on a new listing. Such values are now left out.
+**0.3.2 looks and works like the video, and adds what sellers asked for.**
 
-**0.3.1, taslakları reddettiren ağırlık hatasını düzeltir.** Ağırlığı ya da ölçüleri hiç
-girilmemiş bir şablon ilan, her taslağın Etsy'de hata vermesine yol açıyordu: Etsy bu
-ağırlığı 0 olarak bildiriyor ama yeni ilanda 0'ı kabul etmiyor. Artık bu değerler
-gönderilmiyor. 0.3.0 kullanıyorsanız uygulama bu sürümü üst çubukta **Yeni sürüm · İndir**
+- **Watermark:** upload your own mark on **Mockuplar**; choose position (centre, corner or
+  repeated), opacity and size. It goes on every listing photo (or only on digital products),
+  never on the file the buyer downloads.
+- **Info images:** tick photos of your template listing (size chart, materials…) on
+  **Şablon İlan**; they are added to the end of every draft.
+- **Description template:** sentences about the template's own design are no longer copied
+  onto new listings; `{başlık}` and `{tasarım}` fill in each draft's title and design.
+- **Shop section** to choose when you start an upload, a download for **Intel Macs**, the
+  video's fonts, and a new-version check at every start.
+
+**0.3.2 videodaki gibi görünüp çalışıyor ve satıcıların istediklerini ekliyor.**
+
+- **Filigran:** **Mockuplar**'dan kendi filigranınızı yükleyin; konum (orta, köşe ya da
+  tekrarlı), saydamlık ve boyut seçin. Tüm ilan fotoğraflarına (ya da yalnızca dijital
+  ürünlere) eklenir, alıcının indirdiği dosyaya asla eklenmez.
+- **Bilgi görselleri:** **Şablon İlan**'da şablon ilanınızın fotoğraflarından (boyut
+  tablosu, malzemeler…) seçtikleriniz her taslağın sonuna eklenir.
+- **Açıklama şablonu:** şablon ilanın desenine özel cümleler artık yeni ilanlara
+  kopyalanmaz; `{başlık}` ve `{tasarım}` her taslağın başlığı ve tasarımıyla dolar.
+- Yükleme başlarken **mağaza bölümü** seçimi, **Intel Mac** için ayrı indirme, videodaki
+  yazı tipleri ve her açılışta yeni sürüm kontrolü.
+
+0.3.0 veya 0.3.1 kullanıyorsanız uygulama bu sürümü üst çubukta **Yeni sürüm · İndir**
 olarak gösterir.
+
+---
 
 The 0.3.0 notes follow.
 
@@ -51,6 +70,7 @@ digital drafts show your mockups and a small preview.
 |---|---|
 | **Windows 10 / 11** | `stallkit-…-windows.exe`: one file, nothing to install. Double-click it. |
 | **Mac (Apple Silicon: M1 and newer)** | `stallkit-…-macos.zip`: unzip it, then move `stallkit.app` to Applications. |
+| **Mac with Intel** | `stallkit-…-macos-intel.zip`: the same, for Intel Macs. |
 
 You do not need Python. Your keys and your shop connection stay on your computer, in
 `~/.stallkit`, the same place the command line version uses. Settings and the Etsy
@@ -135,6 +155,7 @@ yüklenmez: dijital taslaklarda mockup'larınız ve küçük bir önizleme gör�
 |---|---|
 | **Windows 10 / 11** | `stallkit-…-windows.exe`: tek dosya, kurulum yok. Çift tıklayın. |
 | **Mac (Apple Silicon: M1 ve sonrası)** | `stallkit-…-macos.zip`: zip'i açın, `stallkit.app`'i Uygulamalar klasörüne taşıyın. |
+| **Intel işlemcili Mac** | `stallkit-…-macos-intel.zip`: aynısı, Intel Mac'ler için. |
 
 Python gerekmez. Anahtarlarınız ve mağaza bağlantınız yalnızca sizin bilgisayarınızda,
 `~/.stallkit` klasöründe durur. 0.2.0'daki ayarlarınız ve Etsy bağlantınız aynen devam

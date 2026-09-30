@@ -160,7 +160,7 @@ export function monthName(monthIndex, short = false) {
   return df({ month: short ? "short" : "long" }).format(d);
 }
 
-/** relative(epochSec) -> "az önce", "5 dk önce", "3 sa önce", "2 gün önce", else date(). */
+/** relative(epochSec) -> "az önce", "5 dk önce", "3 sa önce", "Dün", "2 gün önce", else date(). */
 export function relative(v) {
   const d = toDate(v);
   if (!d) return DASH;
@@ -171,6 +171,7 @@ export function relative(v) {
   const hours = Math.round(diff / 3600);
   if (hours < 24) return t("time.hours_ago", { n: hours });
   const days = Math.round(diff / 86400);
+  if (days === 1) return t("time.yesterday");
   if (days < 7) return t("time.days_ago", { n: days });
   return date(d);
 }

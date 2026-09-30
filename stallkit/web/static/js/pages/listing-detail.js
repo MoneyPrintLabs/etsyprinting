@@ -52,6 +52,21 @@ function readNav() {
 
 const squash = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
 
+/** A listing's address: /ilanlar/taslak/<id> for a draft (the video's), else /ilanlar/<id>. */
+export function listingPath(id, state) {
+  return state === "draft" ? `/ilanlar/taslak/${id}` : `/ilanlar/${id}`;
+}
+
+/** Etsy's category name as a string key: "Tops & Tees" -> "tops_tees", "T-shirts" -> "t_shirts". */
+export function catSlug(name) {
+  return String(name || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
 export default {
   async mount(el, ctx) {
     const t = ctx.t;
@@ -61,7 +76,6 @@ export default {
       draft: null, // {title, tags, description} being edited
       image: 0,
       lastTag: null,
-      descOpen: false,
       busy: false,
       tagError: "",
     };
@@ -73,7 +87,10 @@ export default {
       const go = (delta) => {
         const next = nav.ids[pos + delta];
         if (next === undefined) return;
-        ctx.navigate(`/ilanlar/${next}`); // the leave guard asks about unsaved edits
+        // A walk through drafts stays on draft addresses (setData corrects any other);
+        // the leave guard asks about unsaved edits.
+        const draft = st.data ? (st.data.listing.state || "draft") === "draft" : location.pathname.startsWith("/ilanlar/taslak/");
+        ctx.navigate(listingPath(next, draft ? "draft" : ""));
       };
       ctx.setHeader({
         actions: [
@@ -145,7 +162,18 @@ export default {
       const state = d.listing.state || "draft";
       const known = STATES.includes(state);
       ctx.setHeader({ title: known ? t(`head.${state}`) : t("title"), subtitle: known ? t(`sub.${state}`) : "" });
+      showPath(state);
       render();
+    }
+
+    // The address bar names what the listing is now: /ilanlar/taslak/<id> for a draft
+    // (the video's), /ilanlar/<id> otherwise, also after publishing. Same history entry
+    // (its {idx} kept); ctx.setQuery then brings the app's own record of it up to date.
+    function showPath(state) {
+      const want = listingPath(id, state);
+      if (!ctx.isActive() || location.pathname === want) return;
+      history.replaceState(history.state, "", want + location.search + location.hash);
+      ctx.setQuery({});
     }
 
     function isDirty() {
@@ -233,7 +261,7 @@ export default {
             class: "ld-card",
             title: t("title_card.label"),
             icon: "loader",
-            iconTone: "accent",
+            iconTone: "neutral",
             actions: tagBadge({ text: "0/140", tone: "neutral" }, "mono ld-counter"),
             body: [skeleton({ lines: 3, height: 11, widths: ["92%", "80%", "30%"], gap: 14 }), h("div", { class: "ld-title-bar" }, h("span", { class: "ld-bar" }))],
           }),
@@ -268,15 +296,14 @@ export default {
       const hero = h("div", { class: "ld-hero" });
       const strip = h("div", { class: "ld-strip", role: "listbox", "aria-label": t("images.title") });
       const count = images.length;
-      const max = d.limits.images;
-      const tone = count === 0 ? "danger" : count >= MIN_SLOTS ? "success" : "accent";
+      const placed = imageCount(d, count);
       const head = h(
         "div",
         { class: "ld-strip-head" },
         h("b", null, t("images.title")),
         h("span", { class: "muted" }, d.source ? t("images.auto") : t("images.order")),
         h("div", { class: "spacer" }),
-        tagBadge({ text: t("images.count", { n: count, max }), tone, icon: count >= MIN_SLOTS ? "check" : count === 0 ? "alert" : null }, "mono ld-img-count"),
+        tagBadge({ text: t("images.count", { n: count, max: placed.max }), tone: placed.tone, icon: placed.icon }, "mono ld-img-count"),
       );
       st.heroEl = hero;
       st.stripEl = strip;
@@ -295,9 +322,15 @@ export default {
       }
       const img = images[st.image] || images[0];
       const srcset = [img.url ? `${img.url} 570w` : null, img.full && img.width ? `${img.full} ${img.width}w` : null].filter(Boolean).join(", ");
-      const kind = typeText(img.type, st.image === 0 ? d.listing.type_name : "");
-      const colour = img.color_key && t.has(`color.${img.color_key}`) ? t(`color.${img.color_key}`) : img.color;
-      const chip = [kind, colour].filter(Boolean).join(" · ");
+      // Each picture's own product and colour ("Kupa · Beyaz": the mockup it was made on),
+      // none on the plain design (video). A picture with nothing known about it: the
+      // listing's own product, for the main image only.
+      // The shop's info images (Şablon İlan) say so instead: they show no product.
+      const plain = img.flat || img.info;
+      const main = st.image === 0 && !plain;
+      const kind = plain ? "" : typeText(img.type || (main ? d.listing.type : ""), main ? d.listing.type_name : "");
+      const colour = plain ? "" : img.color_key && t.has(`color.${img.color_key}`) ? t(`color.${img.color_key}`) : img.color;
+      const chip = img.info ? t("images.info") : [kind, colour].filter(Boolean).join(" · ");
       const n = images.length;
       mount(
         hero,
@@ -327,7 +360,8 @@ export default {
           h("img", { src: img.thumb || img.url, alt: "", loading: "lazy", decoding: "async" }),
         ),
       );
-      for (let i = images.length; i < MIN_SLOTS; i += 1) kids.push(h("span", { class: "ld-thumb is-empty", "aria-hidden": "true" }));
+      // Only the listing's own images (video t230); the empty slots stand in for none.
+      if (!images.length) for (let i = 0; i < MIN_SLOTS; i += 1) kids.push(h("span", { class: "ld-thumb is-empty", "aria-hidden": "true" }));
       mount(st.stripEl, kids);
     }
 
@@ -345,7 +379,6 @@ export default {
         sourceRow(d, l),
         titleCard(d),
         tagsCard(d),
-        descriptionCard(d),
         facts(d, l),
         actions(d, l),
       );
@@ -357,7 +390,10 @@ export default {
       let name;
       let sub;
       if (s) {
-        pic = thumb({ src: s.rel ? ctx.api.url("/api/files/thumb", { path: s.rel, w: 96, v: s.mtime }) : null, size: 32, radius: 8, icon: s.kind === "folder" ? "folder" : "image", fit: "contain" });
+        const params = s.transparent ? { path: s.rel, w: 96, v: s.mtime, bg: "checker" } : { path: s.rel, w: 96, v: s.mtime };
+        pic = thumb({ src: s.rel ? ctx.api.url("/api/files/thumb", params) : null, size: 32, radius: 8, icon: s.kind === "folder" ? "folder" : "image", fit: "contain" });
+        // A transparent design reads as one on a checkerboard (video: the source tile).
+        if (s.transparent) pic.classList.add("is-transparent");
         name = s.name;
         if (!s.exists) sub = t("source.missing");
         else if (s.kind === "folder") sub = t("source.folder", { n: s.files });
@@ -374,7 +410,7 @@ export default {
       const seoBtn = h(
         "button",
         { type: "button", class: cx("badge", "ld-seo", `tone-${tone}`), "aria-haspopup": "dialog", title: t("seo.open") },
-        icon("sparkles", { size: 12 }),
+        icon("target", { size: 12 }),
         h("span", null, t("seo.score", { n: score })),
       );
       seoBtn.addEventListener("click", () => openIssues(seoBtn));
@@ -449,12 +485,15 @@ export default {
         st.titleOk = n > 0 && !problems.length;
       }
       update();
+      // The description is edited from here: the video's column has no description block
+      // and its actions row only the note, "Etsy'de aç" and "Yayınla".
+      st.descBtn = button({ label: t("desc.label"), icon: "file", variant: "ghost", size: "sm", class: "ld-desc-btn", title: t("desc.label"), ariaLabel: t("desc.label"), onClick: () => openDescription() });
       return card({
         class: "ld-card ld-title-card",
         title: t("title_card.label"),
-        icon: "sparkles",
-        iconTone: "accent",
-        actions: counter,
+        icon: "loader",
+        iconTone: "neutral",
+        actions: [st.descBtn, counter],
         body: [ta, err, h("div", { class: "ld-title-bar" }, bar)],
       });
     }
@@ -589,53 +628,73 @@ export default {
       });
     }
 
-    // Description (collapsible: one line until opened)
-    function descriptionCard() {
-      const firstLine = () => (st.draft.description.trim().split(/\r?\n/)[0] || t("desc.empty")).slice(0, 160);
-      const count = h("span", { class: "muted num ld-desc-count" }, t("desc.chars", { n: st.draft.description.trim().length }));
-      const sum = h("span", { class: "ld-desc-sum" }, firstLine());
+    // Description: not on the page (the video's right column has none), a button in the
+    // title card's head; the modal edits a copy, Tamam puts it in the draft (Kaydet saves).
+    function openDescription() {
+      let copy = st.draft.description;
+      const count = h("span", { class: "num" }, t("desc.chars", { n: copy.trim().length }));
       const ta = textArea({
-        value: st.draft.description,
-        rows: 8,
-        autoGrow: true,
+        value: copy,
+        rows: 12,
         class: "ld-desc-input",
         ariaLabel: t("desc.label"),
         onInput: (v) => {
-          st.draft.description = v;
+          copy = v;
           count.textContent = t("desc.chars", { n: v.trim().length });
-          syncDirty();
         },
       });
-      const toggleBtn = h(
-        "button",
-        { type: "button", class: "ld-desc-toggle", "aria-expanded": st.descOpen ? "true" : "false", "aria-label": t("desc.toggle") },
-        icon("chevron-down", { size: 16, class: "ld-desc-chev" }),
-      );
-      const node = card({
-        class: cx("ld-card", "ld-desc-card", st.descOpen && "is-open"),
-        title: [h("span", null, t("desc.label")), sum],
-        icon: "file",
-        iconTone: "neutral",
-        actions: [count, toggleBtn],
+      ta.setAttribute("autofocus", "");
+      ctx.modal({
+        title: t("desc.label"),
+        subtitle: count,
+        width: 640,
+        class: "ld-desc-modal",
         body: ta,
+        actions: [
+          { label: t("common.cancel"), variant: "secondary" },
+          {
+            label: t("common.ok"),
+            variant: "primary",
+            onClick: ({ close }) => {
+              st.draft.description = copy;
+              close();
+              syncDirty();
+            },
+          },
+        ],
       });
-      const toggle = () => {
-        st.descOpen = !st.descOpen;
-        node.classList.toggle("is-open", st.descOpen);
-        toggleBtn.setAttribute("aria-expanded", st.descOpen ? "true" : "false");
-        sum.textContent = firstLine();
-        if (st.descOpen) {
-          requestAnimationFrame(() => {
-            ta.dispatchEvent(new Event("input"));
-            ta.focus();
-          });
-        }
+    }
+
+    function catName(name) {
+      const key = `cat.${catSlug(name)}`;
+      return t.has(key) ? t(key) : null;
+    }
+
+    // "Giyim › Tişörtler": Etsy's root and leaf, in the UI's language (video t230). One
+    // that is not in the list keeps Etsy's own last two names; the full path is the tooltip.
+    function categoryText(d) {
+      const parts = String(d.category.path || "").split(" > ").map((x) => x.trim()).filter(Boolean);
+      if (parts.length) {
+        const root = catName(parts[0]);
+        const leaf = catName(parts[parts.length - 1]);
+        if (root && leaf) return parts.length > 1 ? `${root} › ${leaf}` : root;
+      }
+      return d.category.short || t("facts.no_category");
+    }
+
+    // "✓ 10/10 görsel" when stallkit placed every image of the draft (upload history);
+    // "7/8" in amber when one did not go up; else the count against Etsy's 20.
+    function imageCount(d, count) {
+      const src = d.source || {};
+      const total = Number(src.images_total) || 0;
+      const uploaded = src.images_uploaded === undefined || src.images_uploaded === null ? count : Number(src.images_uploaded);
+      if (count && (src.status === "partial" || (total && uploaded < total))) return { max: Math.max(total, count), tone: "warning", icon: "alert" };
+      if (count && src.status === "ok") return { max: count, tone: "success", icon: "check" };
+      return {
+        max: d.limits.images,
+        tone: count === 0 ? "danger" : count >= MIN_SLOTS ? "success" : "accent",
+        icon: count >= MIN_SLOTS ? "check" : count === 0 ? "alert" : null,
       };
-      toggleBtn.addEventListener("click", toggle);
-      node.querySelector(".card-head").addEventListener("click", (e) => {
-        if (!e.target.closest("button")) toggle();
-      });
-      return node;
     }
 
     function facts(d, l) {
@@ -653,7 +712,7 @@ export default {
           "div",
           { class: "ld-fact", title: d.category.path || "" },
           h("p", { class: "ld-fact-label" }, t("facts.category")),
-          h("p", { class: "ld-cat" }, d.category.short || t("facts.no_category")),
+          h("p", { class: "ld-cat" }, categoryText(d)),
         ),
         h(
           "div",
@@ -683,7 +742,7 @@ export default {
       st.publishBtn = state === "draft" ? button({ label: t("actions.publish"), icon: "upload", variant: "primary", size: "lg", onClick: () => publish() }) : null;
       const note = state === "active" ? t("actions.note_active") : t("actions.note");
       st.noteEl = h("p", { class: "ld-note", title: note }, icon("lock", { size: 13 }), h("span", null, note));
-      // The note takes the free space and wraps; the buttons stay together on the right.
+      // The note takes the free space; the buttons stay together on the right.
       const row = h("div", { class: "ld-actions" }, st.noteEl, st.discardBtn, st.saveBtn, open, st.publishBtn);
       st.actionsEl = row;
       queueMicrotask(syncDirty);
@@ -700,6 +759,14 @@ export default {
         st.saveBtn.setDisabled(st.busy || !st.titleOk || st.draft.tags.length > st.data.limits.tags);
       }
       if (st.publishBtn) st.publishBtn.setDisabled(st.busy || (dirty && !st.titleOk));
+      if (st.descBtn) {
+        // A dot on the button while the description differs from the saved one.
+        const changed = st.draft.description.trim() !== String(st.data.listing.description || "").trim();
+        const name = changed ? `${t("desc.label")} · ${t("desc.unsaved")}` : t("desc.label");
+        st.descBtn.classList.toggle("has-change", changed);
+        st.descBtn.title = name;
+        st.descBtn.setAttribute("aria-label", name);
+      }
     }
 
     function discard() {

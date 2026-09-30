@@ -9,6 +9,7 @@ import {
   cx,
   mount,
   button,
+  iconButton,
   tabs,
   searchInput,
   scoreRing,
@@ -28,11 +29,14 @@ import { percent, list as listText, lower } from "../format.js";
 
 const PAGE = 40; // cards rendered at once; "N ilan daha göster" adds the next page
 const RING = 72;
-const RING_FONT = 25; // the number inside the ring, as measured in t260
+const RING_FONT = 22; // the number inside the ring: 0.3 x the ring, as in SeoEkrani.tsx
 const MAX_TAGS = 13;
 const MAX_TAG_LEN = 20;
 const CHIP_LIMIT = 3;
 const SAMPLE = 300; // RESEARCH_SAMPLE in api/seo.py
+const TAG_ROWS = 5; // research rows on the card (the video's top 5); the rest are in Düzelt
+const REVEAL_GAP = 180; // ms between research rows arriving
+const COUNT_MS = 800; // a research row's % and bar growing from 0
 // Etsy's tag and material character rules (updateListing in the OpenAPI spec).
 const TAG_OK = /^[\p{L}\p{Nd}\s\-'™©®]+$/u;
 const MATERIAL_OK = /^[\p{L}\p{Nd}\s]+$/u;
@@ -51,6 +55,21 @@ function trSuffix(n) {
 
 function cleanTag(s) {
   return String(s || "").trim().split(/\s+/).filter(Boolean).join(" ");
+}
+
+/** A ring's colour follows the listing's final score from the first frame (the video). */
+function toneOf(score) {
+  return score >= 80 ? "success" : score >= 60 ? "warning" : "danger";
+}
+
+function setRing(ring, value, tone) {
+  ring.update(value);
+  for (const c of [...ring.classList]) if (c.startsWith("tone-")) ring.classList.remove(c);
+  ring.classList.add(`tone-${tone}`);
+}
+
+function isTyping(el) {
+  return !!(el && el.closest && el.closest("input, textarea, select, [contenteditable=''], [contenteditable='true']"));
 }
 
 export default {
@@ -72,6 +91,8 @@ export default {
       research: null,
       researchLoading: false,
       researchError: null,
+      revealed: false, // the audit list has had its first (slow) count-up
+      slowReveal: false,
     };
     const views = new Map(); // listing_id -> {el, ring, actionSlot, item}
     // Research answers, shared by the right card and the dialog: "<listing_id>|<keyword>" -> Promise.
@@ -85,37 +106,17 @@ export default {
 
     // ------------------------------------------------------------ header actions
 
-    // Downloaded through api.download: an error (no connection, offline) becomes a
-    // toast instead of a saved file holding the error.
-    const exportLink = h(
-      "button",
-      {
-        type: "button",
-        class: "btn btn-secondary btn-md btn-icon seo-export",
-        title: t("export"),
-        "aria-label": t("export"),
-        onClick: async () => {
-          if (exportLink.disabled) return;
-          exportLink.disabled = true;
-          try {
-            await ctx.api.download("/api/seo/export.csv", { params: { state: state.tab }, filename: `seo-${state.tab}.csv`, signal: ctx.signal });
-          } catch (err) {
-            if (!ctx.api.isAbort(err)) ctx.toast({ tone: "danger", title: ctx.api.errorText(err, t) });
-          } finally {
-            exportLink.disabled = false;
-          }
-        },
-      },
-      icon("download", { size: 16 }),
-    );
+    // The video's header holds "Yeniden tara" (and the shell's bell), nothing else. The
+    // list's other controls wait behind one button in the Denetim card's head (openTools).
     const rescanBtn = button({
       label: t("rescan"),
       icon: "refresh",
       variant: "secondary",
+      class: "seo-rescan",
       autoLoading: true,
       onClick: () => loadAudit({ refresh: true, announce: true }),
     });
-    ctx.setHeader({ actions: [exportLink, rescanBtn] });
+    ctx.setHeader({ actions: [rescanBtn] });
 
     // ------------------------------------------------------------ left card: Denetim
 
@@ -137,6 +138,11 @@ export default {
       legendItem("warning", t("legend.fair")),
       legendItem("danger", t("legend.poor")),
     );
+
+    // The list's controls, in a popover under one button after the legend: the Aktif /
+    // Taslaklar switch, the list search ("/" opens it), the shop-wide notes (a dot on
+    // the button while there are any) and the CSV report. The nodes live on between
+    // openings, so a choice or a query stays as it was.
     const tabsCtl = tabs({
       items: tabItems(),
       value: state.tab,
@@ -149,7 +155,7 @@ export default {
         loadAudit();
       },
     });
-    const shopSlot = h("div", { class: "seo-shop-slot" });
+    tabsCtl.el.classList.add("seo-tabs");
     const listSearch = searchInput({
       placeholder: t("search"),
       shortcut: "/",
@@ -159,9 +165,90 @@ export default {
         state.query = v;
         state.shown = PAGE;
         renderList(false);
+        renderToolsBtn();
       },
     });
-    const toolbar = h("div", { class: "seo-toolbar" }, tabsCtl.el, shopSlot, h("div", { class: "spacer" }), listSearch);
+    const exportBtn = button({
+      label: t("export"),
+      icon: "download",
+      variant: "ghost",
+      size: "sm",
+      class: "seo-tools-btn",
+      onClick: () => {
+        if (toolsPop) toolsPop.close();
+        // api.download: an error becomes a toast, not a saved file.
+        ctx.api
+          .download("/api/seo/export.csv", { params: { state: state.tab }, filename: `seo-${state.tab}.csv`, signal: ctx.signal })
+          .catch((err) => {
+            if (!ctx.api.isAbort(err)) ctx.toast({ tone: "danger", title: ctx.api.errorText(err, t) });
+          });
+      },
+    });
+    const toolsShop = h("div", { class: "seo-tools-shop" });
+    const toolsDot = h("span", { class: "seo-head-dot", "aria-hidden": "true", hidden: true });
+    const toolsBtn = iconButton({
+      icon: "more",
+      title: t("tools.title"),
+      variant: "ghost",
+      size: "sm",
+      class: "seo-head-btn",
+      onClick: () => openTools(),
+    });
+    toolsBtn.append(toolsDot);
+    toolsBtn.setAttribute("aria-haspopup", "dialog");
+    toolsBtn.setAttribute("aria-expanded", "false");
+    let toolsPop = null;
+
+    function openTools(focusSearch = false) {
+      if (toolsPop) {
+        if (focusSearch) listSearch.input.focus();
+        else toolsPop.close();
+        return;
+      }
+      renderToolsShop();
+      const pop = popover(
+        toolsBtn,
+        h(
+          "div",
+          { class: "seo-tools" },
+          h("p", { class: "seo-pop-label" }, t("tabs.label")),
+          tabsCtl.el,
+          listSearch,
+          toolsShop,
+          h("div", { class: "seo-tools-data" }, exportBtn),
+        ),
+        { placement: "bottom-end", width: 320, class: "seo-pop seo-tools-pop", role: "dialog", onClose: () => (toolsPop = null) },
+      );
+      if (!pop) return;
+      toolsPop = pop;
+      pop.el.setAttribute("aria-label", t("tools.title"));
+      if (focusSearch) listSearch.input.focus();
+      else pop.el.focus();
+    }
+
+    /** The button's dot and name: shop-wide notes are waiting; a draft list or a query is on. */
+    function renderToolsBtn() {
+      const issues = shopIssues();
+      const worst = issues.some((i) => i.severity === "error") ? "danger" : "warning";
+      toolsDot.hidden = !issues.length;
+      toolsDot.className = cx("seo-head-dot", `tone-${worst}`);
+      toolsBtn.classList.toggle("is-active", state.tab === "draft" || !!state.query.trim());
+      const label = issues.length ? t("tools.title_issues", { n: issues.length }) : t("tools.title");
+      toolsBtn.title = label;
+      toolsBtn.setAttribute("aria-label", label);
+      toolsBtn.hidden = !!state.setup;
+    }
+
+    const onSlash = (e) => {
+      if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (!toolsBtn.isConnected || toolsBtn.offsetParent === null) return;
+      if (isTyping(e.target) || document.querySelector(".modal-backdrop")) return;
+      e.preventDefault();
+      openTools(true);
+    };
+    document.addEventListener("keydown", onSlash);
+
+    const headTools = h("div", { class: "seo-head-tools" }, legend, toolsBtn);
     const listNote = h("div", { class: "seo-list-note" });
     const listEl = h("div", { class: "seo-list", role: "list", "aria-label": t("list.label"), "aria-busy": "true" });
     const auditCard = h(
@@ -172,9 +259,8 @@ export default {
         { class: "card-head" },
         h("span", { class: "icon-tile tone-accent" }, icon("target", { size: 16 })),
         h("div", { class: "card-titles" }, h("h2", { class: "card-title" }, t("audit.title")), auditSub),
-        legend,
+        headTools,
       ),
-      toolbar,
       listNote,
       listEl,
     );
@@ -190,6 +276,10 @@ export default {
       ariaLabel: t("research.input_label"),
       onEnter: (v) => runResearch(v),
     });
+    // A 7-day cached answer says so and can be fetched again: a small button at the end
+    // of the keyword field (textInput has no slot for one, so it joins the field's box).
+    const kwTail = h("span", { class: "seo-kw-tail" });
+    kwInput.append(kwTail);
     const explainEl = h("div", { class: "seo-explain" });
     const hintEl = h("div", { class: "seo-hint" });
     const tagsEl = h("div", { class: "seo-tags", role: "list", "aria-label": t("research.title") });
@@ -244,8 +334,9 @@ export default {
       return t.has(key) ? t(key, p) : issue.code;
     }
 
+    // The video: the first chip of a listing is red, every other one amber.
     function issueChip(issue, primary) {
-      const tone = primary || issue.severity === "error" ? "danger" : issue.severity === "warn" ? "warning" : "muted";
+      const tone = primary ? "danger" : "warning";
       const text = issueText(issue, primary);
       return h(
         "span",
@@ -270,20 +361,23 @@ export default {
       return [...first, ...rest];
     }
 
+    function morePill(rest) {
+      return h("span", { class: "seo-chip tone-muted seo-chip-more", title: rest.map((iss) => issueText(iss)).join("\n") }, t("more_issues", { n: rest.length }));
+    }
+
     function issueChips(item, limit = CHIP_LIMIT) {
       const issues = chipOrder(item.issues || []);
-      if (!issues.length) {
-        return [h("span", { class: "seo-chip tone-success" }, icon("check", { size: 13, strokeWidth: 2.4 }), h("span", null, t("no_issues")))];
+      if (!issues.length || item.ready) {
+        // A "Hazır" row reads green: its minor notes wait in the "+N" pill's tooltip
+        // (and in the dialog the Hazır button opens).
+        const ok = h("span", { class: "seo-chip tone-success" }, icon("check", { size: 13, strokeWidth: 2.4 }), h("span", null, t(issues.length ? "ready_minor" : "no_issues")));
+        return issues.length ? [ok, morePill(issues)] : [ok];
       }
       // The first chip is the listing's main problem: red, like an error.
       const shown = issues.slice(0, limit);
       const chips = shown.map((iss, i) => issueChip(iss, i === 0 && !item.ready && iss.severity !== "info"));
       const rest = issues.slice(limit);
-      if (rest.length) {
-        chips.push(
-          h("span", { class: "seo-chip tone-muted seo-chip-more", title: rest.map((iss) => issueText(iss)).join("\n") }, t("more_issues", { n: rest.length })),
-        );
-      }
+      if (rest.length) chips.push(morePill(rest));
       return chips;
     }
 
@@ -308,7 +402,7 @@ export default {
     function fitChips(box, item) {
       const count = (item.issues || []).length;
       box.classList.remove("is-tight");
-      if (!count) return; // "Sorun bulunamadı" alone
+      if (!count || item.ready) return; // the green chip (and "+N") only
       for (let n = Math.min(CHIP_LIMIT, count); n >= 1; n--) {
         mount(box, issueChips(item, n));
         if (box.scrollWidth <= box.clientWidth + 1) return;
@@ -316,24 +410,27 @@ export default {
       box.classList.add("is-tight"); // even one chip and "+N" are too wide: the chip shortens
     }
 
-    function animateRing(ring, from, to, delay = 0) {
+    /**
+     * Count a ring up from `from` to `to` (ease-out). It wears the final score's colour
+     * from the start, as in the video, so a good listing never flashes red on the way.
+     */
+    function animateRing(ring, from, to, { delay = 0, dur = 750 } = {}) {
+      const tone = toneOf(to);
       if (REDUCED_MOTION || from === to) {
-        ring.update(to);
+        setRing(ring, to, tone);
         return;
       }
+      setRing(ring, from, tone);
       ring.classList.add("is-counting");
-      ring.update(from);
-      const dur = 750;
       let start = null;
       const step = (now) => {
         if (!ring.isConnected && start !== null) return;
         if (start === null) start = now + delay;
         const k = Math.min(1, Math.max(0, (now - start) / dur));
         const eased = 1 - (1 - k) ** 3;
-        ring.update(Math.round(from + (to - from) * eased));
-        ring.classList.add("is-counting");
+        setRing(ring, Math.round(from + (to - from) * eased), tone);
         if (k < 1) requestAnimationFrame(step);
-        else ring.classList.remove("is-counting");
+        else ring.classList.remove("is-counting", "is-revealing");
       };
       requestAnimationFrame(step);
     }
@@ -370,12 +467,23 @@ export default {
     function itemView(item, index, animate) {
       const ring = scoreRing({ score: animate ? 0 : item.score, size: RING, stroke: 7, fontSize: RING_FONT });
       ring.classList.add("seo-ring");
-      const actionSlot = h("div", { class: "seo-item-action" });
-      const chipsEl = h(
-        "div",
-        { class: cx("seo-chips", animate && !REDUCED_MOTION && "is-entering"), style: animate ? { "--d": `${Math.min(index, 8) * 60 + 380}ms` } : null },
-        issueChips(item),
-      );
+      // The first load of the page counts up slowly, as in the video (each row a little
+      // later and longer); rescans and tab switches stay quick.
+      const slow = animate && state.slowReveal;
+      const ringDelay = Math.min(index, 8) * (slow ? 150 : 60);
+      const ringDur = slow ? Math.min(2600, 1400 + index * 300) : 750;
+      const enter = animate && !REDUCED_MOTION;
+      // Chips and the Düzelt button fade in while the ring is a third of the way up.
+      const timing = enter
+        ? { "--d": `${ringDelay + (slow ? Math.round(ringDur * 0.35) : 380)}ms`, "--dur": `${slow ? Math.round(ringDur * 0.45) : 320}ms` }
+        : null;
+      const actionSlot = h("div", { class: cx("seo-item-action", enter && "is-entering"), style: timing });
+      const chipsEl = h("div", { class: cx("seo-chips", enter && "is-entering"), style: timing }, issueChips(item));
+      if (enter) {
+        ring.classList.add("is-revealing");
+        ring.style.setProperty("--rd", `${ringDelay}ms`);
+        ring.style.setProperty("--rdur", `${ringDur}ms`);
+      }
       if (chipObserver) {
         chipRows.set(chipsEl, { item, width: 0 });
         chipObserver.observe(chipsEl);
@@ -410,7 +518,7 @@ export default {
       );
       const view = { el: row, ring, actionSlot, item };
       renderAction(view);
-      if (animate) animateRing(ring, 0, item.score, Math.min(index, 8) * 60);
+      if (animate) animateRing(ring, 0, item.score, { delay: ringDelay, dur: ringDur });
       return view;
     }
 
@@ -489,6 +597,32 @@ export default {
       if (state.data && state.data.truncated) {
         mount(listNote, infoNote({ icon: "info", tone: "warning", text: t("audit.truncated", { n: state.items.length }) }));
       }
+      const q = state.query.trim();
+      if (q && state.items.length) {
+        // The search field is in the tools popover: a filtered list says so, with a way out.
+        listNote.append(
+          h(
+            "div",
+            { class: "seo-query", role: "status" },
+            icon("search", { size: 13 }),
+            h("span", { class: "ellipsis" }, t("search.active", { q, n: visibleItems().length })),
+            button({
+              label: t("common.clear"),
+              icon: "x",
+              variant: "ghost",
+              size: "sm",
+              class: "seo-query-clear",
+              onClick: () => {
+                listSearch.value = "";
+                state.query = "";
+                state.shown = PAGE;
+                renderList(false);
+                renderToolsBtn();
+              },
+            }),
+          ),
+        );
+      }
       if (!state.items.length) {
         mount(listEl, emptyState({ icon: "search", title: t(state.tab === "draft" ? "empty.draft" : "empty.active"), message: t("empty.msg") }));
         return;
@@ -521,74 +655,68 @@ export default {
       mount(listEl, nodes);
     }
 
-    function renderShopButton() {
-      const issues = (state.data && state.data.shop_issues) || [];
-      if (!issues.length || state.loading) {
-        mount(shopSlot);
-        return;
-      }
-      const worst = issues.some((i) => i.severity === "error") ? "danger" : "warning";
-      const btn = button({
-        label: t("shop.button"),
-        icon: "alert",
-        variant: "ghost",
-        size: "sm",
-        count: issues.length,
-        class: cx("seo-shop-btn", `tone-${worst}`),
-        title: t("shop.title"),
-        onClick: () => openShopPopover(btn, issues),
-      });
-      btn.setAttribute("aria-haspopup", "dialog");
-      mount(shopSlot, btn);
+    /** The shop-wide notes of the list on screen (none while it loads). */
+    function shopIssues() {
+      return (!state.loading && state.data && state.data.shop_issues) || [];
     }
 
-    function openShopPopover(anchor, issues) {
+    /** The tools popover's shop-wide part: the notes and the tags most listings share. */
+    function renderToolsShop() {
+      const issues = shopIssues();
+      if (!issues.length) {
+        mount(toolsShop);
+        return;
+      }
       const overlap = issues.find((i) => i.code === "shop.tag_overlap");
       const top = overlap ? overlap.params.top || [] : [];
-      popover(
-        anchor,
-        [
-          h("p", { class: "seo-pop-title" }, t("shop.title")),
-          h("p", { class: "seo-pop-sub" }, t("shop.sub")),
-          issues.map((i) =>
-            h(
-              "div",
-              { class: cx("seo-pop-issue", `tone-${i.severity === "error" ? "danger" : "warning"}`) },
-              icon("alert", { size: 14 }),
-              h("p", null, t.has(`shop_issue.${i.code}`) ? t(`shop_issue.${i.code}`, i.params) : i.code),
-            ),
+      mount(
+        toolsShop,
+        h("p", { class: "seo-pop-title" }, t("shop.title")),
+        h("p", { class: "seo-pop-sub" }, t("shop.sub")),
+        issues.map((i) =>
+          h(
+            "div",
+            { class: cx("seo-pop-issue", `tone-${i.severity === "error" ? "danger" : "warning"}`) },
+            icon("alert", { size: 14 }),
+            // n picks the "_one" wording for a single tag or listing
+            h("p", null, t.has(`shop_issue.${i.code}`) ? t(`shop_issue.${i.code}`, { ...i.params, n: i.params.tags ?? i.params.crowded }) : i.code),
           ),
-          top.length
-            ? [
-                h("p", { class: "seo-pop-label" }, t("shop.common_tags")),
-                h(
-                  "div",
-                  { class: "seo-pop-tags" },
-                  top.map((row) => tagChip({ text: row.tag, count: t("shop.tag_count", { count: row.count, listings: overlap.params.listings }) })),
-                ),
-              ]
-            : null,
-        ],
-        { width: 380, class: "seo-pop", role: "dialog", placement: "bottom-start" },
+        ),
+        top.length
+          ? [
+              h("p", { class: "seo-pop-label" }, t("shop.common_tags")),
+              h(
+                "div",
+                { class: "seo-pop-tags" },
+                top.map((row) => tagChip({ text: row.tag, count: t("shop.tag_count", { count: row.count, listings: overlap.params.listings }) })),
+              ),
+            ]
+          : null,
       );
     }
 
     function renderSub() {
       const d = state.data;
+      // The Aktif / Taslaklar switch is in the tools popover: the line says which list it is.
+      const drafts = state.tab === "draft";
       if (state.loading) auditSub.textContent = t("audit.scanning");
       else if (d && !state.setup && !state.error) {
         auditSub.textContent = d.needs_fix
-          ? t("audit.sub", { n: d.scanned, m: d.needs_fix })
-          : t("audit.sub_ready", { n: d.scanned });
+          ? t(drafts ? "audit.sub_draft" : "audit.sub", { n: d.scanned, m: d.needs_fix })
+          : t(drafts ? "audit.sub_ready_draft" : "audit.sub_ready", { n: d.scanned });
       } else auditSub.textContent = "";
+      auditSub.title = auditSub.textContent; // the line ends in "…" in a narrow card
     }
 
     function renderAudit(animate) {
       renderSub();
       tabsCtl.update(tabItems(), state.tab);
-      exportLink.hidden = !!state.setup;
-      toolbar.hidden = !!state.setup;
-      renderShopButton();
+      if (state.setup && toolsPop) toolsPop.close();
+      renderToolsBtn();
+      if (toolsPop) {
+        renderToolsShop();
+        toolsPop.reposition();
+      }
       renderList(animate);
     }
 
@@ -598,6 +726,19 @@ export default {
       const seq = ++auditSeq;
       if (auditCtl) auditCtl.abort();
       auditCtl = new AbortController();
+      // No keys or no sign-in yet: say so without asking the server for a 409.
+      const status = ctx.status();
+      const missing = status && (status.state === "keys" ? "keys" : status.state === "disconnected" ? "connect" : null);
+      if (missing) {
+        state.loading = false;
+        state.error = null;
+        state.data = null;
+        state.items = [];
+        state.setup = missing;
+        renderAudit(false);
+        renderResearch();
+        return;
+      }
       state.loading = true;
       state.error = null;
       renderAudit(false);
@@ -610,7 +751,10 @@ export default {
         state.setup = null;
         state.loading = false;
         if (!state.items.some((it) => it.listing_id === state.selected)) state.selected = null;
+        state.slowReveal = !state.revealed && state.items.length > 0;
         renderAudit(true);
+        if (state.items.length) state.revealed = true;
+        state.slowReveal = false;
         if (announce) ctx.toast({ tone: "success", title: t("rescanned"), timeout: 2500 });
         if (state.selected === null) {
           const first = state.items.find((it) => !it.ready) || state.items[0];
@@ -717,11 +861,27 @@ export default {
       }
     }
 
-    function tagRow(row, sampled, item) {
+    /** Count a research row's share up from 0 (the video's reveal). */
+    function countShare(el, share, done) {
+      let start = null;
+      const step = (now) => {
+        if (!el.isConnected) return;
+        if (start === null) start = now;
+        const k = Math.min(1, (now - start) / COUNT_MS);
+        el.textContent = percent(share * (1 - (1 - k) ** 3));
+        if (k < 1) requestAnimationFrame(step);
+        else done();
+      };
+      requestAnimationFrame(step);
+    }
+
+    /** reveal: the row's place in a new answer (it fades in, its % and bar grow), or -1. */
+    function tagRow(row, sampled, item, reveal = -1) {
       const picked = item ? pendingFor(item.listing_id) : [];
       const added = picked.includes(row.tag);
       const room = item ? freeSlots(item) : 0;
-      const bar = progressBar({ value: Math.round(row.share * 1000) / 10, max: 100, tone: "accent", size: "lg" });
+      const value = Math.round(row.share * 1000) / 10;
+      const bar = progressBar({ value: reveal >= 0 ? 0 : value, max: 100, tone: "accent", size: "lg" });
       const btn = button({
         label: added ? t("research.added") : t("research.add"),
         icon: added ? "check" : "plus",
@@ -733,9 +893,14 @@ export default {
       });
       btn.setAttribute("aria-pressed", added ? "true" : "false");
       btn.dataset.tag = row.tag;
-      return h(
+      const final = percent(row.share);
+      const shareEl = h("span", { class: "seo-tag-share num", title: t("research.share_title", { count: row.count, sampled }) }, reveal >= 0 ? percent(0) : final);
+      // While the number counts, screen readers get the final one.
+      const srShare = reveal >= 0 ? h("span", { class: "sr-only" }, final) : null;
+      if (srShare) shareEl.setAttribute("aria-hidden", "true");
+      const el = h(
         "div",
-        { class: "seo-tag-row", role: "listitem" },
+        { class: cx("seo-tag-row", reveal >= 0 && "is-entering"), role: "listitem", style: reveal >= 0 ? { "--d": `${reveal * REVEAL_GAP}ms` } : null },
         h(
           "div",
           { class: "seo-tag-main" },
@@ -744,12 +909,28 @@ export default {
             { class: "seo-tag-line" },
             h("span", { class: "seo-tag-icon" }, icon("tag", { size: 15 })),
             h("span", { class: "seo-tag-name ellipsis", title: row.tag }, row.tag),
-            h("span", { class: "seo-tag-share num", title: t("research.share_title", { count: row.count, sampled }) }, percent(row.share)),
+            shareEl,
+            srShare,
           ),
           bar.el,
         ),
         btn,
       );
+      if (reveal >= 0) {
+        setTimeout(() => {
+          if (!el.isConnected) return;
+          requestAnimationFrame(() => {
+            void bar.el.offsetWidth; // the 0 width is laid out, so the bar grows from it
+            bar.update(value);
+            countShare(shareEl, row.share, () => {
+              shareEl.textContent = final;
+              shareEl.removeAttribute("aria-hidden");
+              if (srShare) srShare.remove();
+            });
+          });
+        }, reveal * REVEAL_GAP);
+      }
+      return el;
     }
 
     function skeletonRow() {
@@ -760,6 +941,8 @@ export default {
         h("span", { class: "skeleton", style: { height: 32, width: 72, borderRadius: 10 } }),
       );
     }
+
+    const revealedResearch = new WeakSet(); // research answers whose rows already arrived
 
     function renderResearch() {
       const data = state.research;
@@ -776,34 +959,35 @@ export default {
         return;
       }
 
-      // explanation line (+ where the numbers came from)
+      // The explanation line: the sentence alone, as in the video. The top 5 are on the
+      // card; the Düzelt dialog of the chosen listing lists every suggestion.
       if (state.keyword && ((data && data.sampled) || state.researchLoading)) {
         const excluding = data ? data.listing_id !== null && data.listing_id !== undefined : !!item;
-        mount(
-          explainEl,
-          h("p", null, t(excluding ? "research.explain" : "research.explain_all", { n: sampled || SAMPLE })),
-          // A 7-day cached answer says so (tooltip) and can be fetched again.
-          data && data.cached && !state.researchLoading
-            ? h(
-                "button",
-                {
-                  type: "button",
-                  class: "seo-cached",
-                  title: `${t("research.cached")} · ${t("research.refresh")}`,
-                  "aria-label": `${t("research.cached")} · ${t("research.refresh")}`,
-                  onClick: () => runResearch(state.keyword, { refresh: true }),
-                },
-                icon("history", { size: 14 }),
-              )
-            : null,
-        );
+        mount(explainEl, h("p", null, t(excluding ? "research.explain" : "research.explain_all", { n: sampled || SAMPLE })));
       } else {
         mount(explainEl);
       }
+      const cachedLabel = `${t("research.cached")} · ${t("research.refresh")}`;
+      mount(
+        kwTail,
+        data && data.cached && !state.researchLoading && state.keyword
+          ? h(
+              "button",
+              {
+                type: "button",
+                class: "seo-cached",
+                title: cachedLabel,
+                "aria-label": cachedLabel,
+                onClick: () => runResearch(state.keyword, { refresh: true }),
+              },
+              icon("history", { size: 14 }),
+            )
+          : null,
+      );
 
       if (state.researchLoading) {
         tagsEl.setAttribute("aria-busy", "true");
-        mount(tagsEl, [0, 1, 2, 3, 4].map(skeletonRow));
+        mount(tagsEl, Array.from({ length: TAG_ROWS }, skeletonRow));
         return;
       }
       tagsEl.setAttribute("aria-busy", "false");
@@ -856,7 +1040,12 @@ export default {
           }),
         );
       }
-      mount(tagsEl, data.tags.map((row) => tagRow(row, data.sampled, item)));
+      // A new answer's rows arrive one by one, their % and bars growing from 0 (the
+      // video); an answer drawn again (after "+ Ekle", or its listing picked again)
+      // stays still.
+      const fresh = !revealedResearch.has(data) && !REDUCED_MOTION;
+      revealedResearch.add(data);
+      mount(tagsEl, data.tags.slice(0, TAG_ROWS).map((row, i) => tagRow(row, data.sampled, item, fresh ? i : -1)));
 
       const picked = item ? pendingFor(item.listing_id) : [];
       if (picked.length) {
@@ -900,7 +1089,8 @@ export default {
       const adds = pendingFor(id).map((tag) => ({ tag, share: null, checked: true, picked: true }));
       let suggestions = null; // research rows for this listing
       let suggestionsError = null;
-      let titleOn = !!fix.title;
+      // A title change is offered, never pre-ticked: the seller reads it first.
+      let titleOn = false;
       const original = rows.map((r) => r.tag);
 
       const finalTags = () => [
@@ -1032,6 +1222,7 @@ export default {
         if (!suggestions && !suggestionsError) kids.push(h("p", { class: "seo-fix-muted" }, h("span", { class: "seo-inline-spin" }), t("fix.add_loading")));
         if (suggestionsError) kids.push(h("p", { class: "seo-fix-muted" }, t("fix.add_error", { message: ctx.api.errorText(suggestionsError, t) })));
         if (suggestions && !adds.length) kids.push(h("p", { class: "seo-fix-muted" }, t("fix.add_none")));
+        if (adds.some((a) => !a.picked)) kids.push(h("p", { class: "seo-fix-muted seo-fix-pick" }, t("fix.pick_hint")));
         kids.push(
           adds.map((a) =>
             h(
@@ -1095,14 +1286,15 @@ export default {
       if (fix.title) {
         const afterEl = h("p", { class: "seo-fix-after" }, h("span", { class: "seo-fix-k" }, t("fix.after")), h("span", null, fix.title.after));
         const beforeEl = h("p", { class: "seo-fix-before" }, h("span", { class: "seo-fix-k" }, t("fix.before")), h("s", null, fix.title.before));
-        const box = h("div", { class: "seo-fix-title-box" }, beforeEl, afterEl);
+        const box = h("div", { class: cx("seo-fix-title-box", !titleOn && "is-off") }, beforeEl, afterEl);
+        const dropped = (fix.title.phrases || fix.title.words || []).map((p) => `“${p}”`);
         titleSection = h(
           "section",
           { class: "seo-fix-sec" },
           h("h3", { class: "seo-fix-h" }, t("fix.title_section")),
           checkbox({
             checked: titleOn,
-            label: t("fix.title_check", { words: (fix.title.words || []).join(", ") }),
+            label: t("fix.title_check", { words: dropped.join(", ") }),
             onChange: (v) => {
               titleOn = v;
               box.classList.toggle("is-off", !v);
@@ -1204,17 +1396,11 @@ export default {
         update();
       }
 
+      // Tags picked with "+ Ekle" come ticked; every other suggestion is listed unticked,
+      // for the seller to tick the ones that describe the product (the video adds each
+      // tag by its own "Ekle": "Sadece ürününüzü dürüstçe anlatan etiketleri ekleyin").
       function preselect() {
         if (!body.isConnected) return;
-        renderAdds();
-        // Tags picked with "+ Ekle" are the choice; with none picked, the most common
-        // missing tags fill the free slots (each one can be unticked).
-        if (!adds.some((a) => a.picked)) {
-          for (const a of adds) {
-            if (room() <= 0) break;
-            if (!a.checked && !has(a.tag)) a.checked = true;
-          }
-        }
         update();
       }
 
@@ -1305,6 +1491,8 @@ export default {
     await loadAudit();
 
     return () => {
+      if (toolsPop) toolsPop.close();
+      document.removeEventListener("keydown", onSlash);
       researchCache.clear();
       if (chipObserver) chipObserver.disconnect();
     };

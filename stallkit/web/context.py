@@ -737,11 +737,15 @@ class AppContext:
         params: dict[str, Any] | None = None,
         tone: str = "info",
         link: str | None = None,
+        replace: bool = False,
     ) -> dict[str, Any]:
         """Store a notification for the bell and push it. The UI shows t(ns + ":" + key).
 
         A shop name goes in `params["shop"]` as it is: it is hidden when shown, while
         the hide-names preference is on (see shown_notification). Returns it as shown.
+        `replace` drops the stored notifications with the same ns and key first (a newer
+        suggestion supersedes the older one instead of piling up in the bell); the pushed
+        event then names them in `replaces`, so an open bell drops them too.
         """
         item = {
             "id": uuid.uuid4().hex[:12],
@@ -753,12 +757,21 @@ class AppContext:
             "at": round(time.time(), 3),
             "read": False,
         }
+        replaced: list[str] = []
         with self._notify_lock:
             items = self._read_notifications()
+            if replace:
+                kept = []
+                for old in items:
+                    if old.get("ns") == ns and old.get("key") == key:
+                        replaced.append(str(old.get("id")))
+                    else:
+                        kept.append(old)
+                items = kept
             items.append(item)
             self._write_notifications(items)
         shown = self.shown_notification(item)
-        self.events.publish("notification", shown)
+        self.events.publish("notification", {**shown, "replaces": replaced} if replaced else shown)
         return shown
 
     def mark_notifications_read(self, ids: list[str] | None = None) -> int:

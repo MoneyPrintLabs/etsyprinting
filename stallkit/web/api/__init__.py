@@ -15,6 +15,7 @@ from . import (
     core,
     dashboard,
     designs,
+    infoimages,
     listings,
     mockups,
     orders,
@@ -24,6 +25,7 @@ from . import (
     settings,
     template,
     updates,
+    watermark,
 )
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -35,7 +37,9 @@ MODULES = (
     connect,
     settings,
     mockups,
+    watermark,
     template,
+    infoimages,
     designs,
     listings,
     seo,

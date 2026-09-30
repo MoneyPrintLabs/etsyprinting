@@ -514,7 +514,52 @@ class EtsyClient:
         """
         payload = self.get(f"/listings/{listing_id}/images", authed=self.token is not None)
         images = (payload or {}).get("results") or []
+        for image in images:
+            if isinstance(image, dict):
+                # The seller wrote it; Etsy escapes it like a title ("Size &amp; care").
+                _unescape_fields(image, ("alt_text",))
         return sorted(images, key=lambda image: image.get("rank") or 0)
+
+    def download_image(self, url: str, *, max_bytes: int | None = None) -> bytes:
+        """A listing photo's bytes from Etsy's image CDN (a ListingImage's url_fullxfull).
+
+        The CDN is public and is not the API: neither the API key nor the sign-in is
+        sent, and no other host is fetched (is_etsy_image_url). A GET, so it is retried
+        like one; a file over `max_bytes` (Etsy's own 20 MB image limit) is refused while
+        it streams. Raises ValidationError for a refused URL or size, EtsyApiError for an
+        HTTP error (status 0: the network, or any answer that is not a 2xx: a redirect is
+        not followed, and its body is never taken for the picture).
+        """
+        if not is_etsy_image_url(url):
+            raise ValidationError(f"Not an Etsy image address: {str(url)[:120]}")
+        limit = MAX_IMAGE_BYTES if max_bytes is None else max_bytes
+        max_attempts = getattr(self._local, "attempts", None) or MAX_ATTEMPTS
+        headers = {"Accept": "image/*", "User-Agent": self._headers(authed=False)["User-Agent"]}
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                with self._http.stream("GET", url, headers=headers) as resp:
+                    if not resp.is_success:
+                        retryable = resp.status_code == 429 or resp.status_code >= 500
+                        if not retryable or attempt >= max_attempts:
+                            raise EtsyApiError(
+                                resp.status_code, f"the image could not be downloaded "
+                                f"(HTTP {resp.status_code})", method="GET", path=url,
+                            )
+                    else:
+                        data = bytearray()
+                        for chunk in resp.iter_bytes():
+                            data += chunk
+                            if len(data) > limit:
+                                raise ValidationError(
+                                    f"The image is larger than {limit // 1024 // 1024} MB."
+                                )
+                        return bytes(data)
+            except httpx.HTTPError as exc:
+                if attempt >= max_attempts:
+                    raise EtsyApiError(0, f"network error: {exc}", method="GET", path=url) from exc
+            time.sleep(self._backoff(attempt))
 
     def listings_batch(
         self, listing_ids: Iterable[int], *, includes: Sequence[str] | None = None
@@ -556,17 +601,24 @@ class EtsyClient:
         )
 
     def upload_listing_image(
-        self, listing_id: int, image: Path, *, rank: int = 1, alt_text: str = ""
+        self, listing_id: int, image: Path, *, rank: int = 1, alt_text: str = "",
+        is_watermarked: bool = False,
     ) -> dict[str, Any]:
+        """uploadListingImage: `is_watermarked` tells Etsy the picture carries a
+        watermark (OAS: boolean form field, default false; sent only when true)."""
         # Refuse before reading. A file Etsy will not take should not be pulled into
         # memory first, and the refusal has to land before the request, not after —
         # by upload time the draft already exists and the row can only be "partial".
         mime = _mime_for(image)
         with image.open("rb") as handle:
             files = {"image": (image.name, handle.read(), mime)}
+        # `is_watermarked` is sent only for a photo stallkit stamped (drop.watermark);
+        # a shop's info images never carry it.
         data = {"rank": str(rank)}
         if alt_text:
-            data["alt_text"] = alt_text[:250]
+            data["alt_text"] = alt_text[:MAX_ALT_TEXT]
+        if is_watermarked:
+            data["is_watermarked"] = "true"
         return self.request(
             "POST",
             f"/shops/{self.shop_id()}/listings/{listing_id}/images",
@@ -766,6 +818,24 @@ UPLOADABLE_SUFFIXES = frozenset(_MIME)
 
 # Etsy refuses a listing image over 20MB.
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
+
+# uploadListingImage's alt_text: "Max length 500 characters" (the Open API spec).
+MAX_ALT_TEXT = 500
+
+# Where a ListingImage's pictures live (url_fullxfull, url_570xN, ...): Etsy's image
+# CDN, i.etsystatic.com. download_image fetches nothing else.
+IMAGE_HOSTS = ("etsystatic.com",)
+
+
+def is_etsy_image_url(url: Any) -> bool:
+    """An https address on Etsy's image CDN: the only kind download_image fetches."""
+    if not isinstance(url, str) or not url.startswith("https://"):
+        return False
+    try:
+        host = (httpx.URL(url).host or "").lower().rstrip(".")
+    except (httpx.InvalidURL, ValueError, TypeError):
+        return False
+    return any(host == name or host.endswith("." + name) for name in IMAGE_HOSTS)
 
 
 def image_problem(path: Path) -> str | None:

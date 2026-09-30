@@ -342,6 +342,11 @@ CSV-only review workflow and now also understands ready-photo folders.
 - The template listing's type is kept: `physical`, `download` or `both`. Its variations
   (options, prices, quantities, processing profile) are copied onto every draft. Source
   files remain in place; there is no automatic archive move.
+- `--section NAME_OR_ID` (on `drop auto` and `drop run`) puts every draft of that run in
+  one shop section instead of the template listing's: its title (any case) or its id
+  from `stallkit shop profiles`, or `none` for no section. The section is looked up in
+  your shop first (a read, also in a dry run), so a deleted or misspelled one stops the
+  run before anything is sent; `product.json` keeps its own section.
 
 ### Digital products
 
@@ -380,6 +385,34 @@ Etsy Studio/
   `partial`: finish it in Etsy. When an image fails, the download files are still sent
   and the message says whether they went up.
 - `drop run` counts the download files in its request estimate.
+
+### Watermark
+
+A listing photo of a digital product is the product at up to 3000 px, so you can stamp
+your own mark on the photos. The app's Mockups page sets it (with a live preview), or:
+
+```bash
+stallkit drop watermark --file logo.png                  # a transparent PNG works best
+stallkit drop watermark --position tiled --opacity 35     # center | corner | tiled
+stallkit drop watermark --scope all                       # digital (default) | all
+stallkit drop watermark --off                             # keep it, stamp nothing
+stallkit drop watermark                                   # show what is set
+```
+
+- It lives beside the folders, as `watermark.png` and `watermark.json`, so `drop run`,
+  `drop auto` and the app's runs all use the same one; `--no-watermark` leaves it off
+  for one run.
+- `--scope digital` stamps only when the template is a `download` or `both` listing;
+  `all` stamps every listing's photos. The size is a share of the photo's width (30 % for
+  one mark, 15 % for each repeated one), opacity 10-90 % (35 % by default).
+- It goes on copies of every listing photo: the mockups, the flat render or preview, a
+  folder product's own photos. The copies land in the batch's `watermarked` folder in
+  `3-DRAFTS`; your files in `2-PRODUCTS` stay as they are, and **the files buyers
+  download are never stamped**. Etsy is told which pictures carry a watermark: by
+  `drop auto`, the app, and `stallkit listings push` of a `drop run` batch's
+  `review.csv` (which also sends the info images' alt texts, kept in the batch's
+  `info-alts.json`).
+- A photo the mark cannot be put on stops its product; it never goes up without it.
 
 ### Compositing loose designs
 
@@ -420,7 +453,17 @@ name does not say it: `dog-dad-paw-print.png` on a shirt template is searched as
 `dog dad paw print shirt`, not as a poster ("print"). Free tag slots take the template
 listing's own tags only when they suit any design of that product (`graphic tee`,
 `gift for her`); its tags about its own design (`retro mountain sunset`, `hiking gift`)
-stay on it. **Nothing is sent to
+stay on it.
+
+The description is the template listing's own, with its title (and a line made of the
+title's `|`- or `,`-separated parts) replaced by each draft's title. A sentence that names
+the template's own design (a word of its title or tags such as `lemon`; never a
+product word such as `wallpaper` or `sample`) would go onto every draft, so
+`drop template` lists them and each product of `drop run` warns while they remain. Write
+the text drafts should get as `"description_template"` in `product.json` (the app's
+**Şablon İlan → Açıklama şablonu** does this): `{title}` / `{başlık}` is each draft's
+title and `{design}` / `{tasarım}` its design's name from the file name. Picking another
+listing with `drop template` starts over from that listing's description. **Nothing is sent to
 Etsy.** Check `review.csv`, then:
 
 ```bash
@@ -658,6 +701,7 @@ Task Scheduler or cron.
 | `stallkit drop template` | Copy settings from a listing you built by hand |
 | `stallkit drop run` | Designs → mockups (the Mockuplar selection), titles, tags → `review.csv` |
 | `stallkit drop calibrate` | Move a mockup's print area, with a preview image to check it |
+| `stallkit drop watermark` | Show or set the watermark stamped on listing photos (`--file`, `--on/--off`, `--position`, `--opacity`, `--size`, `--scope`) |
 | `stallkit drop auto` | Designs and product folders → Etsy drafts (with their download files for a digital template), with upload history |
 | `stallkit listings template` | Write a starter CSV |
 | `stallkit listings pull` | Export listings to CSV |

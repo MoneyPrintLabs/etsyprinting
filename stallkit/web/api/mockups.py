@@ -23,7 +23,7 @@ from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ...config import home_dir
+from ...config import MAX_LISTING_IMAGES, home_dir
 from ...drop import catalog, mockup
 from ...drop.workspace import IMAGE_SUFFIXES, MOCKUPS_DIR, PRODUCTS_DIR
 from ...errors import ValidationError
@@ -258,7 +258,8 @@ def _items(ws: Workspace) -> dict[str, Any]:
     """The grid: every mockup in the seller's order, and which ones drafts use.
 
     items[i]["position"] is the image number a draft gives it (1 = main image) or None;
-    "over_limit" marks a switched-on mockup that does not fit (beyond MAX_ENABLED).
+    "over_limit" marks a switched-on mockup that does not fit (beyond "max_enabled":
+    MAX_ENABLED less one per info image, catalog.usage).
     "default_area" counts the mockups still on the default print area, with the first
     one to fix (in order, preferring one that drafts use) for the page's banner.
     """
@@ -310,9 +311,12 @@ def _items(ws: Workspace) -> dict[str, Any]:
         "types": dict(Counter(item["type"] for item in items)),
         "counts": {"total": use["total"], "enabled": use["enabled"], "in_use": len(use["used"])},
         "usage": use,
-        "max_enabled": catalog.MAX_ENABLED,
+        # 19 (Etsy's 20 pictures less the flat design), less one per info image.
+        "max_enabled": use["max"],
+        "info_images": use["info"],
+        "images_max": MAX_LISTING_IMAGES,
         "limit_note": (
-            {"enabled": use["enabled"], "max": catalog.MAX_ENABLED} if use["over_limit"] else None
+            {"enabled": use["enabled"], "max": use["max"]} if use["over_limit"] else None
         ),
         "default_area": _default_area(items, sizes),
         "positions_error": positions_error,
@@ -615,6 +619,15 @@ def _has_alpha(path: Path) -> bool:
             return image.mode in ("RGBA", "LA", "PA") or "transparency" in image.info
     except (OSError, ValueError, Image.DecompressionBombError):
         return False
+
+
+def default_design(ws: Workspace) -> str:
+    """The design a preview starts with: the first transparent one in 2-PRODUCTS (of the
+    first DEFAULT_SCAN), else the bundled sample."""
+    for path in ws.product_files()[:DEFAULT_SCAN]:
+        if _has_alpha(path):
+            return path.relative_to(ws.products).as_posix()
+    return SAMPLE
 
 
 def list_designs(req: Request) -> dict[str, Any]:

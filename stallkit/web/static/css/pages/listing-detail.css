@@ -80,7 +80,7 @@
   background: rgba(17, 18, 23, 0.82);
   color: #fff;
   font-size: 12.5px;
-  font-weight: 650;
+  font-weight: 600;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
 }
 .page-listing-detail .ld-chip-tl {
@@ -126,7 +126,7 @@
   font-size: 14px;
 }
 .page-listing-detail .ld-strip-head b {
-  font-weight: 650;
+  font-weight: 600;
 }
 .page-listing-detail .ld-strip-head .muted {
   font-size: 12.5px;
@@ -185,6 +185,11 @@
 .page-listing-detail .ld-source .thumb {
   background: #f4f1ec;
 }
+/* A transparent design on the checkerboard (video: the source tile, CHECKER). */
+.page-listing-detail .ld-source .thumb.is-transparent {
+  background: repeating-conic-gradient(#eeedf2 0% 25%, #dfdee6 0% 50%) 0 0 / 10.5px 10.5px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
 .page-listing-detail .ld-source-text {
   min-width: 0;
   flex: 0 1 auto;
@@ -217,18 +222,24 @@
   margin-bottom: 14px;
 }
 .page-listing-detail .ld-card .card-title {
+  /* IlanDetayEkrani's field labels ("Başlık", "Etiketler") are UI text, 600, unlike the
+     other screens' card titles (base.css draws those in the display face). */
+  font-family: var(--font);
+  word-spacing: normal;
   font-size: 14.5px;
 }
 .page-listing-detail .ld-card .icon-tile {
   width: 28px;
   height: 28px;
   border-radius: 8px;
+  /* The video's FieldHead: a plain tile with an accent icon (Başlık, Etiketler). */
+  color: var(--accent-2);
 }
 .page-listing-detail .ld-hint {
   margin-left: 4px;
   color: var(--muted);
   font-size: 12.5px;
-  font-weight: 450;
+  font-weight: 400;
 }
 .page-listing-detail .ld-counter {
   height: 26px;
@@ -253,9 +264,9 @@
   border-radius: 6px;
   background: transparent;
   color: var(--text);
-  font-size: 18px;
+  font-size: 19px;
   font-weight: 600;
-  line-height: 1.55;
+  line-height: 28px;
   letter-spacing: -0.01em;
   resize: none;
   overflow: hidden;
@@ -352,64 +363,40 @@
   color: var(--danger);
 }
 
-/* Description (collapsible) */
-.page-listing-detail .ld-desc-card {
-  padding-top: 12px;
-  padding-bottom: 12px;
-}
-.page-listing-detail .ld-desc-card .card-head {
-  cursor: pointer;
-  margin-bottom: 0;
-}
-.page-listing-detail .ld-desc-card.is-open .card-head {
-  margin-bottom: 12px;
-}
-.page-listing-detail .ld-desc-toggle {
-  display: inline-grid;
-  place-items: center;
-  width: 28px;
+/* Description: a small button in the title card's head, beside the counter (the video's
+   column has no description block, its actions row no such button) and a modal. */
+.page-listing-detail .ld-desc-btn {
+  position: relative;
   height: 28px;
-  border-radius: 8px;
-  color: var(--muted);
-}
-.page-listing-detail .ld-desc-toggle:hover {
-  background: var(--hover);
-  color: var(--text);
-}
-.page-listing-detail .ld-desc-chev {
-  transition: transform 0.2s var(--ease);
-}
-.page-listing-detail .ld-desc-card.is-open .ld-desc-chev {
-  transform: rotate(180deg);
-}
-.page-listing-detail .ld-desc-count {
-  font-size: 12px;
-}
-.page-listing-detail .ld-desc-sum {
-  margin-left: 6px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  padding: 0 10px;
+  gap: 6px;
   color: var(--muted);
   font-size: 12.5px;
-  font-weight: 450;
+  font-weight: 500;
 }
-.page-listing-detail .ld-desc-card .card-title {
-  display: flex;
-  align-items: baseline;
-  min-width: 0;
+.page-listing-detail .ld-desc-btn:hover:not(:disabled) {
+  color: var(--text);
 }
-.page-listing-detail .ld-desc-input {
-  display: none;
-  min-height: 160px;
+/* The description differs from the saved one. */
+.page-listing-detail .ld-desc-btn.has-change::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-2);
+  box-shadow: 0 0 0 2px var(--panel);
+}
+.ld-desc-modal .ld-desc-input {
+  display: block;
+  width: 100%;
+  min-height: 260px;
+  max-height: 56vh;
   font-size: 13.5px;
   line-height: 1.6;
-}
-.page-listing-detail .ld-desc-card.is-open .ld-desc-input {
-  display: block;
-}
-.page-listing-detail .ld-desc-card.is-open .ld-desc-sum {
-  display: none;
+  resize: vertical;
 }
 
 /* Price / category / status */
@@ -434,7 +421,7 @@
   font-size: 12.5px;
 }
 .page-listing-detail .ld-price {
-  font-size: 22px;
+  font-size: 24.5px;
   font-weight: 700;
   letter-spacing: -0.01em;
   line-height: 1.2;
@@ -451,9 +438,9 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
-  line-height: 1.6;
+  line-height: 1.5;
 }
 .page-listing-detail .ld-state {
   display: flex;
@@ -505,6 +492,19 @@
 .page-listing-detail .ld-actions .btn-lg {
   height: 44px;
 }
+/* With unsaved edits four buttons share the row (Vazgeç, Kaydet, Etsy'de aç, Yayınla):
+   tighter buttons and an icon-only "Etsy'de aç" keep "Yayınla" on the line. */
+.page-listing-detail .ld-actions.is-dirty .btn-lg {
+  padding: 0 14px;
+}
+.page-listing-detail .ld-actions.is-dirty .ld-open {
+  width: 46px;
+  padding: 0;
+  justify-content: center;
+}
+.page-listing-detail .ld-actions.is-dirty .ld-open .btn-label {
+  display: none;
+}
 /* With unsaved edits the save / discard buttons take the note's place. */
 .page-listing-detail .ld-actions.is-dirty .ld-note {
   display: none;
@@ -521,7 +521,7 @@
 .ld-issues-head {
   margin-bottom: 10px;
   font-size: 13.5px;
-  font-weight: 650;
+  font-weight: 600;
 }
 .ld-issues {
   display: flex;
@@ -564,19 +564,6 @@
     padding-left: 14px;
     padding-right: 14px;
   }
-  /* With unsaved edits four buttons share the row: tighter buttons and an icon-only
-     "Etsy'de aç" keep "Yayınla" on the same line. */
-  .page-listing-detail .ld-actions.is-dirty .btn-lg {
-    padding: 0 14px;
-  }
-  .page-listing-detail .ld-actions.is-dirty .ld-open {
-    width: 46px;
-    padding: 0;
-    justify-content: center;
-  }
-  .page-listing-detail .ld-actions.is-dirty .ld-open .btn-label {
-    display: none;
-  }
 }
 @media (max-width: 1180px) {
   .page-listing-detail .ld-actions .btn-lg {
@@ -588,6 +575,41 @@
   .page-listing-detail .ld-facts .ld-fact:nth-child(2) {
     grid-column: span 2;
     order: 3;
+  }
+}
+/* A short window (1280x720): tighter cards, so the price, category, status and the
+   actions stay in view as in the video. */
+@media (max-height: 760px) {
+  .page-listing-detail .ld-right {
+    gap: 10px;
+  }
+  .page-listing-detail .ld-card {
+    padding: 12px 16px 13px;
+  }
+  .page-listing-detail .ld-card .card-head {
+    margin-bottom: 10px;
+  }
+  .page-listing-detail .ld-title-input {
+    font-size: 17px;
+    line-height: 25px;
+  }
+  .page-listing-detail .ld-title-bar {
+    margin-top: 10px;
+  }
+  .page-listing-detail .ld-tags {
+    gap: 7px;
+  }
+  .page-listing-detail .ld-tags .tagchip {
+    height: 30px;
+  }
+  .page-listing-detail .ld-fact {
+    padding: 11px 14px 12px;
+  }
+  .page-listing-detail .ld-fact-label {
+    margin-bottom: 5px;
+  }
+  .page-listing-detail .ld-price {
+    font-size: 22px;
   }
 }
 @media (max-width: 960px) {

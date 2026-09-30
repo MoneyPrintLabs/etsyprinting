@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageOps
 
 try:  # Colour management needs Pillow built with littlecms; the wheels always are.
     from PIL import ImageCms
@@ -555,3 +555,149 @@ def looks_like_artwork(path: Path) -> bool:
             return _is_actually_transparent(img)
     except (OSError, Image.DecompressionBombError):
         return False
+
+
+# --- a design saved on a solid background ---------------------------------------------------
+
+# Two border pixels are "the same colour" when no channel differs by more than this: a
+# JPEG's white is 250-255, and its compression ringing stays well inside 24.
+GROUND_TOLERANCE = 24
+# A border is one flat colour when this share of its pixels is that colour: a few stray
+# pixels (a corner mark, a signature) do not make a photo of it.
+GROUND_SHARE = 0.985
+# The border strip read on each side, in pixels.
+GROUND_STRIP = 2
+# The largest side the flood fill works on. The fill is Pillow's own pure-Python one, so
+# it runs on a small copy; the full-size mask keeps the exact outline.
+GROUND_FILL_EDGE = 480
+# A design enlarged more than this onto a mockup or its flat render looks soft.
+MAX_UPSCALE = 2.0
+
+
+def _max_difference(image: Image.Image, colour: tuple[int, int, int]) -> Image.Image:
+    """An "L" image: each pixel's largest channel difference from `colour`."""
+    diff = ImageChops.difference(image, Image.new("RGB", image.size, colour))
+    red, green, blue = diff.split()
+    return ImageChops.lighter(ImageChops.lighter(red, green), blue)
+
+
+def _median(histogram: list[int]) -> int:
+    """The median value of one band, from its 256-bin histogram."""
+    half = sum(histogram) / 2
+    seen = 0
+    for value, count in enumerate(histogram):
+        seen += count
+        if seen >= half:
+            return value
+    return 255
+
+
+def ground_colour(path: Path) -> tuple[int, int, int] | None:
+    """The one colour all four borders of an opaque design share, else None.
+
+    A design exported on white (or any solid colour) has a flat border on every side; a
+    finished product photo almost never does. A file with see-through pixels is artwork
+    already and has no ground to find (None).
+    """
+    return design_ground(path)[1]
+
+
+def design_ground(path: Path) -> tuple[str, tuple[int, int, int] | None]:
+    """What a loose design's background is, from one read of the file:
+
+    ("transparent", None) artwork with see-through pixels; ("flat", colour) an opaque
+    design whose four borders share one colour; ("photo", None) anything else opaque;
+    ("", None) a file that cannot be read.
+    """
+    try:
+        with Image.open(path) as raw:
+            if _is_actually_transparent(raw):
+                return "transparent", None
+            if raw.format == "JPEG":  # a border needs no full-size decode
+                raw.draft("RGB", (max(64, raw.width // 4), max(64, raw.height // 4)))
+            image = _as_displayed(raw).convert("RGB")
+    except (OSError, ValueError, Image.DecompressionBombError):
+        return "", None
+    colour = _flat_border(image)
+    return ("flat", colour) if colour is not None else ("photo", None)
+
+
+def _flat_border(image: Image.Image) -> tuple[int, int, int] | None:
+    width, height = image.size
+    if width < 8 or height < 8:
+        return None
+    strip = GROUND_STRIP
+    sides = [
+        image.crop((0, 0, width, strip)),
+        image.crop((0, height - strip, width, height)),
+        image.crop((0, 0, strip, height)).transpose(Image.Transpose.ROTATE_90),
+        image.crop((width - strip, 0, width, height)).transpose(Image.Transpose.ROTATE_90),
+    ]
+    border = Image.new("RGB", (sum(side.width for side in sides), strip))
+    x = 0
+    for side in sides:
+        border.paste(side, (x, 0))
+        x += side.width
+    # The median colour, then the share of the border within the tolerance of it.
+    colour = tuple(_median(band.histogram()) for band in border.split())
+    near = _max_difference(border, colour).histogram()[: GROUND_TOLERANCE + 1]
+    if sum(near) < GROUND_SHARE * border.width * border.height:
+        return None
+    return colour[0], colour[1], colour[2]
+
+
+def remove_ground(design_path: Path, out_path: Path, colour: tuple[int, int, int], *,
+                  tolerance: int = GROUND_TOLERANCE) -> Path:
+    """Write the design as a PNG with its solid background made see-through.
+
+    Only the background joined to the edges goes: a flood fill from the border, so white
+    inside the design (the eyes of a face, the counter of an "o") stays. The fill runs on
+    a small copy; the full-size colour mask keeps the outline sharp.
+    """
+    try:
+        with Image.open(design_path) as raw:
+            image = _as_displayed(raw).convert("RGB")
+    except (OSError, Image.DecompressionBombError) as exc:
+        raise ValidationError(f"Cannot open design {design_path.name}: {_why(exc)}") from exc
+    near = _max_difference(image, colour).point(lambda v: 255 if v <= tolerance else 0)
+    scale = min(1.0, GROUND_FILL_EDGE / max(image.size))
+    small_size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
+    small = near.resize(small_size, Image.NEAREST)
+    # A frame of "ground" around it joins every border pixel, so one fill reaches them all.
+    framed = ImageOps.expand(small, border=1, fill=255)
+    ImageDraw.floodfill(framed, (0, 0), 128, thresh=0)
+    joined = framed.crop((1, 1, framed.width - 1, framed.height - 1)).point(
+        lambda v: 255 if v == 128 else 0)
+    # Back at full size, a pixel is background when it is the colour AND joined to the edge.
+    ground = ImageChops.darker(near, joined.resize(image.size, Image.NEAREST))
+    out = image.convert("RGBA")
+    out.putalpha(ImageChops.invert(ground))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out.save(out_path, "PNG")
+    return out_path
+
+
+def upscale_factor(design_size: tuple[int, int], mockup_size: tuple[int, int] | None,
+                   area: PrintArea | None = None, *, min_edge: int = OUTPUT_MIN_EDGE) -> float:
+    """How much compose() enlarges a design of `design_size` on a mockup of `mockup_size`
+    (flatten_design()'s canvas when `mockup_size` is None, with `min_edge` its edge)."""
+    width, height = design_size
+    if width <= 0 or height <= 0:
+        return 1.0
+    if mockup_size is None:
+        return min(min_edge * 0.86 / width, min_edge * 0.86 / height)
+    mock_w, mock_h = mockup_size
+    if min_edge and min(mockup_size) < min_edge:
+        factor = min_edge / min(mockup_size)
+        mock_w, mock_h = round(mock_w * factor), round(mock_h * factor)
+    _x, _y, box_w, box_h = (area or DEFAULT_PRINT_AREA).pixels(mock_w, mock_h)
+    return min(box_w / width, box_h / height)
+
+
+def display_size(path: Path) -> tuple[int, int] | None:
+    """The size a viewer reports for an image file (upright), from its header only."""
+    try:
+        with Image.open(path) as img:
+            return _display_size(img)
+    except (OSError, ValueError, Image.DecompressionBombError):
+        return None

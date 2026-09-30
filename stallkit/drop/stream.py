@@ -33,6 +33,35 @@ folder with only its `dosyalar` and no photos fails step 5 at once (no_photos), 
 the template. A file that fails after the draft exists leaves the product `partial`,
 and the history records `files_uploaded` next to `images_uploaded`.
 
+The workspace's watermark (drop.watermark), when it is on and its scope takes this
+template, is stamped on a copy of every picture a draft shows buyers: the mockups, the
+flat render or preview, a folder's own photos, a photo uploaded as it is. The copies go
+to the batch's `watermarked` folder (one name each); the seller's files and the download
+files are never touched, and Etsy is told each stamped picture is watermarked. A picture
+the mark cannot be put on fails its product (watermark_failed): it never goes up bare.
+
+A loose design without see-through pixels is a finished photo and goes up as it is,
+with an `as_is` warning (never silently). With `opaque="place"` (the page's choice for
+the batch), one saved on a solid background (all four borders one colour,
+mockup.ground_colour) has that background removed from the edges inwards and goes onto
+the mockups like any transparent design; a real photo still goes up as it is.
+
+Every picture a draft gets carries an alt text Etsy stores with it: the concept, and
+on a mockup the mockup's product and colour ("Retro Mountain Sunset t-shirt, white").
+
+The shop's info images (drop.infoimages: the materials, size and how-to cards every
+listing ends with) go up after the product's own pictures, in the seller's order, each
+with its own alt text, never watermarked. They are read, converted if they have to be,
+and fully decoded once, before the plan goes out: one that cannot be used stops the run
+before anything is sent. Photos and info images never pass Etsy's 20: the caller's
+mockups are already capped for them (catalog.usage), and a product folder whose photos
+leave too little room gets the first ones that fit (`info_images_cut` warns). They are
+not in `images` (the product's own pictures, as the screen shows them) but in
+`info_images`; the history entry lists their names.
+Step 5 warns (never fails) when a picture's short side is under 1000 px
+(`small_image`), or when a design had to be enlarged more than twice onto a mockup or
+its flat render (`design_small`): both would look soft on Etsy.
+
 `drop run` and `drop auto` are untouched; this module only reuses their pieces.
 
 Events: `on_event(name, step, status, data)`, always with `data["index"]`.
@@ -44,7 +73,8 @@ Events: `on_event(name, step, status, data)`, always with `data["index"]`.
 - step "item": the product's outcome or waiting state; status in waiting | ok |
   partial | error | cancelled | checked (a dry run's good product).
 - step "batch" (name ""), status "running", once before any product: the plan, with
-  `listing_type` and each product's `files_total` (its download files, 0 if physical).
+  `listing_type`, each product's `files_total` (its download files, 0 if physical) and
+  `info_images` (the names every draft ends with).
 """
 
 from __future__ import annotations
@@ -66,7 +96,17 @@ from ..config import LISTING_TYPES, MAX_LISTING_IMAGES, MAX_TAGS
 from ..errors import AuthError, AuthUnreachable, EtsyApiError, ValidationError
 from ..listings import DIGITAL_TYPES
 from ..seo import MarketReport
-from . import automation, catalog, generate, mockup, pipeline, seeds
+from . import (
+    automation,
+    catalog,
+    description,
+    generate,
+    infoimages,
+    mockup,
+    pipeline,
+    seeds,
+)
+from . import watermark as watermark_mod
 from .template import Template
 from .workspace import Workspace
 
@@ -90,6 +130,20 @@ FINAL = frozenset({OK, PARTIAL, FAILED, CANCELLED, CHECKED})
 
 # Fewer ranking listings than this is too thin a sample to borrow tags from.
 THIN_SAMPLE = 20
+# What becomes of a loose design without see-through pixels (run_stream's `opaque`).
+OPAQUE_AS_IS = "as_is"  # a finished photo: up as it is
+OPAQUE_PLACE = "place"  # on a solid background: the background removed, onto the mockups
+OPAQUE_CHOICES = (OPAQUE_AS_IS, OPAQUE_PLACE)
+# A picture shorter than this on its short side looks soft on Etsy (it recommends 2000).
+SMALL_IMAGE_EDGE = 1000
+# Etsy stores up to 500 characters of alt text (OAS uploadListingImage); we send 250.
+ALT_TEXT_MAX = 250
+# A mockup type as a buyer reads it in an alt text (the drafts' copy is English).
+TYPE_NOUNS = {
+    "tshirt": "t-shirt", "sweatshirt": "sweatshirt", "hoodie": "hoodie", "mug": "mug",
+    "poster": "poster", "canvas": "canvas print", "phone_case": "phone case",
+    "tote": "tote bag", "pillow": "pillow", "sticker": "sticker",
+}
 # Drafts failing one after another usually share a cause (a template Etsy refuses, a
 # lost connection). Stopping spares the rest from being marked as failed attempts.
 STOP_AFTER_FAILURES = 3
@@ -151,6 +205,11 @@ class StreamItem:
     row: dict[str, str] | None = None  # the same row as `listings push` reads it back
     csv_line: int | None = None
     market: MarketReport | None = None
+    alts: dict[str, str] = field(default_factory=dict)  # image path -> its alt text
+    upscale: float = 0.0  # the most a design was enlarged onto a mockup or flat render
+    stamped: set[str] = field(default_factory=set)  # watermarked images (_image_key)
+    unstamped: list[Path] = field(default_factory=list)  # what they were stamped from
+    info: list[Path] = field(default_factory=list)  # the shop's info images, after `images`
 
     @property
     def kind(self) -> str:
@@ -229,6 +288,8 @@ def run_stream(
     sample: int = 200,
     use_cache: bool = True,
     dry_run: bool = False,
+    opaque: str = OPAQUE_AS_IS,
+    watermark: bool = True,
 ) -> StreamReport:
     """Create a draft for every product in 2-PRODUCTS the history has not seen yet.
 
@@ -236,13 +297,17 @@ def run_stream(
     `cancel` is anything with `is_set()`: once set, no new product is started and no new
     draft is created; the draft being created finishes. `dry_run` stops every product
     after the check step and needs no client (research is then skipped or cached).
+    `opaque` says what becomes of a loose design without see-through pixels (OPAQUE_*).
+    `watermark`: stamp the workspace's watermark when it is on and takes this template
+    (drop.watermark.for_run); False never stamps. A watermark that is on but cannot be
+    read stops the run before anything is sent.
     Raises ValidationError / UploadLocked for problems that stop the whole run before
     anything is sent; everything that concerns one product lands on that product.
     """
     return _Run(
         workspace, template, client, mockups=list(mockups), on_event=on_event, cancel=cancel,
         concurrency=concurrency, include_flat=include_flat, sample=sample,
-        use_cache=use_cache, dry_run=dry_run,
+        use_cache=use_cache, dry_run=dry_run, opaque=opaque, watermark=watermark,
     ).run()
 
 
@@ -296,13 +361,79 @@ def _fatal(exc: BaseException | None) -> Problem | None:
     return None
 
 
+def _image_key(path: Any) -> str:
+    """A picture's key in StreamItem.alts: its resolved path."""
+    try:
+        return str(Path(path).resolve())
+    except OSError:
+        return str(path)
+
+
+# The catalog's colour words (Turkish display words) in English, for the alt texts.
+_ENGLISH_COLOURS = {
+    "Beyaz": "white", "Siyah": "black", "Lacivert": "navy", "Krem": "cream", "Gri": "gray",
+    "Kırmızı": "red", "Bordo": "burgundy", "Mavi": "blue", "Yeşil": "green",
+    "Haki": "olive", "Pembe": "pink", "Sarı": "yellow", "Turuncu": "orange",
+    "Mor": "purple", "Kahverengi": "brown", "Bej": "beige", "Meşe": "oak", "Ceviz": "walnut",
+}
+# Other words a seller writes next to a colour ("Meşe çerçeve", "açık mavi").
+_ENGLISH_WORDS = {"cerceve": "frame", "cerceveli": "framed", "acik": "light", "koyu": "dark",
+                  "ahsap": "wood"}
+
+
+def english_colour(colour: str) -> str:
+    """A mockup's colour as an English alt text says it: "Beyaz" -> "white", "Meşe
+    çerçeve" -> "oak frame". A colour typed in English stays as typed; one that cannot
+    be put in English is left out ("")."""
+    text = colour.strip()
+    if not text:
+        return ""
+
+    def word(folded: str) -> str | None:
+        for display, keys in catalog._COLOR_WORDS:
+            if folded in keys or folded == catalog._fold(display):
+                return _ENGLISH_COLOURS.get(display)
+        return _ENGLISH_WORDS.get(folded)
+
+    whole = word(catalog._fold(text))
+    if whole:
+        return whole
+    parts = [word(w) for w in catalog._fold(text).split()]
+    if parts and all(parts):
+        return " ".join(dict.fromkeys(parts))  # "white white" once
+    return text if text.isascii() else ""
+
+
+def alt_text(concept: str, kind: str = "", colour: str = "", *, flat: bool = False,
+             digital: bool = False) -> str:
+    """The alt text Etsy stores with a picture: "Retro Mountain Sunset t-shirt, white".
+
+    kind/colour: the mockup's product type and colour (catalog); neither for a seller's
+    own photo, which is named by its concept only. flat: the plain design
+    on white; digital: that render is a digital product's preview. At most ALT_TEXT_MAX
+    characters.
+    """
+    name = " ".join(word[:1].upper() + word[1:] for word in concept.split())
+    if flat:
+        text = f"{name} {'digital download preview' if digital else 'design'}"
+    else:
+        noun = TYPE_NOUNS.get(kind, "")
+        text = f"{name} {noun}" if noun else name
+        shade = english_colour(colour) if colour else ""
+        if shade:
+            text = f"{text}, {shade}"
+    return text.strip()[:ALT_TEXT_MAX].strip()
+
+
 class _Recorder(automation.RecordedClient):
     """automation's history-writing client, plus what the stream needs to know."""
 
-    def __init__(self, client, path, state, entry, on_image, on_file=None) -> None:
-        super().__init__(client, path, state, entry)
+    def __init__(self, client, path, state, entry, on_image, on_file=None,
+                 alts=None, stamped=None, info=None) -> None:
+        super().__init__(client, path, state, entry, stamped=stamped, info=info)
         self.on_image = on_image
         self.on_file = on_file
+        self.alts: dict[str, str] = dict(alts or {})
         self.created = False
         self.error: BaseException | None = None
 
@@ -323,8 +454,11 @@ class _Recorder(automation.RecordedClient):
             raise
 
     def upload_listing_image(self, listing_id, image, *, rank):
+        # By the picture's own path only: an info image and a product photo may share a
+        # file name (size.jpg), and each goes up with its own alt text.
+        alt = self.alts.get(_image_key(image), "")
         try:
-            result = super().upload_listing_image(listing_id, image, rank=rank)
+            result = super().upload_listing_image(listing_id, image, rank=rank, alt_text=alt)
         except BaseException as exc:
             self.error = exc
             raise
@@ -346,7 +480,7 @@ class _Run:
     def __init__(self, workspace: Workspace, template: Template, client: Any, *,
                  mockups: list[Path], on_event: OnEvent | None, cancel: Any,
                  concurrency: int, include_flat: bool, sample: int, use_cache: bool,
-                 dry_run: bool) -> None:
+                 dry_run: bool, opaque: str = OPAQUE_AS_IS, watermark: bool = True) -> None:
         self.ws = workspace
         self.template = template
         self.listing_type = template.fields.get("type") or "physical"
@@ -366,6 +500,11 @@ class _Run:
         self.sample = sample
         self.use_cache = use_cache
         self.dry_run = dry_run
+        if opaque not in OPAQUE_CHOICES:
+            raise ValueError(f"opaque must be one of {OPAQUE_CHOICES}")
+        self.opaque = opaque
+        self.use_watermark = watermark
+        self.mark: watermark_mod.Watermark | None = None
         batch = pipeline._batch_name()
         self.report = StreamReport(batch=batch, out_dir=workspace.drafts / batch, dry_run=dry_run)
         self.out_dir = self.report.out_dir
@@ -373,14 +512,22 @@ class _Run:
         self._lock = threading.RLock()
         self._halt_flag = threading.Event()
         self._taken: set[str] = set()
+        # The stamped copies' names in the batch's one `watermarked` folder (every
+        # product's, so two designs called sunset.jpg and sunset.jpeg never share one).
+        self._stamped_names: set[str] = set()
         self._concept_locks: dict[str, threading.Lock] = {}
         self._markets: dict[str, tuple[MarketReport | None, Problem | None]] = {}
         self._research_down: Problem | None = None
         self.areas: dict[str, tuple[mockup.PrintArea, str]] = {}
+        self.mockup_facts: dict[str, catalog.MockupInfo] = {}  # for the alt texts
+        self.mockup_sizes: dict[str, tuple[int, int]] = {}
         self.inventory: dict[str, Any] | None = None
         self.state: dict = {}
         self.history: dict = {}
         self.history_file = automation.history_path(workspace.root)
+        # The shop's info images (read in run()), and each one's name by its picture.
+        self.info: list[infoimages.InfoImage] = []
+        self.info_names: dict[str, str] = {}
 
     # --- the run ----------------------------------------------------------------
 
@@ -389,12 +536,17 @@ class _Run:
         if self.client is None and not self.dry_run:
             raise ValidationError("Connect your Etsy shop before uploading drafts.")
         check_template(self.template)
-        planned = len(self.mockups) + (1 if self.include_flat else 0)
+        if self.use_watermark:
+            # Loaded once: a mark replaced during the run does not change its pictures.
+            self.mark = watermark_mod.for_run(self.ws, self.listing_type)
+        info = infoimages.load(self.ws)
+        planned = len(self.mockups) + (1 if self.include_flat else 0) + len(info)
         if planned > MAX_LISTING_IMAGES:
+            flat = " plus the flat render" if self.include_flat else ""
+            extra = f" plus {len(info)} info image(s)" if info else ""
             raise ValidationError(
-                f"{len(self.mockups)} mockup(s){' plus the flat render' if self.include_flat else ''} "
-                f"is {planned} images per listing, and Etsy allows {MAX_LISTING_IMAGES}. "
-                "Turn some mockups off."
+                f"{len(self.mockups)} mockup(s){flat}{extra} is {planned} images per listing, "
+                f"and Etsy allows {MAX_LISTING_IMAGES}. Turn some mockups off."
             )
         with automation.upload_lock(self.ws.root):
             self.state = automation.load_history(self.history_file)
@@ -418,6 +570,11 @@ class _Run:
                     folder_fallback=folder or item.source.parent != self.ws.products,
                 )
             self.report.items = items
+            if items:
+                # Every draft carries them: one that cannot be used stops the run here,
+                # before the plan goes out and before anything is sent.
+                self.info, _notes = pipeline.ready_info_images(info, self.out_dir)
+                self.info_names = {_image_key(i.path): i.name for i in self.info}
             if items and not self.dry_run:
                 # Before the plan goes out: a template that is gone stops the run cleanly.
                 self.inventory = self._template_inventory()
@@ -429,6 +586,11 @@ class _Run:
             # macOS/Linux a `..` only resolves through a folder that exists.
             self.out_dir.mkdir(parents=True, exist_ok=True)
             self.areas = catalog.effective_areas(self.ws)
+            try:
+                self.mockup_facts = catalog.load(self.ws)
+            except (OSError, ValueError):
+                self.mockup_facts = {}
+            self.mockup_sizes = mockup.mockup_sizes(list(self.mockups))
             if not self.dry_run:
                 self.state[shop] = self.history
             try:
@@ -549,6 +711,7 @@ class _Run:
                 ],
                 "already_done": list(self.report.already_done),
                 "needs_review": list(self.report.needs_review),
+                "info_images": [image.name for image in self.info],
             })
 
     def _step(self, item: StreamItem, step: str, status: str, **data: Any) -> None:
@@ -576,6 +739,8 @@ class _Run:
             "deliverables": [self._rel(p) for p in item.deliverables],
             "files_uploaded": item.files_uploaded,
             "files_total": len(item.deliverables),
+            "watermarked": len(item.stamped),
+            "info_images": [self._rel(p) for p in item.info],
             "warnings": [w.to_dict() for w in item.warnings],
             "problem": item.error.to_dict() if item.error else None,
         }
@@ -649,6 +814,15 @@ class _Run:
         with self._lock:
             return pipeline._output_name(source, template_image, self._taken)
 
+    def _enlarged(self, item: StreamItem, design: Path, mockup_size: tuple[int, int] | None,
+                  area: mockup.PrintArea | None, *, edge: int = mockup.OUTPUT_MIN_EDGE) -> None:
+        """Remember how much `design` was enlarged (the check step warns past 2x)."""
+        size = mockup.display_size(design)
+        if size is None or (mockup_size is None and area is not None):
+            return
+        factor = mockup.upscale_factor(size, mockup_size, area, min_edge=edge)
+        item.upscale = max(item.upscale, factor)
+
     def _images(self, item: StreamItem) -> None:
         """Step 1: composite onto the mockups, or take the product's own photos."""
         self._step(item, "mockup", RUNNING)
@@ -677,6 +851,17 @@ class _Run:
             ))
         images: list[Path] = []
         flat_image: Path | None = None
+        alts: dict[Path, str] = {}  # each picture's alt text, before any conversion
+        concept = item.seed.text
+        design = item.source  # what goes onto the mockups (its ground removed, maybe)
+        # A loose design with nothing to see through: a finished photo, or a design saved
+        # on a solid background. Never for a digital template: the loose file is then the
+        # download being sold (an opaque printable too), so it always goes onto the mockups.
+        opaque, ground = False, None
+        if not item.photos and not self.digital:
+            background, colour = mockup.design_ground(item.source)  # one read of the file
+            opaque = background != "transparent"
+            ground = colour if self.opaque == OPAQUE_PLACE else None
         if item.photos:
             item.mode = "photos"
             if len(item.photos) > MAX_LISTING_IMAGES:
@@ -695,13 +880,25 @@ class _Run:
                     "mockup", n=len(bare), names=", ".join(bare[:3]),
                 )
             images = list(item.photos)
-        elif not self.digital and not mockup.looks_like_artwork(item.source):
-            # A finished product photo needs no compositing; it goes up as it is. Never
-            # for a digital template: the loose file is then the download being sold
-            # (an opaque printable too), so it goes onto the mockups, never up as it is.
+            alts = {photo: alt_text(concept) for photo in images}
+        elif opaque and ground is None:
+            # A finished product photo needs no compositing; it goes up as it is, and the
+            # row says so (a design saved without transparency would otherwise land on no
+            # mockup without a word).
             item.mode = "as_is"
             images = [item.source]
+            alts = {item.source: alt_text(concept)}
+            self._warn(item, "as_is",
+                       f"{item.source.name} has no transparent background, so it was not "
+                       "placed on the mockups: it goes up as it is.", "mockup",
+                       name=item.source.name)
         else:
+            if ground is not None:
+                # The seller chose to place designs saved on a solid background: the
+                # background joined to the edges becomes see-through, then as usual.
+                keyed = self.out_dir / item.source.stem / (
+                    f"{item.source.stem}-{item.source.suffix.lstrip('.').lower()}-transparent.png")
+                design = mockup.remove_ground(item.source, keyed, ground)
             item.mode = "composited"
             if not self.mockups:
                 self._warn(item, "no_mockups",
@@ -711,11 +908,16 @@ class _Run:
                 area = self.areas.get(template_image.name, (mockup.DEFAULT_PRINT_AREA, ""))[0]
                 out = self.out_dir / self._output_name(item.source, template_image)
                 try:
-                    images.append(mockup.compose(item.source, template_image, out, area=area))
+                    images.append(mockup.compose(design, template_image, out, area=area))
                 except Exception as exc:  # noqa: BLE001 — one mockup must not stop the product
                     self._warn(item, "mockup_failed", f"mockup {template_image.name} failed: {exc}",
                                "mockup", mockup=template_image.name)
                     continue
+                facts = self.mockup_facts.get(template_image.name)
+                kind, colour = ((facts.type, facts.color) if facts is not None
+                                else catalog.guess(template_image.name))
+                alts[images[-1]] = alt_text(concept, kind, colour)
+                self._enlarged(item, design, self.mockup_sizes.get(template_image.name), area)
                 self._step(item, "mockup", RUNNING, images=[self._rel(p) for p in images],
                            mode=item.mode)
             if self.include_flat:
@@ -724,14 +926,20 @@ class _Run:
                 # A digital design's flat render is a preview, not a copy of the download.
                 edge = mockup.DIGITAL_PREVIEW_EDGE if self.digital else mockup.OUTPUT_MIN_EDGE
                 try:
-                    flat_image = mockup.flatten_design(item.source, flat, edge=edge)
+                    flat_image = mockup.flatten_design(design, flat, edge=edge)
                     images.append(flat_image)
+                    alts[flat_image] = alt_text(concept, flat=True, digital=self.digital)
+                    self._enlarged(item, design, None, None, edge=edge)
                 except Exception as exc:  # noqa: BLE001
                     self._warn(item, "flat_failed", f"flat render failed: {exc}", "mockup")
 
         # Etsy takes JPG, PNG and GIF only; anything else is converted, and said so. A
         # file over Etsy's 20 MB limit is made smaller, and said so too.
         convert_dir = self.out_dir / (item.source.name if item.photos else item.source.stem)
+        # One folder for the batch's stamped copies, each name taken once: a design's
+        # name is in the path once (Windows' 260-character limit), and two products never
+        # write the same file.
+        stamped_dir = self.out_dir / watermark_mod.STAMPED_DIR
         uploadable: list[Path] = []
         for image in images:
             try:
@@ -746,9 +954,24 @@ class _Run:
                            f"{image.name} was converted to {converted.name}: Etsy accepts only "
                            "JPG, PNG and GIF listing images", "mockup",
                            name=image.name, to=converted.name)
+            fit_dir = convert_dir
+            if self.mark is not None:
+                # A copy with the mark: the picture itself (a seller's photo in
+                # 2-PRODUCTS, a composite) stays as it is. Never up without the mark.
+                self._check_halt()
+                try:
+                    stamped = self.mark.stamp(converted, stamped_dir, self._stamped_names)
+                except Exception as exc:  # noqa: BLE001 — this product only
+                    raise _ProductFailed(Problem(
+                        "watermark_failed",
+                        f"The watermark could not be put on {image.name}: {exc}",
+                        "mockup", {"name": image.name},
+                    )) from exc
+                item.unstamped.append(converted)
+                converted, fit_dir = stamped, stamped_dir
             try:
                 size = converted.stat().st_size
-                fitted = pipeline.fit_for_etsy(converted, convert_dir)
+                fitted = pipeline.fit_for_etsy(converted, fit_dir)
             except Exception as exc:  # noqa: BLE001
                 self._warn(item, "convert_failed",
                            f"{converted.name} could not be made smaller for Etsy: {exc}",
@@ -761,6 +984,10 @@ class _Run:
                            name=converted.name, mb=round(size / 1024 / 1024, 1))
             if image == flat_image:
                 item.flat = fitted
+            if alts.get(image):
+                item.alts[_image_key(fitted)] = alts[image]
+            if self.mark is not None:
+                item.stamped.add(_image_key(fitted))
             uploadable.append(fitted)
         if not uploadable:
             raise _ProductFailed(Problem(
@@ -770,9 +997,21 @@ class _Run:
                 "mockup",
             ))
         item.images = uploadable
+        # The shop's info images close the listing, after its own pictures, with their
+        # own alt texts; a folder whose photos leave too little room gets the first ones.
+        info = infoimages.fitting(len(uploadable), self.info)
+        if len(info) < len(self.info):
+            self._warn(item, "info_images_cut", pipeline.info_note(len(info), len(self.info)),
+                       "mockup", n=len(info), total=len(self.info), max=MAX_LISTING_IMAGES)
+        item.info = [image.path for image in info]
+        for image in info:
+            if image.alt:
+                item.alts[_image_key(image.path)] = image.alt
         self._step(item, "mockup", WARN if len(item.warnings) > warned else DONE,
                    images=[self._rel(p) for p in uploadable], mode=item.mode,
-                   flat=self._rel(item.flat) if item.flat is not None else None)
+                   flat=self._rel(item.flat) if item.flat is not None else None,
+                   watermarked=len(item.stamped),
+                   info_images=[self._rel(p) for p in item.info])
 
     def _market(self, concept: str) -> tuple[MarketReport | None, Problem | None]:
         """One research per concept, however many products share it."""
@@ -872,15 +1111,31 @@ class _Run:
         if generate.fill_tags(tags, filler):
             item.evidence.append("your template listing's tags")
         item.tags = tags[:MAX_TAGS]
-        item.description = generate.build_description(item.seed, self.template.description,
-                                                      item.title)
+        item.description = generate.build_description(
+            item.seed, self.template.description, item.title,
+            source_title=self.template.source_title,
+            description_template=self.template.description_template,
+        )
+        warned = False
+        if self.template.description_template is None:
+            # No description template saved: the template listing's own description, its
+            # title replaced. A sentence about its design ("lemons") still reaches
+            # this draft, so each product says so (Şablon İlan's description template).
+            left = description.leftover(
+                self.template.description, self.template.source_title, self.template.tags,
+                seed=item.seed, title=item.title, product_words=self.template.category_path,
+            )
+            if left:
+                self._warn(item, "description_design", description.leftover_message(left),
+                           "tags", n=len(left),
+                           words=", ".join(description.flag_words(left)[:4]))
+                warned = True
         if len(item.tags) < MAX_TAGS:
             self._warn(item, "few_tags",
                        f"{len(item.tags)}/{MAX_TAGS} tags — the rest could not be filled honestly",
                        "tags", n=len(item.tags), max=MAX_TAGS)
-            self._step(item, "tags", WARN, tags=list(item.tags))
-        else:
-            self._step(item, "tags", DONE, tags=list(item.tags))
+            warned = True
+        self._step(item, "tags", WARN if warned else DONE, tags=list(item.tags))
 
     def _check(self, item: StreamItem) -> None:
         """Step 5: the row `listings push` will send, validated, and every image decoded.
@@ -894,8 +1149,9 @@ class _Run:
         warned = False
         if self.digital:
             files, issue = pipeline.deliverables(item.source, made_to_order=self.made_to_order)
-            # A listing photo that is also the download would give the product away.
-            issue = issue or pipeline.photo_is_download(item.images, files)
+            # A listing photo that is also the download would give the product away (the
+            # pictures a watermarked copy was made from are checked too).
+            issue = issue or pipeline.photo_is_download([*item.images, *item.unstamped], files)
             if issue is not None:
                 code, message, params = issue
                 raise _ProductFailed(Problem(code, message, "check", dict(params)))
@@ -906,7 +1162,7 @@ class _Run:
                 warned = True
         drop_row = pipeline.DropRow(
             source=item.source, seed=item.seed, title=item.title, tags=list(item.tags),
-            description=item.description, images=list(item.images),
+            description=item.description, images=[*item.images, *item.info],
             evidence=list(item.evidence), warnings=[w.message for w in item.warnings],
             files=list(item.deliverables),
         )
@@ -923,13 +1179,18 @@ class _Run:
                 code = "no_shipping_profile"
             elif message.startswith("type is download, so nothing is shipped"):
                 code = "not_shipped"  # a digital template with parcel values left in it
+            elif message.startswith(("item_weight", "item_length", "item_width", "item_height")):
+                code = "measure_not_sent"  # a weight or size Etsy refuses (0, or no unit)
             else:
                 code = "check_warning"
             self._warn(item, code, message, "check")
             warned = True
         # Image.verify() is a no-op for JPEG; load() is a real decode. A file cut short by
-        # a half-finished copy fails here, not after its draft already exists.
+        # a half-finished copy fails here, not after its draft already exists. The info
+        # images were decoded once, before the plan (run()).
         for image in prepared.image_paths:
+            if _image_key(image) in self.info_names:
+                continue
             try:
                 with Image.open(image) as opened:
                     opened.load()
@@ -938,11 +1199,35 @@ class _Run:
                     "invalid_image", f"Invalid image {image.name}: {exc}", "check",
                     {"name": image.name},
                 )) from exc
+        if self._small_pictures(item):
+            warned = True
         with self._lock:
             item.csv_data = data
             item.row = row
         self._step(item, "check", WARN if warned else DONE,
                    deliverables=[self._rel(p) for p in item.deliverables])
+
+    def _small_pictures(self, item: StreamItem) -> bool:
+        """Warn (never fail) about pictures that would look soft on Etsy: a short side
+        under SMALL_IMAGE_EDGE px, or a design enlarged past MAX_UPSCALE."""
+        warned = False
+        for image in item.images:
+            size = mockup.display_size(image)
+            if size is not None and min(size) < SMALL_IMAGE_EDGE:
+                self._warn(item, "small_image",
+                           f"{image.name} is {size[0]}x{size[1]} px; Etsy recommends at least "
+                           "2000 px on the short side, so it may look soft.", "check",
+                           name=image.name, px=min(size), min=SMALL_IMAGE_EDGE)
+                warned = True
+        if item.upscale > mockup.MAX_UPSCALE:
+            size = mockup.display_size(item.source) or (0, 0)
+            self._warn(item, "design_small",
+                       f"{item.source.name} ({size[0]}x{size[1]} px) was enlarged "
+                       f"{item.upscale:.1f}x to fill the print area; it may look soft.",
+                       "check", name=item.source.name, px=min(size),
+                       factor=round(item.upscale, 1))
+            warned = True
+        return warned
 
     # --- step 6 (the calling thread) ------------------------------------------------------
 
@@ -971,12 +1256,17 @@ class _Run:
             self._fail(item, Problem("duplicate", "This product was already attempted.", "draft"))
             return True
         self._write_review()
-        total = len(item.images)
+        total = len(item.images) + len(item.info)  # its own pictures, then the info images
         files_total = len(item.deliverables)
         counts = {"images_total": total, "files_total": files_total}
         self._step(item, "draft", RUNNING, images_uploaded=0, files_uploaded=0, **counts)
         entry = {"status": "pending", "listing_id": None, "images_uploaded": 0,
-                 "files_uploaded": 0, "review_csv": str(self.csv_path)}
+                 "files_uploaded": 0, "review_csv": str(self.csv_path), **counts}
+        if item.info:
+            # Which of the pictures are the shop's info images: their names here, and
+            # (the recorder, as each goes up) their Etsy image ids in "info_image_ids",
+            # by which the İlanlar detail knows them apart from the product's own.
+            entry["info_images"] = [p.name for p in item.info]
         self.history[item.name] = entry
         # Persist intent BEFORE the request, including ambiguous network failures. A
         # history that cannot be saved stops the whole run (ValidationError).
@@ -993,7 +1283,7 @@ class _Run:
                        files_uploaded=rank, **counts)
 
         recorder = _Recorder(self.client, self.history_file, self.state, entry, on_image,
-                             on_file)
+                             on_file, alts=item.alts, stamped=item.stamped, info=item.info)
         try:
             result = listings.push(recorder, [item.row], base_dir=self.out_dir,
                                    inventory=self.inventory).results[0]
@@ -1083,6 +1373,8 @@ def item_summary(item: StreamItem, root: Path) -> dict[str, Any]:
         "listing_id": item.listing_id,
         "deliverables": [rel(p) for p in item.deliverables],
         "files_uploaded": item.files_uploaded,
+        "watermarked": len(item.stamped),
+        "info_images": [rel(p) for p in item.info],
         "warnings": [w.to_dict() for w in item.warnings],
         "error": item.error.to_dict() if item.error else None,
     }

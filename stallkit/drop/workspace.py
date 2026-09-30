@@ -21,6 +21,9 @@ MOCKUPS_DIR = "1-MOCKUPS"
 PRODUCTS_DIR = "2-PRODUCTS"
 DRAFTS_DIR = "3-DRAFTS"
 ARCHIVE_DIR = "archive"
+# The shop's info images, which every draft gets after its own photos (drop.infoimages).
+# Made when the first one is added; never a product folder, never a workspace of its own.
+INFO_DIR = "info-images"
 
 # The numbered folders a workspace makes inside itself. None of them is ever a workspace
 # of its own, and none of them is ever a product folder (see `root_for`).
@@ -43,10 +46,13 @@ README_FILE = "README.txt"
 README_MARK = "ETSY STUDIO"
 # What a workspace keeps beside its folders (automation's history and lock included).
 HISTORY_FILE = "upload-history.json"
+# The seller's watermark and its settings (drop.watermark).
+WATERMARK_FILES = ("watermark.png", "watermark.json")
 _WORKSPACE_ENTRIES = frozenset(
     name.casefold() for name in (
-        MOCKUPS_DIR, PRODUCTS_DIR, DRAFTS_DIR, ARCHIVE_DIR, README_FILE, TEMPLATE_FILE,
-        HISTORY_FILE, ".auto-upload.lock", "desktop.ini", "thumbs.db", ".ds_store",
+        MOCKUPS_DIR, PRODUCTS_DIR, DRAFTS_DIR, ARCHIVE_DIR, INFO_DIR, README_FILE,
+        TEMPLATE_FILE, HISTORY_FILE, *WATERMARK_FILES, ".auto-upload.lock", "desktop.ini",
+        "thumbs.db", ".ds_store",
     )
 )
 
@@ -91,8 +97,18 @@ ETSY STUDIO
 
 archive/    Optional manual archive. Files are not moved automatically.
 
+info-images/  Optional: the pictures every listing ends with (materials, sizes,
+            how to install, how to measure). Pick them in the app on the Template
+            listing page, or put JPG/PNG files here. Every draft gets them after
+            its own photos, at most 10. Etsy takes 20 pictures per listing, so
+            each one leaves room for one mockup less.
+
 upload-history.json (next to these folders) records every automatic upload.
 Keep it: it is what stops `drop auto` from uploading a product twice.
+
+watermark.png and watermark.json (optional; set them on the app's Mockups page or
+with `stallkit drop watermark`): your mark, stamped on copies of the listing photos
+of digital products (or of every listing). Never on the files buyers download.
 
 Nothing here is ever published. Listings are created as DRAFTS in your Etsy shop
 and stay invisible to buyers until you publish them yourself.
@@ -126,8 +142,18 @@ ETSY STUDIO (TR)
 
 archive/    Istersen elle arsivleyebilirsin; otomatik tasima yapilmaz.
 
+info-images/  Istege bagli: her ilanin sonuna eklenen gorseller (malzeme, olcu,
+            kurulum, olcum). Uygulamada Sablon Ilan sayfasindan sec ya da JPG/PNG
+            dosyalarini buraya koy. Her taslak bunlari kendi fotograflarindan sonra
+            alir, en fazla 10. Etsy ilan basina 20 gorsel alir; her biri bir
+            mockup'lik yer kaplar.
+
 upload-history.json (bu klasorlerin yaninda) her otomatik yuklemeyi kaydeder.
 Silme: `drop auto`nun ayni urunu iki kez yuklemesini engelleyen bu dosya.
+
+watermark.png ve watermark.json (istege bagli; uygulamanin Mockuplar sayfasindan ya da
+`stallkit drop watermark` ile ayarlanir): filigraniniz. Dijital urunlerin (ya da tum
+ilanlarin) ilan fotograflarinin kopyalarina basilir; alicinin indirdigi dosyalara asla.
 
 Hicbir sey yayinlanmaz. Listingler Etsy magazanda TASLAK olarak olusturulur ve sen
 kendin yayinlayana kadar alicilar goremez.
@@ -157,6 +183,10 @@ class Workspace:
     @property
     def calibration(self) -> Path:
         return self.drafts / CALIBRATION_DIR
+
+    @property
+    def info_images(self) -> Path:
+        return self.root / INFO_DIR
 
     @property
     def template_path(self) -> Path:
@@ -345,7 +375,7 @@ def enclosing_root(path: Path) -> Path | None:
     outer: Path | None = None
     child = path
     for parent in path.parents:
-        if _named(child, SUBFOLDER_NAMES + (ARCHIVE_DIR,)) and is_workspace(parent):
+        if _named(child, SUBFOLDER_NAMES + (ARCHIVE_DIR, INFO_DIR)) and is_workspace(parent):
             outer = parent  # keep going: the outermost one wins
         child = parent
     return outer

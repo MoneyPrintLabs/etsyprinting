@@ -251,6 +251,27 @@ def _taxonomy_paths(client: Any) -> dict[int, str]:
     return paths
 
 
+def cached_taxonomy_paths() -> dict[int, str]:
+    """taxonomy id -> "A > B > C" from memory or the disk cache only, never from Etsy
+    ({} when neither has it): for a view that must not wait on the network."""
+    from ...drop import cache
+
+    with _lock:
+        known = _taxonomy["map"]
+    if known is not None:
+        return known
+    stored = cache.load("seller-taxonomy-v1", namespace="taxonomy", ttl=TAXONOMY_TTL)
+    if not isinstance(stored, dict):
+        return {}
+    return {int(k): str(v) for k, v in stored.items() if str(k).isdigit()}
+
+
+def product_type_of(listing: dict[str, Any], paths: dict[int, str]) -> str | None:
+    """A listing's product as a mockup type (tshirt, mug, ...), None when unknown."""
+    kind, _leaf = _product_type(listing, paths)
+    return None if kind == "other" else kind
+
+
 def _guess_type(text: str) -> str:
     """A mockup type (tshirt, mug, poster, ...) from a name like "T-shirts" or a title."""
     from ...drop import catalog
@@ -277,8 +298,9 @@ def _product_type(listing: dict[str, Any], paths: dict[int, str]) -> tuple[str, 
     return "other", leaf
 
 
-def _source_names(ctx: AppContext, client: Any) -> dict[int, str]:
-    """listing id -> the design file (or folder) stallkit made it from (upload-history.json).
+def _source_entries(ctx: AppContext, client: Any) -> dict[int, tuple[str, dict[str, Any]]]:
+    """listing id -> (the design file or folder stallkit made it from, its history entry)
+    (upload-history.json).
 
     Read with the history's own reader, which shares the writer's lock ({} when the file
     is missing or cannot be read).
@@ -290,7 +312,7 @@ def _source_names(ctx: AppContext, client: Any) -> dict[int, str]:
         return {}
     own = data.get(str(client.shop_id()))
     sections = [own] if isinstance(own, dict) else [s for s in data.values() if isinstance(s, dict)]
-    out: dict[int, str] = {}
+    out: dict[int, tuple[str, dict[str, Any]]] = {}
     for section in sections:
         for name, entry in section.items():
             if not isinstance(entry, dict):
@@ -300,7 +322,62 @@ def _source_names(ctx: AppContext, client: Any) -> dict[int, str]:
             except (TypeError, ValueError):
                 continue
             if listing_id:
-                out[listing_id] = str(name)
+                out[listing_id] = (str(name), entry)
+    return out
+
+
+def _source_names(ctx: AppContext, client: Any) -> dict[int, str]:
+    """listing id -> the design file (or folder) stallkit made it from."""
+    return {listing_id: name for listing_id, (name, _entry) in _source_entries(ctx, client).items()}
+
+
+def _latest_run_ids(entries: dict[int, tuple[str, dict[str, Any]]]) -> set[int]:
+    """The listings stallkit's most recent run made (the drafts it calls "yeni").
+
+    Every run writes its own review.csv (drafts/<batch>/review.csv) and names it in each
+    history entry; the history keeps the order the entries were written in, so the last
+    entry's review.csv is the latest run's.
+    """
+    if not entries:
+        return set()
+    latest = list(entries.values())[-1][1].get("review_csv")
+    if not latest:
+        return set()
+    return {listing_id for listing_id, (_name, entry) in entries.items()
+            if entry.get("review_csv") == latest}
+
+
+def _new_drafts(ctx: AppContext, client: Any, entries: dict[int, tuple[str, dict[str, Any]]],
+                drafts: int | None) -> int:
+    """How many of the latest run's drafts are drafts still ("N yeni taslak")."""
+    run = _latest_run_ids(entries)
+    if not run:
+        return 0
+    rows = _cached_listings(ctx, client, "draft")
+    if rows is None:  # not loaded: at most the drafts there are
+        return min(len(run), drafts or 0)
+    return sum(1 for listing in rows if _listing_id(listing) in run)
+
+
+def _listing_id(listing: dict[str, Any]) -> int:
+    try:
+        return int(listing.get("listing_id") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _upload_progress(entry: Any) -> dict[str, Any]:
+    """What stallkit's own upload did for a draft (its history entry): its status and how
+    many of its pictures went up, of how many ("✓ 7/7 görsel" on the listing page)."""
+    if not isinstance(entry, dict):
+        return {}
+    out: dict[str, Any] = {}
+    if entry.get("status") in ("ok", "partial", "error", "pending"):
+        out["status"] = entry["status"]
+    for key in ("images_uploaded", "images_total"):
+        value = entry.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            out[key] = value
     return out
 
 
@@ -416,7 +493,10 @@ def list_listings(req: Request) -> dict[str, Any]:
     counts["all"] = sum(n for n in counts.values() if n)
 
     paths = _taxonomy_paths(client)
-    sources = _source_names(ctx, client)
+    entries = _source_entries(ctx, client)
+    sources = {listing_id: name for listing_id, (name, _entry) in entries.items()}
+    # Only the latest run's drafts are "new" (the header's "N yeni taslak"), not every draft.
+    counts["new_drafts"] = _new_drafts(ctx, client, entries, counts.get("draft"))
     rows = [_row(listing, paths, sources) for listing in listings]
     if query:
         rows = [
@@ -522,14 +602,17 @@ def _is_transparent(path: Path) -> bool | None:
     return result
 
 
-def _source_info(ctx: AppContext, name: str | None) -> dict[str, Any] | None:
-    """Where the design behind a listing is, for the "Kaynak tasarım" row."""
+def _source_info(ctx: AppContext, name: str | None,
+                 entry: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Where the design behind a listing is, for the "Kaynak tasarım" row, and what its
+    upload did (status, images_uploaded, images_total: the pictures counter)."""
     from ...drop.workspace import ARCHIVE_DIR, IMAGE_SUFFIXES, PRODUCTS_DIR
 
     if not name:
         return None
     info: dict[str, Any] = {"name": name, "exists": False, "kind": "file", "rel": None,
-                            "mtime": None, "format": None, "transparent": None, "files": 0}
+                            "mtime": None, "format": None, "transparent": None, "files": 0,
+                            **_upload_progress(entry)}
     root = ctx.workspace_root()
     safe = Path(name).name
     if not safe or safe != name:
@@ -557,11 +640,66 @@ def _source_info(ctx: AppContext, name: str | None) -> dict[str, Any] | None:
     return info
 
 
-def _image_view(image: dict[str, Any], listing_kind: str) -> dict[str, Any]:
+def _mockup_facts(ctx: AppContext) -> dict[str, tuple[str, str]]:
+    """A mockup's file stem (casefolded) -> (type, colour) as the seller set them on the
+    Mockuplar page (mockups.json); {} when the folder cannot be read."""
+    from ...drop import catalog
+    from ...drop.workspace import Workspace
+
+    try:
+        infos = catalog.load(Workspace(ctx.workspace_root()))
+    except (OSError, ValueError):
+        return {}
+    return {Path(name).stem.casefold(): (info.type, info.color) for name, info in infos.items()}
+
+
+def _picture_facts(file_name: str, design: str,
+                   mockups: dict[str, tuple[str, str]]) -> tuple[str, str, bool]:
+    """(type, colour, flat) of a picture stallkit put on a draft, from its file name.
+
+    "<design>--<mockup>.jpg" was made on that mockup: its type and colour as the seller
+    set them, else as its name reads ("-2" is a name clash's suffix). "<design>--flat.jpg"
+    is the plain design (flat). A seller's own photo is read from its name.
+    """
+    from ...drop import catalog
+
+    stem = Path(file_name).stem
+    prefix = f"{Path(design).stem}--" if design else ""
+    part = stem[len(prefix):] if prefix and stem.startswith(prefix) else stem
+    if re.fullmatch(r"flat(-\d+)?", part):
+        return "", "", True
+    facts = mockups.get(part.casefold()) or mockups.get(re.sub(r"-\d+$", "", part).casefold())
+    kind, colour = facts if facts else catalog.guess(part)
+    return ("" if kind == "other" else kind), colour, False
+
+
+def _image_view(image: dict[str, Any], name: str = "", design: str = "",
+                mockups: dict[str, tuple[str, str]] | None = None,
+                info: set[str] | frozenset[str] = frozenset(),
+                info_ids: set[str] | None = None) -> dict[str, Any]:
+    """One picture of a listing. Its product and colour (the hero's "Kupa · Beyaz") come
+    from the file stallkit sent for it (upload-history.json), else from its alt text;
+    "" when nothing says (the page then names the listing's product on the main image
+    only). flat: stallkit's plain design, which has none; the shop's info images on the
+    draft have none either: `info_ids` their Etsy image ids (history since 0.3.2), else
+    `info` their file names (an older entry)."""
     from ...drop import catalog
 
     alt = str(image.get("alt_text") or "")
-    kind, colour = catalog.guess(re.sub(r"[.]", " ", alt)) if alt else ("other", "")
+    flat = False
+    if info_ids is not None:
+        is_info = str(image.get("listing_image_id")) in info_ids
+    else:
+        is_info = bool(name) and name in info
+    if is_info:
+        kind, colour = "", ""
+    elif name:
+        kind, colour, flat = _picture_facts(name, design, mockups or {})
+    elif alt:
+        kind, colour = catalog.guess(re.sub(r"[.]", " ", alt))
+        kind = "" if kind == "other" else kind
+    else:
+        kind, colour = "", ""
     return {
         "id": image.get("listing_image_id"),
         "rank": image.get("rank"),
@@ -571,17 +709,30 @@ def _image_view(image: dict[str, Any], listing_kind: str) -> dict[str, Any]:
         "width": image.get("full_width"),
         "height": image.get("full_height"),
         "alt": alt,
-        "type": kind if kind != "other" else listing_kind,
+        "type": kind,
         "color": colour,
         "color_key": _fold(colour),
+        "flat": flat,
+        "info": is_info,
     }
 
 
 def _detail(ctx: AppContext, client: Any, listing: dict[str, Any],
             images: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     paths = _taxonomy_paths(client)
-    sources = _source_names(ctx, client)
+    entries = _source_entries(ctx, client)
+    sources = {listing_id: name for listing_id, (name, _entry) in entries.items()}
     row = _row(listing, paths, sources)
+    entry = entries.get(row["id"], ("", {}))[1]
+    names = entry.get("images") if isinstance(entry.get("images"), dict) else {}
+    mockups = _mockup_facts(ctx) if names else {}
+    # The shop's info images on this draft (drop.infoimages): no product, no colour.
+    info = {n for n in entry.get("info_images") or [] if isinstance(n, str)}
+    # By Etsy's image id when the history has it: a product photo called like an info
+    # image (size.jpg) is not one.
+    raw_ids = entry.get("info_image_ids")
+    info_ids = ({str(i) for i in raw_ids if isinstance(i, (str, int))}
+                if isinstance(raw_ids, list) else None)
     audit = seo.audit_listing(listing)
     try:
         path = paths.get(int(listing.get("taxonomy_id") or 0), "")
@@ -608,7 +759,9 @@ def _detail(ctx: AppContext, client: Any, listing: dict[str, Any],
             "type": row["type"],
             "type_name": row["type_name"],
         },
-        "images": [_image_view(image, row["type"]) for image in shown],
+        "images": [_image_view(image, str(names.get(str(image.get("listing_image_id")), "")),
+                               row["source"] or "", mockups, info, info_ids)
+                   for image in shown],
         "audit": {
             "score": audit.score,
             "grade": audit.grade,
@@ -617,7 +770,7 @@ def _detail(ctx: AppContext, client: Any, listing: dict[str, Any],
             ],
         },
         "category": {"path": path, "short": " › ".join(path.split(" > ")[-2:]) if path else ""},
-        "source": _source_info(ctx, row["source"]),
+        "source": _source_info(ctx, row["source"], entry),
         "limits": {"title": MAX_TITLE_LEN, "tags": MAX_TAGS, "tag_len": MAX_TAG_LEN,
                    "images": MAX_LISTING_IMAGES},
         "etsy_url": etsy_url,
@@ -878,7 +1031,59 @@ def _read_csv(data: bytes) -> list[dict[str, str]]:
     return rows
 
 
+# stallkit.listings words its notes and refusals in English, for the CLI. The ones about
+# weights, sizes and numbers (the refusals sellers meet most: Etsy takes a weight or a
+# size only above 0 and with its unit) get a code and their values here, so the page
+# shows them in the seller's language (listings.json import.warn.* / import.err.*).
+# Anything without a code is shown as it is.
+_SIZE = r"item_length|item_width|item_height"
+_MEASURE_FIELDS = ("item_weight", "item_length", "item_width", "item_height")
+_QUOTED = r"'[^']*'|\"[^\"]*\""
+_NOTE_CODES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"item_weight 0 not sent \(Etsy needs a value above 0\)"), "weight_zero"),
+    (re.compile(rf"(?P<field>{_SIZE}) 0 not sent \(Etsy needs a value above 0\)"), "size_zero"),
+    (re.compile(r"item_weight not sent: item_weight_unit is empty"), "weight_no_unit"),
+    (re.compile(rf"(?P<fields>(?:{_SIZE})(?:, (?:{_SIZE}))*) not sent: item_dimensions_unit is empty"),
+     "size_no_unit"),
+)
+_PROBLEM_CODES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"no updatable fields present in this row"), "nothing_to_update"),
+    (re.compile(rf"(?P<field>[a-z_]+) (?P<value>{_QUOTED}) is ambiguous\b.*", re.S), "comma"),
+    (re.compile(rf"(?P<field>[a-z_]+) must be a number, got (?P<value>{_QUOTED})"), "not_a_number"),
+    (re.compile(r"item_weight_unit must be one of (?P<units>[a-z, ]+)"), "weight_unit"),
+    (re.compile(r"item_dimensions_unit must be one of (?P<units>[a-z, ]+)"), "size_unit"),
+)
+
+
+def _coded(text: str, table: tuple[tuple[re.Pattern[str], str], ...]) -> dict[str, Any]:
+    """One note or refusal as {text, code, params}; code is None when it has none."""
+    code = getattr(text, "code", None)  # a note that already carries its code
+    if code:
+        return {"text": str(text), "code": code, "params": dict(getattr(text, "params", None) or {})}
+    for pattern, name in table:
+        match = pattern.fullmatch(text.strip())
+        if not match:
+            continue
+        params = {k: v for k, v in match.groupdict().items() if v is not None}
+        if "value" in params:
+            params["value"] = params["value"][1:-1]  # repr() quotes
+        if name == "comma":
+            value = params["value"]
+            params.update(dot=value.replace(",", "."), plain=value.replace(",", ""))
+            # "0,250": no thousands separator follows a lone 0, so it is a decimal.
+            if re.fullmatch(r"-?0,\d+", value.strip()):
+                name = "comma_decimal"
+        elif name == "not_a_number" and params.get("field") in _MEASURE_FIELDS:
+            name = "measure_not_a_number"
+            params["unit_field"] = ("item_weight_unit" if params["field"] == "item_weight"
+                                    else "item_dimensions_unit")
+        return {"text": str(text), "code": name, "params": params}
+    return {"text": str(text), "code": None, "params": {}}
+
+
 def _result(result: Any) -> dict[str, Any]:
+    problems = [p for p in (result.message or "").split("; ") if p.strip()] \
+        if result.status == "error" else []
     return {
         "row": result.row,
         "action": result.action,
@@ -886,7 +1091,9 @@ def _result(result: Any) -> dict[str, Any]:
         "listing_id": result.listing_id,
         "title": result.title,
         "message": result.message,
-        "warnings": list(result.warnings),
+        # The message's parts (build_payload joins them with "; "), each with its code.
+        "problems": [_coded(p, _PROBLEM_CODES) for p in problems],
+        "warnings": [_coded(w, _NOTE_CODES) for w in result.warnings],
     }
 
 

@@ -58,6 +58,10 @@ def studio(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mockup, "compose", small_compose)
     monkeypatch.setattr(mockup, "flatten_design", small_flat)
+    # These tiny pictures would each get a "may look soft" warning: tests that are about
+    # that warning turn it back on.
+    monkeypatch.setattr(stream, "SMALL_IMAGE_EDGE", 0)
+    monkeypatch.setattr(mockup, "MAX_UPSCALE", float("inf"))
     return ws, template
 
 
@@ -69,6 +73,7 @@ class Client:
         self.lock = threading.Lock()
         self.creates: list[dict] = []
         self.images: list[tuple[int, str, int]] = []
+        self.alts: dict[str, str] = {}  # image name -> the alt text it was sent with
         self.searches: list[str] = []
         self.search_delay = search_delay
         self.active_searches = 0
@@ -122,10 +127,11 @@ class Client:
             self.next_id += 1
         return {"listing_id": listing_id}
 
-    def upload_listing_image(self, listing_id, image, *, rank):
+    def upload_listing_image(self, listing_id, image, *, rank, alt_text=""):
         with self.lock:
             self.images.append((listing_id, image.name, rank))
             self.calls.append(("image", listing_id, image.name))
+            self.alts[image.name] = alt_text
         return {}
 
     def upload_listing_file(self, listing_id, path, *, rank):
@@ -389,7 +395,7 @@ def test_cancel_finishes_the_draft_in_flight_and_starts_nothing_new(studio):
     cancel = threading.Event()
 
     class Cancelling(Client):
-        def upload_listing_image(self, listing_id, image, *, rank):
+        def upload_listing_image(self, listing_id, image, *, rank, alt_text=""):
             cancel.set()  # asked to stop while the first draft is being created
             return super().upload_listing_image(listing_id, image, rank=rank)
 
@@ -492,7 +498,7 @@ def test_an_image_that_fails_after_the_create_leaves_a_partial_draft_on_record(s
     _artwork(ws.products / "ocean-waves.png")
 
     class ThirdImageFails(Client):
-        def upload_listing_image(self, listing_id, image, *, rank):
+        def upload_listing_image(self, listing_id, image, *, rank, alt_text=""):
             if listing_id == 1000001 and rank == 2:
                 raise EtsyApiError(400, "bad image", method="POST", path="/images")
             return super().upload_listing_image(listing_id, image, rank=rank)
@@ -576,7 +582,8 @@ def test_a_finished_photo_over_etsys_limit_goes_up_smaller(studio, monkeypatch):
     item = report.items[0]
     assert item.status == stream.OK and item.mode == "as_is"
     shrunk = [w for w in item.warnings if w.step == "mockup"]
-    assert [w.code for w in shrunk] == ["shrunk"]
+    assert [w.code for w in shrunk] == ["as_is", "shrunk"]
+    shrunk = shrunk[1:]
     assert shrunk[0].params["name"] == "ocean-waves-photo.jpg"
     assert [name for _id, name, _rank in client.images] == ["ocean-waves-photo-jpg-etsy.jpg"]
 

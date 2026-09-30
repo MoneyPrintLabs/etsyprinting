@@ -1074,20 +1074,21 @@ def fill_tags(tags: list[str], extra: Sequence[str]) -> int:
     return added
 
 
-def build_description(seed: Seed, template_description: str, title: str) -> str:
-    """The template's own description, with the concept named in the opening line.
+def build_description(seed: Seed, template_description: str, title: str, *,
+                      source_title: str = "", description_template: str | None = None) -> str:
+    """The seller's own description for this draft, never one written here.
 
     A description is prose. It cannot be measured out of n-grams, and inventing one
     would be the tool writing marketing copy it has no basis for. So the seller's own
-    wording carries over, and only the first line is specific to this product.
+    wording carries over: their saved description template ({başlık} and {tasarım}
+    filled in), else the template listing's description with its own title
+    (`source_title`) replaced by this draft's and that title as the opening line.
+    See drop.description.
     """
-    body = (template_description or "").strip()
-    opening = f"{title}."
-    if not body:
-        return opening
-    if body.lower().startswith(title.lower()[:40]):
-        return body
-    return f"{opening}\n\n{body}"
+    from . import description
+
+    return description.build(seed, title=title, description=template_description,
+                             source_title=source_title, template_text=description_template)
 
 
 def generate(
@@ -1097,11 +1098,16 @@ def generate(
     template_description: str = "",
     fallback_tags: list[str] | None = None,
     template_title: str = "",
+    description_template: str | None = None,
+    product_words: Sequence[str] = (),
 ) -> Generated:
     """Produce the copy for one product, and say honestly how much evidence backed it.
 
     The template's title, tags and description tell the builders what the product is
-    and which claims about it (size, material, brand) are the seller's own.
+    and which claims about it (size, material, brand) are the seller's own. With no
+    `description_template` saved, a description that still holds sentences about the
+    template's own design says so in the warnings (`product_words`: the template's
+    category names, see description.design_words).
     """
     warnings: list[str] = []
     sources: list[str] = []
@@ -1142,10 +1148,21 @@ def generate(
     if len(tags) < MAX_TAGS:
         warnings.append(f"{len(tags)}/{MAX_TAGS} tags — the rest could not be filled honestly")
 
+    has_template = bool(description_template and description_template.strip())
+    if not has_template:
+        from . import description
+
+        left = description.leftover(template_description, template_title, fallback_tags,
+                                    seed=seed, title=title, product_words=product_words)
+        if left:
+            warnings.append(description.leftover_message(left))
+
     return Generated(
         title=title,
         tags=tags,
-        description=build_description(seed, template_description, title),
+        description=build_description(seed, template_description, title,
+                                      source_title=template_title,
+                                      description_template=description_template),
         sources=sources,
         warnings=warnings,
     )

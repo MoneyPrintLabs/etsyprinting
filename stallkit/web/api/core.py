@@ -63,7 +63,28 @@ def session(req: Request) -> dict[str, Any]:
         "port": ctx.port,
         "shop_id": ctx.shop_id,
         "shops": ctx.shops_list(),
+        # The sidebar shows the Pinterest item only while Pinterest is in use.
+        "pinterest": pinterest_in_use(),
     }
+
+
+def pinterest_in_use() -> bool:
+    """Pinterest is set up or was used: an app, a sign-in or Pins in the queue.
+
+    Local files only, no network. A file that cannot be read counts as in use: the
+    Pinterest page is where such a problem is explained.
+    """
+    from ... import pinterest
+
+    try:
+        if pinterest.token_path().is_file():
+            return True
+        config = pinterest.PinterestConfig.load()
+        if config.app_id or config.access_token:
+            return True
+        return bool(pinterest.Queue.load().entries)
+    except Exception:  # noqa: BLE001 — never let the session call fail over Pinterest
+        return True
 
 
 def status(req: Request) -> dict[str, Any]:
@@ -245,11 +266,16 @@ def workspace_thumb(req: Request) -> Response:
     target = _image(req)
     width = req.int_query("w", 400)
     width = max(files.THUMB_MIN, min(files.THUMB_MAX, width or 400))
+    # bg=checker: the page draws a transparent design on its checkerboard, so the
+    # thumbnail keeps its alpha (a PNG); anything else is flattened on white (a JPEG).
+    keep_alpha = req.query.get("bg") == "checker"
     try:
-        thumb = files.thumbnail(target, width, home_dir() / "cache" / "thumbs")
+        thumb = files.thumbnail(target, width, home_dir() / "cache" / "thumbs",
+                                keep_alpha=keep_alpha)
     except (OSError, ValueError, Image.DecompressionBombError) as exc:
         raise ApiError(404, "not_found", "This file cannot be shown as an image.") from exc
-    return Response.file(thumb, "image/jpeg", _cache_headers(req))
+    return Response.file(thumb, "image/png" if keep_alpha else "image/jpeg",
+                         _cache_headers(req))
 
 
 def open_folder(req: Request) -> dict[str, Any]:

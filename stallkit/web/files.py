@@ -129,12 +129,14 @@ def check_decodable(name: str, size: tuple[int, int]) -> None:
         raise too_many_pixels(name, *size)
 
 
-def thumbnail(source: Path, width: int, cache: Path) -> Path:
+def thumbnail(source: Path, width: int, cache: Path, *, keep_alpha: bool = False) -> Path:
     """A JPEG of `source` at most `width` px wide, upright, sRGB, flattened on white.
 
-    Cached under `cache`, keyed by path + mtime + size + width, so an edited file
-    gets a new thumbnail and an unchanged one is rendered once. An image too large to
-    decode safely raises ApiError 422 too_many_pixels (never a MemoryError / 500).
+    keep_alpha: a PNG that keeps the transparency instead (a design the page shows on
+    its checkerboard). Cached under `cache`, keyed by path + mtime + size + width (+ the
+    kind), so an edited file gets a new thumbnail and an unchanged one is rendered once.
+    An image too large to decode safely raises ApiError 422 too_many_pixels (never a
+    MemoryError / 500).
     """
     from PIL import Image
 
@@ -142,10 +144,11 @@ def thumbnail(source: Path, width: int, cache: Path) -> Path:
 
     width = max(THUMB_MIN, min(THUMB_MAX, int(width)))
     stat = source.stat()
+    kind = "|alpha" if keep_alpha else ""
     key = hashlib.sha256(
-        f"{source.resolve()}|{stat.st_mtime_ns}|{stat.st_size}|{width}".encode()
+        f"{source.resolve()}|{stat.st_mtime_ns}|{stat.st_size}|{width}{kind}".encode()
     ).hexdigest()[:32]
-    target = cache / f"{key}.jpg"
+    target = cache / f"{key}.{'png' if keep_alpha else 'jpg'}"
     if target.is_file():
         return target
     dims: list[tuple[int, int]] = [(0, 0)]
@@ -158,13 +161,19 @@ def thumbnail(source: Path, width: int, cache: Path) -> Path:
         # still get a thumbnail, a huge PNG cannot.
         check_decodable(source.name, opened.size)
         image = mockup._as_displayed(opened)
-        image = mockup.flatten_onto(image, mockup.WHITE)
+        if keep_alpha:
+            image = image.convert("RGBA")
+        else:
+            image = mockup.flatten_onto(image, mockup.WHITE)
         if image.width > width:
             height = max(1, round(image.height * width / image.width))
             image = image.resize((width, height), Image.LANCZOS)
         cache.mkdir(parents=True, exist_ok=True)
         tmp = cache / f"{key}.{threading.get_ident()}.tmp"
-        image.save(tmp, format="JPEG", quality=85, optimize=True)
+        if keep_alpha:
+            image.save(tmp, format="PNG", optimize=True)
+        else:
+            image.save(tmp, format="JPEG", quality=85, optimize=True)
     with _thumb_lock:
         tmp.replace(target)
     return target

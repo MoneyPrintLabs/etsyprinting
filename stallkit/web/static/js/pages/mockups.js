@@ -1,11 +1,13 @@
 // Mockuplar (frames t170, t180) and the print-area editor (frame t190).
 //
-//   /kurulum/mockuplar         grid of mockup cards, type filter chips, upload by picker or drop
+//   /kurulum/mockuplar         grid of mockup cards, type filter chips, upload by picker or drop,
+//                              and under it the Filigran card (#filigran): the seller's watermark
 //   /kurulum/mockuplar/:name   editor: library list, canvas with the print-area rectangle,
 //                              X / Y / width / height fields, same-size apply, preview design
 //
 // Everything is local (1-MOCKUPS in the products folder); no Etsy call is made, so the
-// page works before any key is saved. Endpoints: stallkit/web/api/mockups.py.
+// page works before any key is saved. Endpoints: stallkit/web/api/mockups.py and
+// stallkit/web/api/watermark.py.
 
 import {
   badge,
@@ -28,8 +30,10 @@ import {
   select,
   skeleton,
   spinner,
+  svg,
   textInput,
   toggle,
+  uid,
 } from "../ui.js";
 import { icon } from "../icons.js";
 import { percent } from "../format.js";
@@ -45,6 +49,10 @@ const IMAGE_MAX = 1400;
 const HANDLES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
 const SAMPLE = { id: "sample", version: "1" };
 const GRID_PATH = "/kurulum/mockuplar";
+// The "Baskı alanı" pill shows once the rectangle is this big on screen (CSS px): the
+// video's PrintGuide shows it from 104 x 44 px on a 540 px photo, about 94 x 40 here.
+const LABEL_MIN_W = 94;
+const LABEL_MIN_H = 40;
 
 const enc = encodeURIComponent;
 const editorPath = (name) => `${GRID_PATH}/${enc(name)}`;
@@ -248,7 +256,8 @@ function installPageDrop(el, ctx, onFiles) {
   el.appendChild(overlay);
   let timer = null;
   const hasFiles = (e) => !!e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files");
-  const inZone = (e) => !!(e.target && e.target.closest && e.target.closest(".dropzone"));
+  // A dropzone takes its own files; so does the Filigran card (a watermark, not a mockup).
+  const inZone = (e) => !!(e.target && e.target.closest && e.target.closest(".dropzone, .mk-wm"));
   const onOver = (e) => {
     if (!hasFiles(e) || inZone(e)) return;
     e.preventDefault();
@@ -351,7 +360,7 @@ function areaState(t, item) {
     return h("span", { class: "mk-state is-own", title: t("area.own_hint") }, t("area.own"), icon("check", { size: 12, strokeWidth: 2.4 }));
   }
   if (item.area_source === "same_size") return h("span", { class: "mk-state is-shared", title: t("area.same_size_hint") }, t("area.same_size"));
-  return h("span", { class: "mk-state is-default", title: t("area.default_hint") }, t("area.default"));
+  return h("span", { class: "mk-state is-default", title: t("area.default_hint") }, icon("crop", { size: 12 }), t("area.default"));
 }
 
 // ------------------------------------------------------------------ which mockups drafts use
@@ -408,7 +417,10 @@ async function mountGrid(el, ctx) {
   let suppressClick = false;
   const cleanups = [];
 
-  const max = () => (data && data.max_enabled) || 19;
+  // 19 (Etsy's 20 pictures less the flat design), less one per info image (Şablon İlan).
+  const max = () => (data && typeof data.max_enabled === "number" ? data.max_enabled : 19);
+  const infoCount = () => (data && data.info_images) || 0;
+  const usageRule = () => (infoCount() ? t("usage.rule_info", { info: t("usage.info_part", { n: infoCount() }) }) : t("usage.rule"));
   const savedOrder = () => (data ? data.items.map((it) => it.name) : []);
   const order = () => (sel ? sel.order : savedOrder());
   const isOn = (name) => (sel ? sel.on.has(name) : !!(byName.get(name) || {}).enabled);
@@ -419,9 +431,9 @@ async function mountGrid(el, ctx) {
     return data.items.some((it) => it.enabled !== sel.on.has(it.name));
   };
 
+  // The header holds only "Mockup ekle", as in the video; "Klasörü aç" is in each card's menu.
   const addBtn = button({ label: t("add"), icon: "plus", variant: "primary", onClick: () => pickAndUpload() });
-  const folderBtn = iconButton({ icon: "folder-open", title: t("open_folder"), variant: "ghost", onClick: () => openFolder(ctx) });
-  ctx.setHeader({ actions: [folderBtn, addBtn] });
+  ctx.setHeader({ actions: [addBtn] });
 
   const chipsCtl = chips({
     items: [{ id: "all", label: t("all") }],
@@ -433,11 +445,17 @@ async function mountGrid(el, ctx) {
       renderGrid();
     },
   });
+  // "Seç ve sırala" sits in the filter bar; the counter panel below shows only when it has
+  // something to say (over the limit, nothing switched on) or while choosing.
+  const selectStartBtn = button({ label: t("select.start"), icon: "check-circle", variant: "ghost", size: "sm", class: "mk-select-start", onClick: () => enterSelect() });
+  selectStartBtn.hidden = true;
   const toolbar = h(
     "div",
     { class: "mk-toolbar" },
     chipsCtl.el,
-    h("p", { class: "mk-autonote" }, icon("sparkles", { size: 14 }), h("span", null, t("auto_note"))),
+    selectStartBtn,
+    // The video's burst ("sparkle", MockuplarEkrani.tsx FilterBar), not the twin stars.
+    h("p", { class: "mk-autonote" }, icon("sparkle", { size: 15 }), h("span", null, t("auto_note"))),
   );
   const usageHost = h("section", { class: "mk-usage", "aria-label": t("usage.label") });
   // Selection tools sit under the counter and scroll away; the counter and Save stay.
@@ -445,7 +463,14 @@ async function mountGrid(el, ctx) {
   toolsHost.hidden = true;
   const notes = h("div", { class: "mk-notes" });
   const grid = h("div", { class: "mk-grid", role: "list" });
-  el.append(toolbar, usageHost, toolsHost, notes, grid);
+  // Filigran: under the grid, so the page opens as the video's; "#filigran" scrolls to it.
+  const wmCtl = watermarkSection(ctx, { labelFor: (name) => (byName.get(name) ? itemLabel(t, byName.get(name)) : stem(name)) });
+  wmCtl.el.hidden = true;
+  el.append(toolbar, usageHost, toolsHost, notes, grid, wmCtl.el);
+  cleanups.push(() => wmCtl.flush());
+  // A reload or a closed tab never runs the cleanup: what waits goes with the page.
+  window.addEventListener("pagehide", wmCtl.flushOnExit);
+  cleanups.push(() => window.removeEventListener("pagehide", wmCtl.flushOnExit));
   const offDrop = installPageDrop(el, ctx, (files) => queueUpload(files));
   cleanups.push(offDrop);
 
@@ -461,6 +486,7 @@ async function mountGrid(el, ctx) {
 
   function renderSkeleton() {
     toolbar.hidden = false;
+    selectStartBtn.hidden = true;
     notes.hidden = true;
     usageHost.hidden = true;
     toolsHost.hidden = true;
@@ -483,6 +509,7 @@ async function mountGrid(el, ctx) {
     notes.hidden = true;
     usageHost.hidden = true;
     toolsHost.hidden = true;
+    wmCtl.el.hidden = true;
     mount(
       grid,
       h(
@@ -543,17 +570,28 @@ async function mountGrid(el, ctx) {
     if (!data || !data.items.length) {
       usageHost.hidden = true;
       toolsHost.hidden = true;
+      selectStartBtn.hidden = true;
       return;
     }
-    usageHost.hidden = false;
     const p = current();
     const m = max();
+    selectStartBtn.hidden = !!sel;
+    // The video goes straight from the filter bar to the cards. The counter stays for what
+    // must never go unnoticed (FIXLIST 9): mockups over the limit, none switched on, and
+    // while choosing.
+    usageHost.hidden = !(sel || p.on > m || p.on === 0);
+    if (usageHost.hidden) {
+      toolsHost.hidden = true;
+      mount(usageHost);
+      mount(toolsHost);
+      return;
+    }
     usageHost.classList.toggle("is-selecting", !!sel);
     usageHost.classList.toggle("is-over", p.on > m);
     const fill = h("span", { class: "mk-meter-fill", style: { width: `${Math.round((p.used / m) * 100)}%` } });
     const meter = h("span", { class: "mk-meter", role: "meter", "aria-valuemin": "0", "aria-valuemax": String(m), "aria-valuenow": String(p.used), "aria-label": t("usage.count", { used: p.used, max: m }) }, fill);
     let sub;
-    if (p.on > m) sub = h("p", { class: "mk-usage-sub is-over" }, icon("alert", { size: 13 }), h("span", null, t("usage.over", { n: p.on - m })));
+    if (p.on > m) sub = h("p", { class: "mk-usage-sub is-over" }, icon("alert", { size: 13 }), h("span", null, t("usage.over", { n: p.on - m, max: m })));
     else if (!p.on) sub = h("p", { class: "mk-usage-sub is-none" }, icon("info", { size: 13 }), h("span", null, t("usage.none")));
     else {
       const main = byName.get(p.main);
@@ -562,12 +600,11 @@ async function mountGrid(el, ctx) {
     const text = h(
       "div",
       { class: "mk-usage-text" },
-      h("p", { class: "mk-usage-count" }, h("strong", { class: "num" }, t("usage.count", { used: p.used, max: m })), h("span", { class: "mk-usage-rule" }, ` — ${t("usage.rule")}`)),
+      h("p", { class: "mk-usage-count" }, h("strong", { class: "num" }, t("usage.count", { used: p.used, max: m })), h("span", { class: "mk-usage-rule" }, ` — ${usageRule()}`)),
       sub,
     );
     if (!sel) {
-      const start = button({ label: t("select.start"), icon: "check-circle", variant: "secondary", class: "mk-select-start", onClick: () => enterSelect() });
-      mount(usageHost, h("div", { class: "mk-usage-row" }, meter, text, h("div", { class: "spacer" }), start));
+      mount(usageHost, h("div", { class: "mk-usage-row" }, meter, text));
       toolsHost.hidden = true;
       mount(toolsHost);
       return;
@@ -676,23 +713,10 @@ async function mountGrid(el, ctx) {
 
   // ---- notes above the grid
 
+  // A mockup still on the default area says so on its own card (an amber "Baskı alanını
+  // ayarla"), so the grid needs no banner for it (FIXLIST 8's cue lives on the card).
   function renderNotes() {
     const list = [];
-    const d = data && data.default_area;
-    if (d && d.count && d.first && !sel) {
-      const first = byName.get(d.first);
-      const how = d.first_same_size
-        ? t("banner.same_size", { n: d.first_same_size, label: first ? itemLabel(t, first) : d.first })
-        : t("banner.one_by_one");
-      list.push(
-        infoNote({
-          tone: "warning",
-          icon: "crop",
-          text: [h("strong", null, t("banner.default", { n: d.count })), " ", h("span", null, how)],
-          action: h("a", { class: "btn btn-primary btn-sm mk-banner-link", href: editorPath(d.first) }, h("span", { class: "btn-label" }, t("banner.fix")), icon("arrow-right", { size: 14 })),
-        }),
-      );
-    }
     if (data && data.positions_error) {
       list.push(infoNote({ tone: "warning", icon: "alert", text: [t("positions_error"), " ", h("span", { class: "mono muted" }, data.positions_error)] }));
     }
@@ -733,7 +757,13 @@ async function mountGrid(el, ctx) {
     return img;
   }
 
+  /**
+   * The pill over a card's photo. Outside selection mode the photo stays clean, as in the
+   * video (the grid order is the listing order); only a mockup that is off or over the
+   * limit says so, so nothing is ever dropped silently (FIXLIST 9).
+   */
   function positionMark(item, p) {
+    if (!sel && isOn(item.name) && !p.over.has(item.name)) return null;
     const n = p.pos.get(item.name);
     if (n === 1) return h("span", { class: "mk-pos is-main", title: t("badge.main_hint") }, icon("star", { size: 11, strokeWidth: 2.2 }), h("span", null, t("badge.main")));
     if (n) return h("span", { class: "mk-pos num", title: t("badge.position", { n }), "aria-label": t("badge.position", { n }) }, String(n));
@@ -757,12 +787,14 @@ async function mountGrid(el, ctx) {
         openMenu(more, item);
       },
     });
-    const setArea = h(
-      "a",
-      { class: cx("mk-set-area", item.area_source === "default" && "is-default"), href: editorPath(item.name), title: t(`area.${item.area_source}_hint`) },
-      icon("crop", { size: 14 }),
-      h("span", null, t("card.set_area")),
-    );
+    // FIXLIST 8's visible action, only where it is needed: a mockup still on the default
+    // area. A card whose area is set ends at its meta line, like the video's; the whole
+    // card and "⋯ > Baskı alanını düzenle" still open the editor.
+    const setArea =
+      item.area_source === "default"
+        ? h("a", { class: "mk-set-area is-default", href: editorPath(item.name), title: t("area.default_hint") }, icon("crop", { size: 14 }), h("span", null, t("card.set_area")))
+        : null;
+    const mark = positionMark(item, p);
     let check = null;
     if (sel) {
       check = checkbox({ checked: on, ariaLabel: t("select.use", { label }), onChange: (v) => setMany([item.name], v) });
@@ -776,7 +808,7 @@ async function mountGrid(el, ctx) {
         title: item.name,
         dataset: { name: item.name },
       },
-      h("div", { class: "mk-card-media" }, thumbImg(item), h("span", { class: "mk-card-pos" }, positionMark(item, p)), check),
+      h("div", { class: "mk-card-media" }, thumbImg(item), mark ? h("span", { class: "mk-card-pos" }, mark) : null, check),
       h(
         "div",
         { class: "mk-card-foot" },
@@ -834,8 +866,65 @@ async function mountGrid(el, ctx) {
     }
     for (const u of uploads.values()) cards.push(u.el);
     if (!cards.length) cards.push(h("div", { class: "mk-grid-full" }, emptyState({ icon: "filter", title: t("filter_empty"), compact: true })));
+    newTile = data.items.length > 0 && filter === "all" && !sel ? newMockupTile() : null;
+    if (newTile) cards.push(newTile);
     mount(grid, cards);
+    spanNewTile();
   }
+
+  // ---- the "Yeni mockup" tile that ends the grid (two columns wide, like the video's)
+
+  let newTile = null;
+  let gridCols = 0;
+
+  function newMockupTile() {
+    const [before, after = ""] = t("grid_new.hint").split("{size}");
+    const zone = dropzone({
+      class: "mk-grid-new",
+      accept: ACCEPT,
+      multiple: true,
+      title: t("library.new"),
+      subtitle: t("grid_new.sub"),
+      onFiles: (list) => queueUpload(list.map((x) => x.file)),
+      onReject: (bad) => ctx.toast({ tone: "warning", title: t("upload.skipped", { n: bad.length }) }),
+      content: [
+        h("span", { class: "mk-grid-new-icon", "aria-hidden": "true" }, icon("plus", { size: 26, strokeWidth: 2.2 })),
+        h("p", { class: "mk-grid-new-title" }, t("library.new")),
+        h("p", { class: "mk-grid-new-sub" }, t("grid_new.sub")),
+        h("p", { class: "mk-grid-new-hint" }, icon("info", { size: 13 }), h("span", null, before, h("span", { class: "mono" }, "2000×2000"), after)),
+      ],
+    });
+    return h("div", { class: "mk-grid-new-cell", role: "listitem" }, zone);
+  }
+
+  /** Two columns wide, or one when only one is left in the last row. */
+  function spanNewTile() {
+    if (!newTile || !newTile.isConnected) return;
+    const cols = String(getComputedStyle(grid).gridTemplateColumns || "")
+      .split(" ")
+      .filter(Boolean).length;
+    gridCols = cols;
+    if (!cols) return;
+    let pos = 0;
+    for (const cell of grid.children) {
+      if (cell === newTile) break;
+      pos = cell.classList.contains("mk-grid-full") ? 0 : (pos + 1) % cols;
+    }
+    const span = pos === 0 ? Math.min(2, cols) : Math.min(2, cols - pos);
+    const want = `span ${span}`;
+    if (newTile.style.gridColumn !== want) newTile.style.gridColumn = want;
+  }
+
+  // The column count changes with the window (4, 5 from 1900 px, 3, 2).
+  const gridRo = new ResizeObserver(() => {
+    requestAnimationFrame(() => {
+      if (!newTile) return;
+      const cols = String(getComputedStyle(grid).gridTemplateColumns || "").split(" ").filter(Boolean).length;
+      if (cols !== gridCols) spanNewTile();
+    });
+  });
+  gridRo.observe(grid);
+  cleanups.push(() => gridRo.disconnect());
 
   // ---- order: menu actions, drag in selection mode
 
@@ -892,6 +981,7 @@ async function mountGrid(el, ctx) {
             if (await editMeta(ctx, item)) load({ quiet: true });
           },
         },
+        { label: t("open_folder"), icon: "folder-open", onClick: () => openFolder(ctx) },
         {
           label: t("menu.delete"),
           icon: "trash",
@@ -902,7 +992,11 @@ async function mountGrid(el, ctx) {
         },
       );
     }
-    menu(anchor, items, { placement: "bottom-end", width: 230 });
+    const pop = menu(anchor, items, { placement: "bottom-end", width: 230 });
+    // The cards carry no "Ana görsel" pill outside selection mode; the menu item says
+    // what the first position means.
+    const mainItem = pop && [...pop.el.querySelectorAll(".menu-item")].find((b) => b.textContent === t("menu.make_main"));
+    if (mainItem) mainItem.title = t("badge.main_hint");
   }
 
   function scroller() {
@@ -1096,6 +1190,9 @@ async function mountGrid(el, ctx) {
       return;
     }
     renderGrid();
+    // The mockups a preview can use follow the grid's (switched on, in order).
+    wmCtl.el.hidden = false;
+    wmCtl.load({ quiet: true });
     // Never silently: a mockup that was just switched on or added but does not fit says so.
     const over = warnOver.map((n) => byName.get(n)).filter((it) => it && it.over_limit);
     if (over.length === 1) ctx.toast({ tone: "warning", title: t("enabled.over_title"), message: t("enabled.over", { max: max(), label: itemLabel(t, over[0]) }), timeout: 8000 });
@@ -1112,6 +1209,638 @@ async function mountGrid(el, ctx) {
       }
     }
   };
+}
+
+// ------------------------------------------------------------------ Filigran (watermark)
+//
+// The seller's own mark (a logo, the shop name). Tasarım Yükle and `drop run/auto` stamp
+// it on a copy of every listing PHOTO (the composited mockups, the flat image, a product
+// folder's own photos), never on the files buyers download. The picture and its
+// settings live at the workspace root (drop/watermark.py): watermark.png, watermark.json.
+
+const WM_ACCEPT = ".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp";
+const WM_RE = /\.(png|jpe?g|webp)$/i;
+const WM_FLAT = "flat";
+const WM_PREVIEW_MAX = 1000;
+const WM_POSITIONS = ["center", "corner", "tiled"];
+const WM_SCOPES = ["digital", "all"];
+
+/** A position tile's picture: a photo frame with the mark where it goes. */
+function wmPositionArt(pos) {
+  const marks = [];
+  if (pos === "center") marks.push(svg("rect", { x: 13, y: 13, width: 18, height: 6, rx: 1.6 }));
+  else if (pos === "corner") marks.push(svg("rect", { x: 27, y: 22.5, width: 12, height: 5, rx: 1.4 }));
+  else {
+    const spots = [[3, 8], [19, 4], [35, 0], [11, 17], [27, 13], [3, 26], [19, 22], [35, 18]];
+    for (const [x, y] of spots) {
+      marks.push(svg("rect", { x, y, width: 9, height: 3.4, rx: 1, transform: `rotate(-30 ${x + 4.5} ${y + 1.7})` }));
+    }
+  }
+  return svg(
+    "svg",
+    { class: "mk-wm-pos-art", viewBox: "0 0 44 32", "aria-hidden": "true" },
+    svg("rect", { class: "mk-wm-pos-frame", x: 0.75, y: 0.75, width: 42.5, height: 30.5, rx: 4 }),
+    svg("g", { class: "mk-wm-pos-marks" }, marks),
+  );
+}
+
+/**
+ * The Filigran card. -> {el, load({quiet}), flush()}. Changes save on their own (PATCH
+ * /api/watermark, a moment after the last one); the preview is drawn by the server on a
+ * real mockup with the unsaved values, the same way the drafts get it.
+ */
+function watermarkSection(ctx, { labelFor }) {
+  const t = ctx.t;
+  const titleId = uid("wm");
+  const el = h("section", { class: "card mk-wm", id: "filigran", "aria-labelledby": titleId, dataset: { drop: t("wm.drop") } });
+  let wm = null; // GET /api/watermark
+  let draft = null; // the settings on screen (saved or about to be)
+  let pending = {}; // fields changed on screen and not saved yet
+  let saveTimer = null;
+  let saving = null;
+  let busy = false; // an upload, a removal or a background removal is running
+  let target = null; // the mockup the preview shows (or WM_FLAT)
+  let loadSeq = 0;
+  let previewSeq = 0;
+  let depth = 0;
+  let scrolled = false;
+  const refs = {};
+
+  const limits = () => (wm && wm.limits) || { opacity: [10, 90], size: [5, 60], tile_size: [5, 40], max_mb: 10 };
+  const sizeKey = () => (draft && draft.position === "tiled" ? "tile_size" : "size");
+  const pct = (v) => percent(v / 100);
+
+  // ---- data
+
+  async function load({ quiet = false } = {}) {
+    if (quiet && busy) return; // the upload or removal redraws the card itself
+    const seq = ++loadSeq;
+    if (!wm) renderSkeleton();
+    let next;
+    try {
+      next = await ctx.api.get("/api/watermark", null, { signal: ctx.signal });
+    } catch (err) {
+      if (ctx.api.isAbort(err) || seq !== loadSeq) return;
+      if (!wm) {
+        mount(el, infoNote({ tone: "danger", icon: "alert", text: [h("strong", null, t("wm.load_error")), " ", ctx.api.errorText(err, t)] }));
+      }
+      return;
+    }
+    if (seq !== loadSeq) return;
+    const sameFile = wm && wm.file && next.file && wm.file.version === next.file.version;
+    const settle = quiet && sameFile && refs.side && refs.side.isConnected;
+    wm = next;
+    if (settle) {
+      // Only what the grid can change: the mockups the preview can use, and whether the
+      // next run stamps. The sliders keep their place (and focus).
+      if (!Object.keys(pending).length) draft = { ...wm.settings };
+      renderTargets();
+      renderApplies();
+      return;
+    }
+    draft = { ...wm.settings, ...pending };
+    render();
+    if (!scrolled && location.hash === "#filigran") {
+      scrolled = true;
+      requestAnimationFrame(() => el.scrollIntoView({ block: "start", behavior: "smooth" }));
+    }
+  }
+
+  /** A new state from the server, drawn at once. `where` ("drop", "replace", "title"):
+   *  where the keyboard goes when it was in the card, whose nodes are all rebuilt. */
+  function take(res, where = null) {
+    const inCard = el.contains(document.activeElement);
+    wm = res;
+    pending = {};
+    draft = { ...wm.settings };
+    render();
+    if (where && inCard && !el.contains(document.activeElement)) refocus(where);
+  }
+
+  function refocus(where) {
+    const node = where === "drop" ? refs.drop : where === "replace" ? refs.replace : refs.title;
+    const target = node && node.isConnected ? node : refs.title;
+    if (target) target.focus({ preventScroll: true });
+  }
+
+  function queueSave(fields, { now = false } = {}) {
+    Object.assign(draft, fields);
+    Object.assign(pending, fields);
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => save(), now ? 0 : 550);
+    renderApplies();
+    renderState();
+  }
+
+  async function save() {
+    clearTimeout(saveTimer);
+    if (!Object.keys(pending).length) return;
+    if (saving) {
+      // One PATCH at a time; the next one goes when this one is answered.
+      saveTimer = setTimeout(() => save(), 120);
+      return;
+    }
+    const body = pending;
+    pending = {};
+    saving = ctx.api.patch("/api/watermark", body);
+    try {
+      const res = await saving;
+      wm = res;
+      // What changed on screen meanwhile stays on screen (it is queued).
+      draft = { ...wm.settings, ...pending };
+      renderApplies();
+      renderState();
+    } catch (err) {
+      if (ctx.api.isAbort(err)) return;
+      ctx.toast({ tone: "danger", title: t("wm.save_failed"), message: ctx.api.errorText(err, t) });
+      pending = {};
+      if (ctx.isActive()) await load();
+    } finally {
+      saving = null;
+    }
+  }
+
+  /** The tab is closing (a reload, the window shut): what still waits goes as a keepalive
+   *  request, which the browser completes after the page is gone. */
+  function flushOnExit() {
+    clearTimeout(saveTimer);
+    if (!Object.keys(pending).length) return;
+    const body = pending;
+    pending = {};
+    try {
+      fetch("/api/watermark", {
+        method: "PATCH",
+        keepalive: true,
+        credentials: "same-origin",
+        headers: { "X-Stallkit": "1", "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).catch(() => {});
+    } catch {
+      /* the page is closing: nothing more to do */
+    }
+  }
+
+  /** What is still waiting goes now (not tied to the page's signal: it also runs when the
+   *  page is left). Resolves when it is saved. */
+  function flush() {
+    clearTimeout(saveTimer);
+    const before = (saving || Promise.resolve()).catch(() => null);
+    if (!Object.keys(pending).length) return before;
+    const body = pending;
+    pending = {};
+    // After the PATCH already on its way, so an older value never lands last.
+    return before.then(() => ctx.api.patch("/api/watermark", body)).catch(() => null);
+  }
+
+  async function uploadMark(file) {
+    if (!file || busy) return;
+    if (!WM_RE.test(file.name || "")) {
+      ctx.toast({ tone: "danger", title: t("wm.upload_failed"), message: t("errors.watermark_type", { name: file.name || "" }) });
+      return;
+    }
+    const maxMb = limits().max_mb || 10;
+    if (file.size > maxMb * 1024 * 1024) {
+      ctx.toast({ tone: "danger", title: t("wm.upload_failed"), message: t("errors.watermark_too_large", { name: file.name, max_mb: maxMb }) });
+      return;
+    }
+    const had = !!(wm && wm.file);
+    busy = true;
+    el.classList.add("is-busy");
+    renderBusy(t("wm.uploading"));
+    try {
+      await flush();
+      const res = await ctx.api.upload("/api/watermark/file", file, { query: { name: file.name }, signal: ctx.signal });
+      take(res, "replace");
+      ctx.toast({ tone: "success", title: t(had ? "wm.replaced" : "wm.uploaded"), message: res.file ? res.file.name : file.name, timeout: 3500 });
+    } catch (err) {
+      if (ctx.api.isAbort(err)) return;
+      ctx.toast({ tone: "danger", title: t("wm.upload_failed"), message: ctx.api.errorText(err, t), timeout: 9000 });
+      render();
+    } finally {
+      busy = false;
+      el.classList.remove("is-busy");
+    }
+  }
+
+  async function pickMark() {
+    const input = h("input", { type: "file", accept: WM_ACCEPT, class: "sr-only", tabindex: "-1", "aria-hidden": "true" });
+    const file = await new Promise((resolve) => {
+      const done = (f) => {
+        input.remove();
+        resolve(f);
+      };
+      input.addEventListener("change", () => done((input.files || [])[0] || null), { once: true });
+      input.addEventListener("cancel", () => done(null), { once: true });
+      document.body.appendChild(input);
+      input.click();
+    });
+    if (file && ctx.isActive()) await uploadMark(file);
+  }
+
+  async function removeMark() {
+    if (busy || !wm || !wm.file) return;
+    const ok = await ctx.confirm({
+      title: t("wm.remove_title"),
+      message: t("wm.remove_msg", { name: wm.file.name }),
+      confirmLabel: t("wm.remove"),
+      danger: true,
+    });
+    if (!ok) return;
+    busy = true;
+    try {
+      await flush();
+      take(await ctx.api.del("/api/watermark/file", null, { signal: ctx.signal }), "drop");
+      ctx.toast({ tone: "success", title: t("wm.removed"), timeout: 3000 });
+    } catch (err) {
+      if (!ctx.api.isAbort(err)) ctx.toast({ tone: "danger", title: ctx.api.errorText(err, t) });
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function clearGround(btn) {
+    if (busy) return;
+    busy = true;
+    if (btn) btn.setLoading(true);
+    try {
+      take(await ctx.api.post("/api/watermark/remove-ground", null, { signal: ctx.signal }), "title");
+      ctx.toast({ tone: "success", title: t("wm.ground_done"), timeout: 3000 });
+    } catch (err) {
+      if (btn) btn.setLoading(false);
+      if (!ctx.api.isAbort(err)) ctx.toast({ tone: "danger", title: ctx.api.errorText(err, t) });
+    } finally {
+      busy = false;
+    }
+  }
+
+  // ---- drag and drop onto the card: the dropped picture becomes the watermark
+
+  const hasFiles = (e) => !!e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files");
+  // The empty card's drop area takes its own files (ui.dropzone).
+  const inDropzone = (e) => !!(e.target && e.target.closest && e.target.closest(".dropzone"));
+  // The page's own drop overlay leaves this card alone (installPageDrop), so a file
+  // dropped here is always taken here, never opened by the browser.
+  el.addEventListener("dragenter", (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    depth += 1;
+    if (wm && wm.file) el.classList.add("is-over");
+  });
+  el.addEventListener("dragover", (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = wm ? "copy" : "none";
+  });
+  el.addEventListener("dragleave", () => {
+    depth = Math.max(0, depth - 1);
+    if (!depth) el.classList.remove("is-over");
+  });
+  el.addEventListener("drop", (e) => {
+    depth = 0;
+    el.classList.remove("is-over");
+    if (!hasFiles(e) || inDropzone(e)) return;
+    e.preventDefault();
+    const file = [...(e.dataTransfer.files || [])][0];
+    if (file && wm) uploadMark(file);
+  });
+
+  // ---- drawing
+
+  function renderSkeleton() {
+    mount(
+      el,
+      h("div", { class: "mk-wm-head" }, h("span", { class: "icon-tile" }, icon("droplet", { size: 16 })), h("div", { class: "mk-wm-titles" }, h("h2", { class: "mk-wm-title", id: titleId }, t("wm.title")), skeleton({ lines: 1, height: 10, widths: ["280px"] }))),
+    );
+  }
+
+  function renderBusy(text) {
+    if (refs.stageWait) {
+      refs.stageWait.hidden = false;
+      refs.stageWait.lastChild.textContent = text;
+    } else if (refs.drop) {
+      refs.drop.classList.add("is-reading");
+    }
+  }
+
+  function head() {
+    const file = wm && wm.file;
+    refs.state = h("span", { class: "mk-wm-state" });
+    refs.toggle = file
+      ? toggle({
+          checked: !!draft.enabled,
+          ariaLabel: t("wm.toggle"),
+          onChange: (on) => {
+            queueSave({ enabled: on }, { now: true });
+            if (refs.stage) refs.stage.classList.toggle("is-off", !on);
+          },
+        })
+      : null;
+    return h(
+      "header",
+      { class: "mk-wm-head" },
+      h("span", { class: "icon-tile" }, icon("droplet", { size: 16 })),
+      h("div", { class: "mk-wm-titles" }, (refs.title = h("h2", { class: "mk-wm-title", id: titleId, tabindex: "-1" }, t("wm.title"))), h("p", { class: "mk-wm-sub" }, t("wm.sub"))),
+      file ? h("div", { class: "mk-wm-switch" }, refs.state, refs.toggle) : null,
+    );
+  }
+
+  function renderState() {
+    if (!refs.state || !wm || !wm.file) return;
+    const on = !!draft.enabled;
+    mount(refs.state, h("span", { class: cx("mk-wm-dot", on && "is-on"), "aria-hidden": "true" }), t(on ? "wm.state_on" : "wm.state_off"));
+    refs.state.classList.toggle("is-on", on);
+    if (refs.toggle && refs.toggle.checked !== on) refs.toggle.update(on);
+  }
+
+  function render() {
+    for (const k of Object.keys(refs)) delete refs[k];
+    if (!wm) return;
+    const body = wm.file ? fullBody() : emptyBody();
+    mount(el, head(), body);
+    el.classList.toggle("is-empty", !wm.file);
+    renderState();
+    renderApplies();
+    if (wm.file) drawPreview();
+  }
+
+  function emptyBody() {
+    const lim = limits();
+    refs.drop = dropzone({
+      accept: WM_ACCEPT,
+      multiple: false,
+      class: "mk-wm-drop",
+      title: t("wm.empty_title"),
+      onFiles: (list) => uploadMark(list[0] && list[0].file),
+      onReject: (bad) => ctx.toast({ tone: "danger", title: t("wm.upload_failed"), message: t("errors.watermark_type", { name: (bad[0] && bad[0].file.name) || "" }) }),
+      content: [
+        h("span", { class: "mk-wm-drop-icon" }, icon("upload", { size: 22 })),
+        h("p", { class: "mk-wm-drop-title" }, t("wm.empty_title")),
+        h("p", { class: "mk-wm-drop-sub" }, t("wm.empty_sub")),
+        h("p", { class: "mk-wm-drop-types" }, t("wm.empty_types", { mb: lim.max_mb || 10 })),
+      ],
+    });
+    const fact = (ic, text) => h("li", { class: "mk-wm-fact" }, h("span", { class: "mk-wm-fact-icon" }, icon(ic, { size: 15 })), h("span", null, text));
+    return h(
+      "div",
+      { class: "mk-wm-body is-empty" },
+      refs.drop,
+      h(
+        "div",
+        { class: "mk-wm-about" },
+        h("p", { class: "mk-wm-about-title" }, t("wm.about_title")),
+        h("ul", { class: "mk-wm-facts" }, fact("image", t("wm.fact_photos")), fact("download", t("wm.fact_downloads")), fact("layers", t("wm.fact_settings"))),
+      ),
+    );
+  }
+
+  function fullBody() {
+    const file = wm.file;
+    // The preview: a real mockup (the first one the drafts use), or the flat image.
+    refs.img = h("img", { class: "mk-wm-img", alt: t("wm.preview_alt"), decoding: "async", draggable: "false" });
+    refs.stageWait = h("span", { class: "mk-wm-wait" }, spinner({ size: 18, tone: "accent" }), h("span", null, t("wm.preview_drawing")));
+    refs.stageWait.hidden = true;
+    refs.stageErr = h("span", { class: "mk-wm-stage-err" }, icon("alert", { size: 14 }), h("span", null, t("wm.preview_failed")));
+    refs.stageErr.hidden = true;
+    refs.stage = h("div", { class: cx("mk-wm-stage", !draft.enabled && "is-off") }, refs.img, refs.stageWait, refs.stageErr);
+    refs.targets = h("div", { class: "mk-wm-target" });
+    renderTargets();
+    const previewCol = h("div", { class: "mk-wm-preview" }, refs.stage, h("div", { class: "mk-wm-under" }, refs.targets, h("span", { class: "mk-wm-under-note" }, icon("check", { size: 13 }), t("wm.preview_note"))));
+
+    // The picture itself.
+    const size = file.width && file.height ? `${file.width}×${file.height}` : "";
+    const ground = file.readable === false ? "unreadable" : file.ground || "";
+    const meta = [
+      size ? h("span", { class: "mono" }, size) : null,
+      ground && ground !== "unreadable" ? h("span", { class: cx("mk-wm-ground", `is-${ground}`) }, t(`wm.ground.${ground}`)) : null,
+    ].filter(Boolean);
+    const fileRow = h(
+      "div",
+      { class: "mk-wm-file" },
+      h("span", { class: "mk-wm-file-thumb checker" }, file.readable === false ? icon("alert", { size: 18 }) : h("img", { src: ctx.api.url("/api/watermark/image", { v: file.version }), alt: "" })),
+      h(
+        "div",
+        { class: "mk-wm-file-text" },
+        h("span", { class: "mk-wm-file-name ellipsis", title: file.name }, file.name),
+        h("span", { class: "mk-wm-file-meta" }, meta),
+      ),
+      (refs.replace = button({ label: t("wm.replace"), size: "sm", variant: "secondary", onClick: () => pickMark() })),
+      iconButton({ icon: "trash", title: t("wm.remove"), variant: "ghost", size: "sm", class: "mk-wm-remove", onClick: () => removeMark() }),
+    );
+    let groundNote = null;
+    if (ground === "unreadable") {
+      groundNote = infoNote({ tone: "danger", icon: "alert", text: t("wm.unreadable") });
+    } else if (ground === "flat") {
+      const fix = button({ label: t("wm.ground_action"), size: "sm", variant: "secondary", onClick: () => clearGround(fix) });
+      groundNote = infoNote({ tone: "info", icon: "image", text: t("wm.ground_flat_note"), action: fix });
+    } else if (ground === "photo") {
+      groundNote = infoNote({ tone: "warning", icon: "alert", text: t("wm.ground_photo_note") });
+    }
+
+    // Where it goes (scope), where on the photo (position), how strong and how big. Each
+    // group is one Tab stop (the chosen option); the arrow keys move and choose.
+    const stop = (group, ids) => (ids.includes(draft[group]) ? draft[group] : ids[0]);
+    const option = (group, id, title, sub) =>
+      h(
+        "button",
+        {
+          type: "button",
+          role: "radio",
+          class: cx("mk-wm-opt", draft[group] === id && "is-selected"),
+          "aria-checked": draft[group] === id ? "true" : "false",
+          tabindex: stop(group, group === "scope" ? WM_SCOPES : WM_POSITIONS) === id ? "0" : "-1",
+          dataset: { group, id },
+          onClick: () => choose(group, id),
+        },
+        group === "position" ? wmPositionArt(id) : h("span", { class: "mk-wm-radio", "aria-hidden": "true" }),
+        h("span", { class: "mk-wm-opt-text" }, h("strong", null, title), sub ? h("span", null, sub) : null),
+      );
+    refs.scope = h(
+      "div",
+      { class: "mk-wm-opts mk-wm-scope", role: "radiogroup", "aria-label": t("wm.scope") },
+      WM_SCOPES.map((id) => option("scope", id, t(`wm.scope.${id}`), t(`wm.scope.${id}_sub`))),
+    );
+    refs.positions = h(
+      "div",
+      { class: "mk-wm-opts mk-wm-positions", role: "radiogroup", "aria-label": t("wm.position") },
+      WM_POSITIONS.map((id) => option("position", id, t(`wm.position.${id}`), null)),
+    );
+    radioKeys(refs.scope, "scope");
+    radioKeys(refs.positions, "position");
+    refs.opacity = slider("opacity", t("wm.opacity"));
+    refs.size = slider(sizeKey(), t("wm.size"));
+    refs.applies = h("div", { class: "mk-wm-applies" });
+    const side = h(
+      "div",
+      { class: "mk-wm-side" },
+      fileRow,
+      groundNote,
+      h("div", { class: "mk-wm-group" }, h("p", { class: "mk-wm-label" }, t("wm.scope")), refs.scope),
+      h("div", { class: "mk-wm-group" }, h("p", { class: "mk-wm-label" }, t("wm.position")), refs.positions),
+      h("div", { class: "mk-wm-sliders" }, refs.opacity.el, refs.size.el),
+      refs.applies,
+    );
+    refs.side = side;
+    return h("div", { class: "mk-wm-body" }, previewCol, side);
+  }
+
+  /** A labelled range: -> {el, key, set(value)}. */
+  function slider(key, label) {
+    const [lo, hi] = limits()[key] || [0, 100];
+    const value = h("span", { class: "mk-wm-slider-value num" });
+    const hint = h("span", { class: "mk-wm-slider-hint" });
+    const input = h("input", { type: "range", class: "mk-wm-range", min: String(lo), max: String(hi), step: "1", "aria-label": label });
+    const ctl = { key, el: null, input };
+    const paint = () => {
+      const v = Number(input.value);
+      value.textContent = pct(v);
+      input.style.setProperty("--fill", `${((v - lo) / (hi - lo || 1)) * 100}%`);
+      input.setAttribute("aria-valuetext", pct(v));
+    };
+    ctl.set = (v, k = ctl.key) => {
+      ctl.key = k;
+      const [l, u] = limits()[k] || [lo, hi];
+      input.min = String(l);
+      input.max = String(u);
+      input.value = String(v);
+      if (k !== "opacity") hint.textContent = t(k === "tile_size" ? "wm.size_hint_tiled" : "wm.size_hint");
+      paint();
+    };
+    input.addEventListener("input", () => {
+      paint();
+      draft[ctl.key] = Number(input.value);
+      schedulePreview();
+    });
+    // "change" comes once, at the end of a drag (or a key press): saved at once, so a
+    // reload right after it loses nothing. The preview follows "input" meanwhile.
+    input.addEventListener("change", () => queueSave({ [ctl.key]: Number(input.value) }, { now: true }));
+    ctl.el = h("label", { class: "mk-wm-slider" }, h("span", { class: "mk-wm-slider-row" }, h("span", { class: "mk-wm-label" }, label), hint, h("span", { class: "spacer" }), value), input);
+    ctl.set(draft[key], key);
+    return ctl;
+  }
+
+  /** The ARIA radio group's keys: arrows move to the next or previous option (round),
+   *  Home and End to the ends; each move chooses it. */
+  function radioKeys(box, group) {
+    box.addEventListener("keydown", (e) => {
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
+      const opts = [...box.querySelectorAll(".mk-wm-opt")];
+      const i = opts.indexOf(document.activeElement);
+      if (i < 0) return;
+      let j = null;
+      if (e.key === "ArrowRight" || e.key === "ArrowDown") j = (i + 1) % opts.length;
+      else if (e.key === "ArrowLeft" || e.key === "ArrowUp") j = (i - 1 + opts.length) % opts.length;
+      else if (e.key === "Home") j = 0;
+      else if (e.key === "End") j = opts.length - 1;
+      if (j === null) return;
+      e.preventDefault();
+      choose(group, opts[j].dataset.id);
+      opts[j].focus();
+    });
+  }
+
+  function choose(group, id) {
+    if (draft[group] === id) return;
+    const box = group === "scope" ? refs.scope : refs.positions;
+    for (const b of box.querySelectorAll(".mk-wm-opt")) {
+      const on = b.dataset.id === id;
+      b.classList.toggle("is-selected", on);
+      b.setAttribute("aria-checked", on ? "true" : "false");
+      b.tabIndex = on ? 0 : -1;
+    }
+    queueSave({ [group]: id });
+    if (group === "position") {
+      refs.size.set(draft[sizeKey()], sizeKey());
+      drawPreview();
+    }
+  }
+
+  function renderTargets() {
+    if (!refs.targets || !wm) return;
+    const names = wm.preview_mockups || [];
+    if (target !== WM_FLAT && !names.includes(target)) target = wm.preview_default || WM_FLAT;
+    const options = names.map((n) => ({ value: n, label: labelFor(n) }));
+    options.push({ value: WM_FLAT, label: t("wm.preview_flat") });
+    mount(
+      refs.targets,
+      select({
+        options,
+        value: target,
+        size: "sm",
+        prefix: t("wm.preview_on"),
+        onChange: (v) => {
+          target = v;
+          drawPreview();
+        },
+      }),
+    );
+  }
+
+  const schedulePreview = debounce(() => drawPreview(), 160);
+
+  function drawPreview() {
+    if (!refs.img || !wm || !wm.file || wm.file.readable === false) return;
+    schedulePreview.cancel();
+    const seq = ++previewSeq;
+    const src = ctx.api.url("/api/watermark/preview", {
+      mockup: target || WM_FLAT,
+      design: wm.preview_design || undefined,
+      position: draft.position,
+      opacity: draft.opacity,
+      size: draft.size,
+      tile_size: draft.tile_size,
+      max: WM_PREVIEW_MAX,
+      v: wm.file.version,
+    });
+    const slow = setTimeout(() => {
+      if (seq === previewSeq && refs.stageWait) {
+        refs.stageWait.lastChild.textContent = t("wm.preview_drawing");
+        refs.stageWait.hidden = false;
+      }
+    }, 180);
+    const probe = new Image();
+    probe.decoding = "async";
+    probe.onload = () => {
+      clearTimeout(slow);
+      if (seq !== previewSeq || !refs.img) return;
+      refs.img.src = src;
+      refs.stageWait.hidden = true;
+      refs.stageErr.hidden = true;
+      refs.stage.classList.add("has-image");
+    };
+    probe.onerror = () => {
+      clearTimeout(slow);
+      if (seq !== previewSeq || !refs.stageErr) return;
+      refs.stageWait.hidden = true;
+      refs.stageErr.hidden = false;
+    };
+    probe.src = src;
+  }
+
+  /** What the next Tasarım Yükle run does with it, and where it never goes. */
+  function renderApplies() {
+    if (!refs.applies || !wm) return;
+    const type = wm.listing_type;
+    const digital = type === "download" || type === "both";
+    let tone = "muted";
+    let text;
+    if (!draft.enabled) text = t("wm.applies.off");
+    else if (draft.scope === "all") {
+      // Every listing's photos, whatever the template (drop/watermark.applies_to).
+      tone = "on";
+      text = t("wm.applies.all");
+    } else if (!type) text = t("wm.applies.no_template");
+    else if (digital) {
+      tone = "on";
+      text = t("wm.applies.digital");
+    } else text = t("wm.applies.physical");
+    mount(
+      refs.applies,
+      h("p", { class: cx("mk-wm-applies-line", `is-${tone}`) }, icon(tone === "on" ? "check-circle" : "info", { size: 14 }), h("span", null, text)),
+      h("p", { class: "mk-wm-applies-line is-never" }, icon("download", { size: 14 }), h("span", null, t("wm.never_downloads"))),
+    );
+  }
+
+  return { el, load, flush, flushOnExit };
 }
 
 // ------------------------------------------------------------------ editor
@@ -1153,9 +1882,10 @@ async function mountEditor(el, ctx, name) {
   const W = () => (item && item.width) || 1;
   const H = () => (item && item.height) || 1;
 
-  const backBtn = iconButton({ icon: "arrow-left", title: t("back"), variant: "ghost", onClick: () => leave(GRID_PATH) });
+  // As in the video, the header holds only "Mockup ekle"; the way back is the sidebar, the
+  // library list, Vazgeç (with nothing unsaved) or the browser's Back.
   const addBtn = button({ label: t("add"), icon: "plus", variant: "primary", onClick: () => pickAndUpload() });
-  ctx.setHeader({ actions: [backBtn, addBtn] });
+  ctx.setHeader({ actions: [addBtn] });
 
   // ---- library (left)
   const libCount = h("span", { class: "mk-lib-count num" });
@@ -1180,9 +1910,11 @@ async function mountEditor(el, ctx, name) {
   previewImg.hidden = true;
   const overlayImg = h("img", { class: "mk-rect-design", alt: "", draggable: "false" });
   const sizeChip = h("span", { class: "mk-rect-size num" });
+  // How to use the rectangle with a mouse and keys: its description (aria-label is the area).
+  const rectHint = h("span", { class: "sr-only", id: uid("mk-rect-hint") }, t("editor.hint"));
   const rect = h(
     "div",
-    { class: "mk-rect", tabindex: "0", role: "group" },
+    { class: "mk-rect", tabindex: "0", role: "group", title: t("editor.hint"), "aria-describedby": rectHint.id },
     overlayImg,
     h("span", { class: "mk-rect-label" }, t("editor.area_label")),
     sizeChip,
@@ -1195,25 +1927,21 @@ async function mountEditor(el, ctx, name) {
   const zoomBtn = h(
     "button",
     { type: "button", class: "mk-zoom", title: t("editor.zoom"), "aria-label": t("editor.zoom"), onClick: () => openZoomMenu() },
-    icon("zoom", { size: 13 }),
+    icon("search", { size: 13 }),
     zoomVal,
   );
-  const showBtn = h(
-    "button",
-    { type: "button", class: "mk-show", "aria-pressed": "true", onClick: () => setShowDesign(!showDesign) },
-    icon("eye", { size: 13 }),
-    h("span", null, t("editor.show_design")),
-  );
-  const stageWrap = h("div", { class: "mk-stage-wrap" }, stage, stageSpinner, zoomBtn, showBtn);
-  const underHost = h("div", { class: "mk-under" });
+  // The pill at the bottom of the stage: "draw the print area", then "print area set".
+  const underHost = h("div", { class: "mk-under", role: "status" });
+  const stageWrap = h("div", { class: "mk-stage-wrap" }, stage, stageSpinner, zoomBtn, underHost);
 
   // ---- side panel (right)
   const titleEl = h("h2", { class: "mk-side-title" });
-  const metaBtn = iconButton({ icon: "edit", title: t("editor.edit_meta"), variant: "ghost", size: "sm", onClick: () => onEditMeta() });
+  // One ⋯ menu instead of extra buttons around the video's layout: show the design, type
+  // and colour, back to the default area.
+  const moreBtn = iconButton({ icon: "more", title: t("editor.more"), variant: "ghost", size: "sm", class: "mk-side-more", onClick: () => openSideMenu() });
   const sizeEl = h("span", { class: "mk-size-chip num" });
   const stateHost = h("span", { class: "mk-state-host" });
   const disabledHost = h("div", { class: "mk-disabled-host" });
-  const resetBtn = button({ label: t("editor.reset_default"), variant: "ghost", size: "sm", icon: "undo", onClick: () => resetArea() });
   const fields = {};
   const fieldEls = [];
   for (const key of ["x", "y", "w", "h"]) {
@@ -1243,13 +1971,11 @@ async function mountEditor(el, ctx, name) {
     icon("chevron-right", { size: 16 }),
   );
   const appliedTitle = h("p", { class: "mk-applied-title" });
-  // After a save: the next mockup still on the default area, so 37 are done one after another.
-  const nextHost = h("div", { class: "mk-next-host" });
   const appliedCard = h(
     "div",
     { class: "mk-applied", role: "status" },
     h("span", { class: "mk-applied-icon" }, icon("check", { size: 15, strokeWidth: 2.8 })),
-    h("div", { class: "mk-applied-text" }, appliedTitle, h("p", { class: "mk-applied-sub" }, t("editor.applied_sub")), nextHost),
+    h("div", { class: "mk-applied-text" }, appliedTitle, h("p", { class: "mk-applied-sub" }, t("editor.applied_sub"))),
   );
   appliedCard.hidden = true;
   const sideSkeleton = h(
@@ -1263,12 +1989,12 @@ async function mountEditor(el, ctx, name) {
     "aside",
     { class: "mk-side" },
     sideSkeleton,
-    h("div", { class: "mk-side-head" }, titleEl, metaBtn),
+    h("div", { class: "mk-side-head" }, titleEl, moreBtn),
     h("div", { class: "mk-side-chips" }, sizeEl, stateHost),
     h("p", { class: "mk-helper" }, t("editor.helper")),
     disabledHost,
     h("div", { class: "mk-divider" }),
-    sectionTitle(t("editor.section_area"), { actions: resetBtn }),
+    sectionTitle(t("editor.section_area")),
     h("div", { class: "mk-fields" }, fieldEls),
     sectionTitle(t("editor.section_preview")),
     designRow,
@@ -1278,14 +2004,17 @@ async function mountEditor(el, ctx, name) {
 
   // ---- footer
   const sameHost = h("div", { class: "mk-same" });
+  // After a save: the next mockup still on the default area, so 37 are done one after another.
+  const nextHost = h("div", { class: "mk-next-host" });
+  nextHost.hidden = true;
   const cancelBtn = button({ label: t("common.cancel"), variant: "secondary", onClick: () => cancel() });
   const saveBtn = button({ label: t("common.save"), icon: "check", variant: "primary", onClick: () => save() });
-  const foot = h("footer", { class: "mk-main-foot" }, sameHost, h("div", { class: "spacer" }), cancelBtn, saveBtn);
+  const foot = h("footer", { class: "mk-main-foot" }, sameHost, h("div", { class: "spacer" }), nextHost, cancelBtn, saveBtn);
 
   const main = h(
     "section",
     { class: "card mk-main is-loading" },
-    h("div", { class: "mk-main-top" }, h("div", { class: "mk-canvas-col" }, stageWrap, underHost), side),
+    h("div", { class: "mk-main-top" }, h("div", { class: "mk-canvas-col" }, stageWrap, rectHint), side),
     foot,
   );
   const shell = h("div", { class: "mk-editor" }, lib, main);
@@ -1343,7 +2072,9 @@ async function mountEditor(el, ctx, name) {
   area = { ...areaRes.area };
   source = areaRes.source;
   siblings = areaRes.same_size || [];
-  sameSize = siblings.length > 0 && !siblings.some((n) => (list.find((it) => it.name === n) || {}).area_source === "own");
+  // On unless a same-size mockup has an area of its own that differs from this one: after
+  // one same-size save they all share it, and the switch stays on (the video's normal).
+  sameSize = siblings.length > 0 && !ownDiffering().length;
 
   renderLibrary();
   renderSide();
@@ -1443,6 +2174,10 @@ async function mountEditor(el, ctx, name) {
     if (!drag.moved) {
       drag.moved = true;
       art.classList.add("is-dragging", `drag-${drag.mode}`);
+      // What the drag changes lights up at the side (the video's focused Genişlik and
+      // Yükseklik while drawing), and Kaydet waits.
+      for (const key of drag.mode === "move" ? ["x", "y"] : ["w", "h"]) fields[key].classList.add("is-focus");
+      saveBtn.classList.add("is-waiting");
     }
     setArea(computeDrag(drag, ddx / drag.width, ddy / drag.height, e.shiftKey));
   });
@@ -1451,6 +2186,8 @@ async function mountEditor(el, ctx, name) {
     const was = drag;
     drag = null;
     art.classList.remove("is-dragging", "drag-move", "drag-resize", "drag-draw");
+    for (const key of ["x", "y", "w", "h"]) fields[key].classList.remove("is-focus");
+    saveBtn.classList.remove("is-waiting");
     try {
       art.releasePointerCapture(e.pointerId);
     } catch {
@@ -1549,15 +2286,19 @@ async function mountEditor(el, ctx, name) {
 
   function layout() {
     if (!item || !stage.isConnected) return;
-    const pad = 36;
+    // The photo fills the stage like the video's (26 px at the sides); above and below it
+    // keeps room for the zoom chip and the hint pill, so neither covers the product.
+    const padX = 26;
+    const padY = 42;
     const sw = stage.clientWidth;
     const sh = stage.clientHeight;
     if (!sw || !sh) return;
-    const fit = Math.max(0.02, Math.min((sw - pad * 2) / W(), (sh - pad * 2) / H()));
+    const fit = Math.max(0.02, Math.min((sw - padX * 2) / W(), (sh - padY * 2) / H()));
     const scale = fit * zoom;
     art.style.width = `${Math.max(1, Math.round(W() * scale))}px`;
     art.style.height = `${Math.max(1, Math.round(H() * scale))}px`;
     zoomVal.textContent = percent(zoom, 0);
+    fitLabel();
   }
 
   function setZoom(next) {
@@ -1585,7 +2326,28 @@ async function mountEditor(el, ctx, name) {
     rect.style.height = `${area.h * 100}%`;
     sizeChip.textContent = `${Math.round(area.w * W())} × ${Math.round(area.h * H())} px`;
     rect.setAttribute("aria-label", t("editor.area_aria", { x: pct(area.x), y: pct(area.y), w: pct(area.w), h: pct(area.h) }));
+    rect.classList.toggle("is-ghost", isGhost());
+    fitLabel();
     renderFields(false);
+  }
+
+  /** The "Baskı alanı" pill only where it fits, measured on screen so zoom counts too. */
+  function fitLabel() {
+    if (!area) return;
+    const w = area.w * art.clientWidth;
+    const hh = area.h * art.clientHeight;
+    rect.classList.toggle("has-label", w >= LABEL_MIN_W && hh >= LABEL_MIN_H);
+  }
+
+  /**
+   * A mockup whose print area was never set opens like the video's: the bare product and
+   * "draw the print area". The default area stays as a faint outline (drafts use it until
+   * the seller saves); it takes no pointer, so any press on the photo starts a new
+   * rectangle. The first drag, field edit or arrow key makes it the real one; Vazgeç
+   * brings the outline back. It stays focusable for the keyboard.
+   */
+  function isGhost() {
+    return source === "default" && !isDirty();
   }
 
   function renderFields(force) {
@@ -1620,19 +2382,32 @@ async function mountEditor(el, ctx, name) {
   function updateState() {
     const dirty = isDirty();
     ctx.setDirty(dirty);
+    // The video's labels: "◎ Çiziliyor" until the area is saved (its tooltip still says
+    // plainly that it is not saved, or that the default area is in use), "✓ Ayarlı" after.
     let st;
-    if (dirty) st = badge({ text: t("editor.unsaved"), tone: "warning", dot: true });
-    else if (source === "own") st = badge({ text: t("editor.set"), tone: "success", icon: "check" });
-    else if (source === "same_size") st = badge({ text: t("editor.shared"), tone: "accent", title: t("area.same_size_hint") });
-    else st = badge({ text: t("editor.default"), tone: "neutral", title: t("area.default_hint") });
+    if (dirty || source === "default") {
+      st = badge({ text: t("editor.drawing"), tone: "accent", icon: "target", title: dirty ? t("editor.unsaved") : t("area.default_hint") });
+    } else if (source === "own") st = badge({ text: t("editor.set"), tone: "success", icon: "check" });
+    else st = badge({ text: t("editor.shared"), tone: "accent", title: t("area.same_size_hint") });
     mount(stateHost, st);
-    if (!dirty && source === "own") {
-      mount(underHost, h("span", { class: "mk-saved-chip" }, icon("check", { size: 13, strokeWidth: 2.6 }), t("editor.saved_chip")));
-    } else {
-      mount(underHost, h("p", { class: "mk-hint" }, icon("info", { size: 13 }), h("span", null, t("editor.hint"))));
+    const done = !dirty && source === "own";
+    const key = done ? "saved" : "draw";
+    if (underHost.dataset.state !== key) {
+      underHost.dataset.state = key;
+      mount(
+        underHost,
+        done
+          ? h("span", { class: "mk-stage-pill is-done" }, icon("check", { size: 13, strokeWidth: 2.6 }), h("span", null, t("editor.saved_chip")))
+          : h("span", { class: "mk-stage-pill" }, icon("target", { size: 13 }), h("span", null, t("editor.draw_hint"))),
+      );
     }
+    // Never drawn: Kaydet is dimmed like the video's until the area is drawn (a class of
+    // its own, so a drag's is-waiting stays as it is). It still saves the default area.
+    const unset = isGhost();
+    saveBtn.classList.toggle("is-unset", unset);
+    saveBtn.title = unset ? t("editor.save_unset_hint") : "";
     appliedCard.hidden = !(lastApplied && !dirty);
-    resetBtn.hidden = !(source === "own" && !dirty);
+    nextHost.hidden = !(lastApplied && !dirty) || !nextHost.firstChild;
     main.classList.toggle("is-dirty", dirty);
     if (item) renderSideNotes();
   }
@@ -1646,14 +2421,12 @@ async function mountEditor(el, ctx, name) {
   }
 
   function renderSideNotes() {
-    const key = `${source}|${isDirty()}|${item.enabled}|${item.over_limit}`;
+    // A never-set area needs no note here: the stage shows the bare product, a faint
+    // outline and "draw the print area", and the badge's tooltip says what default means.
+    const key = `${item.enabled}|${item.over_limit}`;
     if (key === noteKey) return;
     noteKey = key;
     const notesList = [];
-    if (source === "default" && !isDirty()) {
-      // FIXLIST 8: say plainly what "default" means for the drafts.
-      notesList.push(infoNote({ tone: "warning", icon: "crop", text: t("editor.default_note") }));
-    }
     if (!item.enabled) {
       notesList.push(
         infoNote({
@@ -1680,12 +2453,20 @@ async function mountEditor(el, ctx, name) {
     mount(disabledHost, notesList);
   }
 
+  /** Same-size mockups with an area of their own that a same-size save would change. */
+  function ownDiffering() {
+    return siblings.filter((n) => {
+      const it = list.find((x) => x.name === n);
+      return !!it && it.area_source === "own" && !sameArea(it.area, saved);
+    });
+  }
+
   function renderSame() {
     const labels = siblings.map((n) => {
       const it = list.find((x) => x.name === n);
       return it ? itemLabel(t, it) : n;
     });
-    const ownOnes = siblings.filter((n) => (list.find((x) => x.name === n) || {}).area_source === "own");
+    const ownOnes = ownDiffering();
     // 36 colour variants must not become one endless line: a few names, then "+33".
     const SHOWN = 3;
     const names = labels.length > SHOWN ? t("editor.same_size_more", { names: labels.slice(0, SHOWN).join(", "), n: labels.length - SHOWN }) : labels.join(", ");
@@ -1698,10 +2479,11 @@ async function mountEditor(el, ctx, name) {
       sub,
       onChange: (v) => {
         sameSize = v;
+        renderLibrary();
       },
     });
     tog.title = siblings.length ? `${labels.join(", ")}\n\n${t("editor.same_size_explain")}` : t("editor.same_size_explain");
-    mount(sameHost, tog, siblings.length ? h("p", { class: "mk-same-explain" }, t("editor.same_size_explain")) : null);
+    mount(sameHost, tog);
   }
 
   function renderLibrary() {
@@ -1711,6 +2493,8 @@ async function mountEditor(el, ctx, name) {
       list.map((it) => {
         const current = it.name === name;
         const isApplied = applied.has(it.name);
+        // Before the save, the rows the area will also go to (the video's violet "aynı ölçü").
+        const twin = !current && !isApplied && sameSize && siblings.includes(it.name);
         let mark = null;
         if (current) mark = h("span", { class: "mk-lib-mark is-current" }, icon("arrow-right", { size: 16 }));
         else if (isApplied) mark = h("span", { class: "mk-lib-mark is-applied" }, icon("check", { size: 14, strokeWidth: 2.8 }));
@@ -1736,6 +2520,7 @@ async function mountEditor(el, ctx, name) {
               { class: "mk-lib-sub" },
               h("span", { class: "mono" }, sizeText(it)),
               !current && isApplied ? [h("span", { class: "mk-sep", "aria-hidden": "true" }, "·"), h("span", { class: "mk-lib-applied" }, t("library.applied"))] : null,
+              twin ? [h("span", { class: "mk-sep", "aria-hidden": "true" }, "·"), h("span", { class: "mk-lib-twin" }, t("library.same_size"))] : null,
               !it.enabled ? [h("span", { class: "mk-sep", "aria-hidden": "true" }, "·"), h("span", null, t("unused"))] : null,
               it.enabled && it.over_limit ? [h("span", { class: "mk-sep", "aria-hidden": "true" }, "·"), h("span", { class: "mk-lib-over" }, t("over_limit"))] : null,
             ),
@@ -1771,8 +2556,6 @@ async function mountEditor(el, ctx, name) {
     showDesign = !!v;
     writeStored("local", SHOW_KEY, showDesign);
     art.classList.toggle("show-design", showDesign);
-    showBtn.classList.toggle("is-on", showDesign);
-    showBtn.setAttribute("aria-pressed", showDesign ? "true" : "false");
     if (!quiet) {
       markStale();
       loadPreview();
@@ -1787,7 +2570,8 @@ async function mountEditor(el, ctx, name) {
   }
 
   function loadPreview() {
-    if (!showDesign || !design || !area || drag || art.classList.contains("is-loading")) return;
+    // Never-set area: the bare product until the seller draws (the video's first frame).
+    if (!showDesign || !design || !area || drag || art.classList.contains("is-loading") || isGhost()) return;
     const seq = ++previewSeq;
     const a = roundArea(area);
     const img = new Image();
@@ -1872,6 +2656,10 @@ async function mountEditor(el, ctx, name) {
       renderSame();
       renderRect();
       updateState();
+      // In a short window the side column scrolls: bring the notice into view.
+      requestAnimationFrame(() => {
+        if (!appliedCard.hidden && appliedCard.isConnected) appliedCard.scrollIntoView({ block: "nearest" });
+      });
       refreshList();
     } catch (err) {
       if (!ctx.api.isAbort(err)) ctx.toast({ tone: "danger", title: t("editor.save_failed"), message: ctx.api.errorText(err, t) });
@@ -1915,23 +2703,27 @@ async function mountEditor(el, ctx, name) {
     }
   }
 
+  /** "Sıradaki: Kupa · Beyaz →" in the footer after a save, while others are still unset. */
   function renderNext() {
     const waiting = list.filter((it) => it.name !== name && it.area_source === "default");
     const next = waiting.find((it) => it.in_use) || waiting[0];
     if (!next) {
       mount(nextHost);
+      nextHost.hidden = true;
       return;
     }
+    const text = t("editor.next_default", { label: itemLabel(t, next) });
+    const count = t("editor.next_default_count", { n: waiting.length });
     mount(
       nextHost,
       h(
         "a",
-        { class: "mk-next", href: editorPath(next.name), title: t("editor.next_default_hint", { n: waiting.length }) },
-        h("span", null, t("editor.next_default", { label: itemLabel(t, next) })),
-        h("span", { class: "mk-next-count num" }, t("editor.next_default_count", { n: waiting.length })),
+        { class: "mk-next", href: editorPath(next.name), title: `${text} · ${count}`, "aria-label": `${text}, ${count}` },
+        h("span", { class: "mk-next-label" }, text),
         icon("arrow-right", { size: 13 }),
       ),
     );
+    nextHost.hidden = !(lastApplied && !isDirty());
   }
 
   async function refreshList() {
@@ -1961,8 +2753,17 @@ async function mountEditor(el, ctx, name) {
     renderSame();
   }
 
-  function leave(path) {
-    ctx.navigate(path); // the leave guard above asks when there are unsaved changes
+  function openSideMenu() {
+    menu(
+      moreBtn,
+      [
+        { label: t("editor.show_design"), icon: "eye", checked: showDesign, onClick: () => setShowDesign(!showDesign) },
+        { label: t("editor.edit_meta"), icon: "edit", onClick: () => onEditMeta() },
+        { divider: true },
+        { label: t("editor.reset_default"), icon: "undo", disabled: !(source === "own" && !isDirty()), onClick: () => resetArea() },
+      ],
+      { placement: "bottom-end", width: 240 },
+    );
   }
 
   function uploadHere(files) {

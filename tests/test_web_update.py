@@ -1,6 +1,7 @@
-"""The new-version notice: comparing versions, reading GitHub's answer, the daily
-rhythm and its cache, the off switches, silence on failure, one bell notification
-per version, and the endpoints. GitHub is always a fake (httpx.MockTransport)."""
+"""The new-version notice: comparing versions, reading GitHub's answer, the rhythm (a
+look at every start unless the answer is under an hour old, then daily) and its cache,
+the off switches, silence on failure, one bell notification per version, and the
+endpoints. GitHub is always a fake (httpx.MockTransport)."""
 
 from __future__ import annotations
 
@@ -186,10 +187,10 @@ def test_a_renamed_repository_is_followed(web, checks_on):
     assert checker.check(force=True)["latest"]["version"] == "0.4.0"
 
 
-# --- the daily rhythm and the cache ------------------------------------------------------------
+# --- the rhythm (every start, then daily) and the cache ------------------------------------------
 
 
-def test_a_restart_within_a_day_does_not_ask_again(web, checks_on):
+def test_while_running_the_next_look_is_a_day_later(web, checks_on):
     clock, gh = Clock(), FakeGitHub()
     checker = use_checker(web, gh, clock=clock)
     checker.check()
@@ -200,15 +201,163 @@ def test_a_restart_within_a_day_does_not_ask_again(web, checks_on):
     assert len(gh.requests) == 1
     cache = json.loads((base_home() / update.CACHE_FILE).read_text(encoding="utf-8"))
     assert cache["checked_at"] == clock.now - (DAY - 60) and cache["latest"]["version"] == "0.3.1"
-
-    again = use_checker(web, gh, clock=clock)  # a restart: the cache is read back
-    again.check()
-    assert len(gh.requests) == 1
-    assert again.state()["latest"]["version"] == "0.3.1" and again.state()["available"]
     clock.now += 61
-    assert again.due_in() <= 0
-    again.check()
+    assert checker.due_in() <= 0
+    checker.check()
     assert len(gh.requests) == 2
+
+
+def write_cache(clock: Clock, *, answered_ago: float | None, tried_ago: float | None = None,
+                error: str | None = None) -> None:
+    """update.json as an earlier run of the app left it."""
+    now = clock.now
+    tried = answered_ago if tried_ago is None else tried_ago
+    (base_home() / update.CACHE_FILE).write_text(json.dumps({
+        "checked_at": None if answered_ago is None else now - answered_ago,
+        "attempted_at": None if tried is None else now - tried,
+        "error": error,
+        "latest": release() if answered_ago is not None else None,
+        "notified": "0.3.1" if answered_ago is not None else None,
+        "dismissed": None,
+    }), encoding="utf-8")
+
+
+def run_loop(checker: UpdateChecker, gh: FakeGitHub, *, looks: int, settle: float = 0.3) -> None:
+    """Start the background loop, wait for `looks` requests (or `settle` seconds for
+    none), then a little longer for any look that should not come; stop it."""
+    checker.start()
+    deadline = time.monotonic() + 5
+    while len(gh.requests) < looks and time.monotonic() < deadline:
+        time.sleep(0.01)
+    time.sleep(settle)
+    thread = checker._thread
+    checker.close()
+    thread.join(2)
+
+
+@pytest.mark.parametrize("answered_ago, looks", [
+    (None, 1),                            # never asked: the start asks
+    (update.START_FRESH - 60, 0),         # under an hour old: reused
+    (update.START_FRESH + 60, 1),         # over an hour old: asked again at the start
+    (DAY - 60, 1),                        # a day would still be fresh while running
+    (10 * DAY, 1),
+])
+def test_every_start_asks_unless_the_answer_is_under_an_hour_old(web, checks_on,
+                                                                  answered_ago, looks):
+    clock, gh = Clock(), FakeGitHub()
+    write_cache(clock, answered_ago=answered_ago)
+    checker = use_checker(web, gh, clock=clock, first_delay=0.01, min_wait=0.05)
+    assert checker.start_fresh == update.START_FRESH == 60 * 60
+    run_loop(checker, gh, looks=looks)
+    assert len(gh.requests) == looks  # and once asked, the next look is a day away
+    state = checker.state()
+    assert state["latest"]["version"] == "0.3.1" and state["available"]
+    if looks:
+        assert state["checked_at"] == clock.now
+    else:
+        assert state["checked_at"] == clock.now - answered_ago
+
+
+def test_a_start_after_the_answer_aged_asks_while_the_old_one_still_shows(web, checks_on):
+    """The start rule is only for the start: a running app keeps its day."""
+    clock, gh = Clock(), FakeGitHub()
+    write_cache(clock, answered_ago=2 * update.START_FRESH)
+    checker = use_checker(web, gh, clock=clock)
+    assert checker.due_in() > 0  # while running, a two-hour-old answer is not due
+    assert checker.due_in(max_age=checker.start_fresh) <= 0
+    checker.check()
+    assert gh.requests == []
+    checker.check(max_age=checker.start_fresh)
+    assert len(gh.requests) == 1
+
+
+def test_a_failed_look_is_not_repeated_by_a_quick_restart(web, checks_on):
+    """The hour after a failed look holds across a restart too: at most one try an hour."""
+    clock, gh = Clock(), FakeGitHub()
+    write_cache(clock, answered_ago=3 * update.START_FRESH, tried_ago=60, error="offline")
+    checker = use_checker(web, gh, clock=clock, first_delay=0.01, min_wait=0.05)
+    assert checker.state()["error"] == "offline"
+    run_loop(checker, gh, looks=0)
+    assert gh.requests == []
+    clock.now += update.RETRY_AFTER
+    checker = use_checker(web, gh, clock=clock, first_delay=0.01, min_wait=0.05)
+    run_loop(checker, gh, looks=1)
+    assert len(gh.requests) == 1 and checker.state()["error"] is None
+
+
+def test_switched_on_later_the_first_look_follows_the_start_rule(web, checks_on):
+    clock, gh = Clock(), FakeGitHub()
+    write_cache(clock, answered_ago=2 * update.START_FRESH)
+    prefs = settings.load_app_prefs()
+    prefs["update_check"] = False
+    settings.save_app_prefs(prefs)
+    checker = use_checker(web, gh, clock=clock, first_delay=0.01, min_wait=0.05)
+    checker.start()
+    time.sleep(0.2)
+    assert gh.requests == []  # off at the start: no look
+    checker.set_auto(True)  # wakes the loop: a two-hour-old answer is asked again
+    deadline = time.monotonic() + 5
+    while not gh.requests and time.monotonic() < deadline:
+        time.sleep(0.01)
+    time.sleep(0.2)
+    assert len(gh.requests) == 1
+    checker.close()
+
+
+# step() is one pass of the background loop; what it returns is what the loop waits.
+
+
+def test_a_start_reuses_a_fresh_answer_and_looks_a_day_after_it(web, checks_on):
+    clock, gh = Clock(), FakeGitHub()
+    write_cache(clock, answered_ago=30 * 60)
+    checker = use_checker(web, gh, clock=clock)
+    starting, wait = checker.step(True)
+    assert gh.requests == [] and starting is False
+    assert wait == pytest.approx(DAY - 30 * 60)
+    clock.now += wait
+    starting, wait = checker.step(starting)
+    assert len(gh.requests) == 1 and wait == pytest.approx(DAY)
+
+
+def test_a_start_look_put_off_by_a_failed_try_comes_an_hour_after_it(web, checks_on):
+    """Not a day after the old answer: the start still wants its look."""
+    clock, gh = Clock(), FakeGitHub()
+    write_cache(clock, answered_ago=3 * update.START_FRESH, tried_ago=60, error="offline")
+    checker = use_checker(web, gh, clock=clock)
+    starting, wait = checker.step(True)
+    assert gh.requests == [] and starting is True
+    assert wait == pytest.approx(update.RETRY_AFTER - 60)
+    clock.now += wait
+    starting, wait = checker.step(starting)
+    assert len(gh.requests) == 1 and starting is False and wait == pytest.approx(DAY)
+
+
+def test_a_failing_start_look_is_tried_again_hourly_until_it_answers(web, checks_on):
+    clock = Clock()
+    gh = FakeGitHub(httpx.ConnectError("no network"))
+    write_cache(clock, answered_ago=3 * update.START_FRESH)
+    checker = use_checker(web, gh, clock=clock)
+    starting, wait = checker.step(True)
+    assert len(gh.requests) == 1 and starting is True
+    assert wait == pytest.approx(update.RETRY_AFTER)
+    assert checker.state()["error"] == "offline"
+    assert checker.state()["latest"]["version"] == "0.3.1"  # the old answer still shows
+    clock.now += wait
+    gh.answer = release("v0.3.2")
+    starting, wait = checker.step(starting)
+    assert len(gh.requests) == 2 and starting is False and wait == pytest.approx(DAY)
+    assert checker.state()["latest"]["version"] == "0.3.2" and checker.state()["error"] is None
+
+
+def test_with_the_checks_off_a_step_looks_at_nothing(web, checks_on):
+    clock, gh = Clock(), FakeGitHub()
+    checker = use_checker(web, gh, clock=clock)
+    checker.set_auto(False)
+    assert checker.step(True) == (True, update.INTERVAL)
+    assert gh.requests == []
+    checker.set_auto(True)
+    starting, wait = checker.step(True)
+    assert len(gh.requests) == 1 and starting is False and wait == pytest.approx(DAY)
 
 
 def test_a_failed_look_is_tried_again_an_hour_later(web, checks_on):
@@ -467,3 +616,14 @@ def test_the_cache_lives_in_the_base_home_for_every_shop(web, checks_on):
     # Another shop sees the same answer and is not told again.
     state = use_checker(web, FakeGitHub()).check(force=True)
     assert state["pill"] and update_notifications(web) == []
+
+def test_the_pill_gives_way_before_the_page_title_is_cut():
+    """At 1280 px "Profit & loss" was cut beside the pill even without its label: the
+    shell drops the label first, then "What's new?" (Settings has it too)."""
+    from stallkit.web.server import STATIC_DIR
+
+    app = (Path(STATIC_DIR) / "js" / "app.js").read_text(encoding="utf-8")
+    css = (Path(STATIC_DIR) / "css" / "base.css").read_text(encoding="utf-8")
+    body = app[app.index("function fitUpdatePill()"):app.index("export function showReleaseNotes")]
+    assert body.index('add("is-compact")') < body.index('add("is-tight")')
+    assert ".update-pill.is-tight .update-pill-notes" in css

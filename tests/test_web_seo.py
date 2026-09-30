@@ -227,13 +227,42 @@ def test_fix_proposal_never_keeps_more_than_thirteen():
     assert [r["reason"] for r in proposal["remove"]] == ["too_many", "too_many"]
 
 
-def test_title_repetition_fix_keeps_each_word_once():
+def test_title_repetition_fix_drops_only_whole_repeated_phrases():
     assert seo_api.dedupe_title("Floral Print Poster, Floral Wall Art, Floral Print") == (
-        "Floral Print Poster, Wall Art, Print"
+        "Floral Print Poster, Floral Wall Art", ["Floral Print"]
     )
-    assert seo_api.dedupe_title("Mug Mug Mug Coffee Mug") == "Mug Coffee"
-    assert seo_api.dedupe_title("Boho Art - Boho Print | Boho") == "Boho Art - Print"
-    assert seo_api.dedupe_title("Nothing repeated here") == "Nothing repeated here"
+    assert seo_api.dedupe_title("Boho Art - Boho Print | Boho") == ("Boho Art - Boho Print", ["Boho"])
+    # A phrase with a word of its own keeps every word: nothing is cut out of it.
+    for title in (
+        "Cat Mom Club Tote Bag, Cute Cat Lover Canvas Carryall, Cat Mom Gift",
+        "But First Coffee Mug, Funny Coffee Lover Coffee Cup, Gift",
+        "Mug Mug Mug Coffee Mug",
+        "Nothing repeated here",
+    ):
+        assert seo_api.dedupe_title(title) == (title, [])
+    # A hyphen, "&" or "/" inside a phrase is no boundary.
+    assert seo_api.dedupe_title("Retro Shirt, Vintage T-Shirt") == ("Retro Shirt, Vintage T-Shirt", [])
+    assert seo_api.dedupe_title("Pepper Mill, Salt & Pepper") == ("Pepper Mill, Salt & Pepper", [])
+
+
+def test_a_title_change_that_would_still_repeat_a_word_is_not_offered():
+    # Dropping "Floral Print" still leaves "floral" three times: no half fix is offered.
+    title = "Floral Print Poster, Floral Wall Art, Floral Print, Botanical Floral Decor"
+    assert seo_api.dedupe_title(title)[1] == ["Floral Print"]
+    proposal = seo_api.proposal({"title": title, "tags": ["floral"]}, {"title.repetition"})
+    assert proposal["title"] is None and proposal["manual"][0] == "title.repetition"
+    # One that ends the repetition is offered, and not also listed as manual work.
+    title = "Floral Print Poster, Floral Wall Art, Floral Print"
+    proposal = seo_api.proposal({"title": title, "tags": ["floral"]}, {"title.repetition"})
+    assert proposal["title"]["after"] == "Floral Print Poster, Floral Wall Art"
+    assert "title.repetition" not in proposal["manual"]
+
+
+def test_a_title_that_repeats_inside_its_phrases_is_left_to_the_seller():
+    listing = {"title": "Cat Mom Tote Bag, Cute Cat Lover Tote, Cat Mom Tote Gift", "tags": ["cat"]}
+    proposal = seo_api.proposal(listing, {"title.repetition"})
+    assert proposal["title"] is None
+    assert "title.repetition" in proposal["manual"]
 
 
 def test_audit_items_carry_the_proposal(web):
@@ -246,7 +275,9 @@ def test_audit_items_carry_the_proposal(web):
     assert mug["title"] is None
     assert "title.too_short" in mug["manual"] and "description.thin" in mug["manual"]
     floral = items[1000002]["fix"]
-    assert floral["title"]["after"] == "Floral Print Poster, Wall Art, Print"
+    assert floral["title"]["after"] == "Floral Print Poster, Floral Wall Art"
+    assert floral["title"]["phrases"] == ["Floral Print"]
+    assert "title.repetition" not in floral["manual"]
     assert {"tag": "floralprint", "reason": "near_duplicate", "of": "floral print"} in floral["remove"]
     assert items[1000003]["fix"]["remove"] == [] and items[1000003]["fix"]["free_slots"] == 0
 

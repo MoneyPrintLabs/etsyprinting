@@ -100,3 +100,76 @@ def test_every_relative_import_points_at_a_file(path):
         else:
             pytest.fail(f"{path.name}: bare import {target!r} (no npm, no CDN)")
         assert resolved.is_file(), f"{path.name} imports {target}, which does not exist"
+
+
+# --- the bundled fonts --------------------------------------------------------------------
+
+CSS_DIR = STATIC_DIR / "css"
+FONTS_DIR = STATIC_DIR / "fonts"
+_URL = re.compile(r"""url\(\s*["']?([^"')]+)["']?\s*\)""")
+_FONT_FACE = re.compile(r"@font-face\s*\{([^}]*)\}")
+# The video's three families (its fonts.ts), each as Google Fonts' latin + latin-ext files.
+FONT_FILES = {
+    "Inter": ("inter-latin.woff2", "inter-latin-ext.woff2"),
+    "Plus Jakarta Sans": ("plus-jakarta-sans-latin.woff2", "plus-jakarta-sans-latin-ext.woff2"),
+    "JetBrains Mono": ("jetbrains-mono-latin.woff2", "jetbrains-mono-latin-ext.woff2"),
+}
+
+
+@pytest.mark.parametrize("path", sorted(CSS_DIR.rglob("*.css")),
+                         ids=lambda p: p.relative_to(CSS_DIR).as_posix())
+def test_every_url_in_the_css_points_at_a_file(path):
+    for target in _URL.findall(path.read_text(encoding="utf-8")):
+        if target.startswith(("data:", "#")):
+            continue
+        assert "://" not in target and not target.startswith("//"), \
+            f"{path.name}: {target} is fetched from elsewhere (the app is local only)"
+        resolved = (STATIC_DIR / target.lstrip("/")) if target.startswith("/") \
+            else (path.parent / target).resolve()
+        assert resolved.is_file(), f"{path.name} uses {target}, which does not exist"
+
+
+def test_the_video_fonts_are_bundled_with_their_licence():
+    base = (CSS_DIR / "base.css").read_text(encoding="utf-8")
+    faces = _FONT_FACE.findall(base)
+    for family, files in FONT_FILES.items():
+        for name in files:
+            data = (FONTS_DIR / name).read_bytes()
+            assert data[:4] == b"wOF2", name
+            face = next((f for f in faces if f"../fonts/{name}" in f), None)
+            assert face is not None, f"no @font-face for {name}"
+            assert f'font-family: "{family}"' in face, name
+            assert "font-display: swap" in face and "unicode-range:" in face, name
+            assert re.search(r"font-weight: \d00 \d00;", face), f"{name}: a weight range"
+            # latin-ext draws ğ ş İ (U+011F, U+015F, U+0130); latin has ı (U+0131).
+            assert ("U+0100-02BA" in face) == name.endswith("-ext.woff2"), name
+    licence = (FONTS_DIR / "OFL.txt").read_text(encoding="utf-8")
+    assert "SIL OPEN FONT LICENSE Version 1.1" in licence
+    for family in FONT_FILES:
+        assert f"The {family} Project Authors" in licence, family
+    notice = (WEB_DIR.parent.parent / "NOTICE.md").read_text(encoding="utf-8")
+    assert "stallkit/web/static/fonts/OFL.txt" in notice
+    assert all(family in notice for family in FONT_FILES)
+
+
+def test_only_the_inter_latin_file_is_preloaded_and_display_text_is_spaced():
+    index = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    preloads = re.findall(r"<link rel=\"preload\"[^>]*>", index)
+    assert len(preloads) == 1
+    assert 'href="/fonts/inter-latin.woff2"' in preloads[0]
+    assert 'as="font"' in preloads[0] and "crossorigin" in preloads[0]
+    base = (CSS_DIR / "base.css").read_text(encoding="utf-8")
+    # BrowserFrame.tsx: every display-face text gets word-spacing .09em.
+    assert "--display-word-spacing: 0.09em;" in base
+
+
+def test_every_font_weight_is_one_the_bundled_faces_draw():
+    """400/500/600/700/800 only: the video's weights (fonts.ts). 550 or 650 would be
+    drawn by a variable face as an in-between weight the video never shows."""
+    weights = set()
+    for path in CSS_DIR.rglob("*.css"):
+        if path.name in ("mockups.css", "template.css"):
+            continue  # another page owner's files
+        text = _FONT_FACE.sub("", path.read_text(encoding="utf-8"))
+        weights.update(re.findall(r"font-weight:\s*([0-9]+)", text))
+    assert weights <= {"400", "500", "600", "700", "800"}, sorted(weights)

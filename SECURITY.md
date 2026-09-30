@@ -51,8 +51,9 @@ stallkit itself makes network requests to these hosts only:
 | `openapi.etsy.com` | Etsy's Open API v3: every read and write, and the OAuth token endpoint |
 | `api.etsy.com` | Etsy's OAuth token endpoint (the address Etsy's OAuth guide gives) |
 | `api.pinterest.com` (`api-sandbox.pinterest.com` for a sandbox app) | Pinterest's API, only after you set up Pinterest |
+| `i.etsystatic.com` | Etsy's public image server: a plain GET of the template listing's full-size photos, only when you add them as info images on **Şablon İlan**. No API key, sign-in or cookie is sent; only `https` addresses on `*.etsystatic.com` are fetched, a redirect is not followed, and each file is capped at 20 MB. |
 | `www.tcmb.gov.tr` | `kurlar/today.xml`, the Central Bank of Turkey's public exchange-rate file, for the TRY amounts on **Kâr-Zarar**. A plain GET at most once a day; nothing is sent. |
-| `api.github.com` | `/repos/MoneyPrintLabs/stallkit/releases/latest`, to see whether a newer stallkit is out. A plain GET about 10 seconds after the app starts and then at most once a day (an hour later after a failed try). Nothing is sent but the request itself with a `User-Agent: stallkit/<version>` header: no identifier, no cookie, nothing about you or your shop. Off with **Ayarlar → Yeni sürümleri denetle** (the automatic check) or `STALLKIT_NO_UPDATE_CHECK=1` (every check). |
+| `api.github.com` | `/repos/MoneyPrintLabs/stallkit/releases/latest`, to see whether a newer stallkit is out. A plain GET about 10 seconds after each start of the app (unless it asked less than an hour ago) and then once a day while it runs (an hour later after a failed try). Nothing is sent but the request itself with a `User-Agent: stallkit/<version>` header: no identifier, no cookie, nothing about you or your shop. Off with **Ayarlar → Yeni sürümleri denetle** (the automatic check) or `STALLKIT_NO_UPDATE_CHECK=1` (every check). |
 
 Nothing else. There is no telemetry and no account with this project. The update check
 reads a public GitHub page; its answer is treated as untrusted: the release notes are

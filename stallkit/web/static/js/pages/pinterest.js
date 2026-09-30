@@ -1007,7 +1007,7 @@ export default {
       const tbl = table({
         columns: [
           { key: "pin", label: t("queue.col.pin"), render: (e) => pinCell(e) },
-          { key: "board", label: t("queue.col.board"), width: "16%", render: (e) => h("span", { class: "ellipsis pin-board-cell" }, boardName(e)) },
+          { key: "board", label: t("queue.col.board"), width: "16%", render: (e) => h("span", { class: "ellipsis pin-board-cell", title: boardName(e) }, boardName(e)) },
           { key: "due", label: t("queue.col.due"), width: 120, render: (e) => h("span", { class: cx("pin-due", isToday(e.due) && e.status === "pending" && "is-today") }, dueLabel(e.due, e.status)) },
           { key: "status", label: t("queue.col.status"), width: 130, render: (e) => statusBadge(e) },
           { key: "actions", label: "", width: 190, align: "right", render: (e) => rowActions(e) },

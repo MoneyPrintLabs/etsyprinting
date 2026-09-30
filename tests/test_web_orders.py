@@ -348,7 +348,9 @@ def test_ship_job_sends_and_reports_each_row(web):
     assert [q["receipt_id"] for q in job["state"]["queue"]] == [3000001, 3000002, 3000003]
     assert web.ctx.shop_prefs()["last_carrier"]["TR"] in ("UPS", "USPS")
     notes = web.client.get("/api/notifications").json()["items"]
-    assert notes[0]["key"] == "notify.shipped" and notes[0]["params"] == {"n": 2}
+    # The Panel's sub-line names the carriers the send used, most used first.
+    assert notes[0]["key"] == "notify.shipped"
+    assert notes[0]["params"] == {"n": 2, "carriers": ["UPS", "USPS"]}
 
 
 def test_a_ship_job_waiting_behind_another_write_job_can_be_found_again(web):
@@ -415,6 +417,24 @@ def test_a_later_success_clears_the_restriction(web):
         {"receipt_id": 3000001, "carrier_name": "UPS", "tracking_code": "1Z1"}]}).json()
     assert wait_for_job(web, job["id"])["result"]["sent"] == 1
     assert "tracking_restricted" not in web.ctx.shop_prefs()
+
+
+def test_the_first_accepted_tracking_number_is_remembered(web):
+    # Until Etsy has accepted one number from this shop's key, the page may say in
+    # advance that it could refuse them (a Türkiye ship-from); afterwards it never does.
+    fake, _store = setup_orders(web, [make_receipt(1), make_receipt(2)])
+    assert web.client.get("/api/orders/summary").json()["tracking_sent"] is False
+    fake.error("POST", f"{RECEIPTS}/3000001/tracking", 400, "tracking_code is invalid")
+    job = web.client.post("/api/orders/ship", json={"confirm": True, "rows": [
+        {"receipt_id": 3000001, "carrier_name": "UPS", "tracking_code": "1Z1"}]}).json()
+    assert wait_for_job(web, job["id"])["result"]["sent"] == 0
+    assert "tracking_sent" not in web.ctx.shop_prefs()
+    fake.add("POST", f"{RECEIPTS}/3000002/tracking", shipment_answer)
+    job = web.client.post("/api/orders/ship", json={"confirm": True, "rows": [
+        {"receipt_id": 3000002, "carrier_name": "UPS", "tracking_code": "1Z2"}]}).json()
+    assert wait_for_job(web, job["id"])["result"]["sent"] == 1
+    assert web.ctx.shop_prefs()["tracking_sent"] is True
+    assert web.client.get("/api/orders/summary").json()["tracking_sent"] is True
 
 
 def test_one_failed_row_does_not_stop_the_others(web):
